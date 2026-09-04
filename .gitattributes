@@ -1,0 +1,21 @@
+# Приводим все текстовые файлы к LF независимо от ОС
+* text=auto eol=lf
+
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.toml text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.cfg text eol=lf
+.env.example text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+Makefile text eol=lf
+
+# Бинарные файлы — без преобразований
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary

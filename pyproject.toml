@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deepseek-telegram-proxy-bot"
+version = "1.0.0"
+description = "Telegram-бот, работающий прокси между пользователями и DeepSeek API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Project maintainers" }]
+dependencies = [
+    "python-telegram-bot>=20.7,<21",
+    "openai>=1.30.0,<2",
+    "python-dotenv>=1.0.0,<2",
+]
+
+[project.scripts]
+deepseek-telegram-bot = "main:main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+py-modules = ["main"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

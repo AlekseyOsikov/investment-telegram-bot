@@ -1,0 +1,38 @@
+# Секреты и локальная конфигурация
+.env
+.env.*
+!.env.example
+
+# Байт-код и кэш Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+
+# Логи
+*.log
+
+# Сборка / упаковка пакета
+dist/
+build/
+*.egg-info/
+*.egg
+
+# Тесты / покрытие
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Прочее
+.DS_Store
+*.swp
