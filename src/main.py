@@ -8,7 +8,8 @@
   доступная без дополнительной инфраструктуры (rate-limit, whitelist и т.д.).
 
 Конфигурация и клиент DeepSeek вынесены в config.py, режим исследования
-ограничений API (/research_response_format) — в research_response_format.py.
+ограничений API (/research_response_format) — в research_response_format.py,
+режим исследования способов рассуждения (/research_reasoning) — в research_reasoning.py.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from config import (
     TELEGRAM_MESSAGE_LIMIT,
     deepseek_client,
 )
+from research_reasoning import build_reasoning_conversation_handler
 from research_response_format import build_conversation_handler
 
 logger = logging.getLogger(__name__)
@@ -79,6 +81,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start — приветственное сообщение\n"
         "/help — эта справка\n"
         "/research_response_format — режим исследования влияния ограничений DeepSeek API на ответ "
+        "(технический эксперимент, не для обычных вопросов)\n"
+        "/research_reasoning — режим исследования способов рассуждения DeepSeek API "
         "(технический эксперимент, не для обычных вопросов)\n\n"
         "<b>Ограничения:</b>\n"
         f"— максимальная длина запроса: {MAX_INPUT_CHARS} символов\n"
@@ -192,6 +196,7 @@ def main() -> None:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(build_conversation_handler())
+    application.add_handler(build_reasoning_conversation_handler())
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)
