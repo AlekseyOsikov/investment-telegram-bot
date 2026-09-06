@@ -38,14 +38,16 @@ from telegram.ext import (
 )
 
 from config import (
-    DEEPSEEK_MODEL,
+    MAIN_API_KEY_ENV_VAR,
+    MAIN_CLIENT_LABEL,
+    MAIN_MODEL,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_TOKENS,
     REQUEST_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
     TELEGRAM_MESSAGE_LIMIT,
-    deepseek_client,
 )
+from main_client import main_client
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +85,7 @@ RESEARCH_JSON_INSTRUCTION = (
 )
 
 RESEARCH_INTRO_TEXT = (
-    "🔬 Режим исследования влияния ограничений DeepSeek API на ответ.\n\n"
+    f"🔬 Режим исследования влияния ограничений {MAIN_CLIENT_LABEL} API на ответ.\n\n"
     "⚠️ Напоминание: бот не является лицензированным финансовым советником, а ответы в "
     "этом режиме — часть технического исследования, а не инвестиционная рекомендация.\n\n"
     "👉 Введите вопрос для исследования влияния ограничений на ответ."
@@ -111,8 +113,8 @@ def call_deepseek_no_restrictions(
     question: str, _extra: object = None
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Сценарий 1: обычный запрос без дополнительных ограничений (контроль)."""
-    response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": question},
@@ -128,8 +130,8 @@ def call_deepseek_json_schema(
     question: str, _extra: object = None
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Сценарий 2: JSON-режим DeepSeek со структурой, заданной в промпте."""
-    response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": f"{question}\n\n{RESEARCH_JSON_INSTRUCTION}"},
@@ -150,8 +152,8 @@ def call_deepseek_max_tokens(
     достижении лимита), а не постобработкой полного ответа ботом — это экономит
     токены и время по сравнению с обрезкой уже сгенерированного текста.
     """
-    response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": question},
@@ -177,8 +179,8 @@ def call_deepseek_stop_sequence(
     question: str, stop_words: list[str]
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Сценарий 4: остановка генерации на первом совпадении со стоп-словом пользователя."""
-    response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": question},
@@ -234,14 +236,14 @@ def _format_research_answer(scenario_id: str, answer: str | None, finish_reason:
     """Готовит текст ответа сценария к отправке в Telegram."""
     if scenario_id == "2":
         if not answer:
-            return "⚠️ Введённый запрос не может быть обработан: DeepSeek вернул пустой ответ."
+            return f"⚠️ Введённый запрос не может быть обработан: {MAIN_CLIENT_LABEL} вернул пустой ответ."
         try:
             parsed = json.loads(_strip_code_fence(answer))
         except (json.JSONDecodeError, TypeError):
             parsed = None
 
         invalid_structure = (
-            "⚠️ Введённый запрос не может быть обработан: DeepSeek вернул невалидный "
+            f"⚠️ Введённый запрос не может быть обработан: {MAIN_CLIENT_LABEL} вернул невалидный "
             "JSON для заданной структуры. Попробуйте переформулировать вопрос."
         )
         if not isinstance(parsed, dict):
@@ -256,14 +258,14 @@ def _format_research_answer(scenario_id: str, answer: str | None, finish_reason:
             missing_fields = [f for f in RESEARCH_JSON_FIELDS if f not in company]
             if missing_fields:
                 return (
-                    "⚠️ Введённый запрос не может быть обработан: DeepSeek вернул JSON без "
+                    f"⚠️ Введённый запрос не может быть обработан: {MAIN_CLIENT_LABEL} вернул JSON без "
                     f"обязательных полей ({', '.join(missing_fields)}). "
                     "Попробуйте переформулировать вопрос."
                 )
 
         return "```json\n" + json.dumps(parsed, ensure_ascii=False, indent=2) + "\n```"
 
-    text = answer or "DeepSeek вернул пустой ответ."
+    text = answer or f"{MAIN_CLIENT_LABEL} вернул пустой ответ."
     if finish_reason == "length":
         text += "\n\n⚠️ ВНИМАНИЕ: Ответ был ОБРЕЗАН из-за ограничения max_tokens!"
     return text
@@ -291,31 +293,33 @@ def _run_research_scenario(
     try:
         answer, finish_reason, usage = handler_fn(question, extra)
     except AuthenticationError:
-        logger.error("Ошибка аутентификации DeepSeek API — проверьте DEEPSEEK_API_KEY.")
+        logger.error(
+            "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
+        )
         return None, (
-            "❌ Ошибка авторизации на сервере DeepSeek. "
+            f"❌ Ошибка авторизации на сервере {MAIN_CLIENT_LABEL}. "
             "Администратору бота нужно проверить API-ключ."
         ), None
     except RateLimitError:
-        logger.warning("Превышен лимит запросов к DeepSeek API.")
+        logger.warning("Превышен лимит запросов к %s API.", MAIN_CLIENT_LABEL)
         return None, (
-            "⏳ Сервис DeepSeek временно перегружен (превышен лимит запросов). "
+            f"⏳ Сервис {MAIN_CLIENT_LABEL} временно перегружен (превышен лимит запросов). "
             "Попробуй, пожалуйста, через минуту."
         ), None
     except (APITimeoutError, TimeoutError):
-        logger.warning("Тайм-аут запроса к DeepSeek API.")
-        return None, "⏳ DeepSeek не ответил вовремя. Попробуй отправить запрос ещё раз.", None
+        logger.warning("Тайм-аут запроса к %s API.", MAIN_CLIENT_LABEL)
+        return None, f"⏳ {MAIN_CLIENT_LABEL} не ответил вовремя. Попробуй отправить запрос ещё раз.", None
     except APIConnectionError:
-        logger.error("Не удалось подключиться к DeepSeek API.")
+        logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
         return None, (
-            "🌐 Не получилось подключиться к серверу DeepSeek. "
+            f"🌐 Не получилось подключиться к серверу {MAIN_CLIENT_LABEL}. "
             "Проверь соединение и попробуй позже."
         ), None
     except APIStatusError as exc:
-        logger.error("DeepSeek API вернул ошибку: %s", exc)
-        return None, "⚠️ Сервер DeepSeek вернул ошибку. Попробуй позже.", None
+        logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
+        return None, f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже.", None
     except Exception:  # noqa: BLE001 — последний рубеж, чтобы бот не падал целиком
-        logger.exception("Непредвиденная ошибка при обращении к DeepSeek API (исследование).")
+        logger.exception("Непредвиденная ошибка при обращении к %s API (исследование).", MAIN_CLIENT_LABEL)
         return None, "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже.", None
 
     formatted = _format_research_answer(scenario_id, answer, finish_reason)
@@ -379,7 +383,7 @@ async def research_receive_question(update: Update, context: ContextTypes.DEFAUL
 
     context.user_data["research_question"] = question
     await update.message.reply_text(
-        "Вопрос сохранён.\n\n👉 Выберите сценарий запроса к DeepSeek:",
+        f"Вопрос сохранён.\n\n👉 Выберите сценарий запроса к {MAIN_CLIENT_LABEL}:",
         reply_markup=_build_research_keyboard(),
     )
     return CHOOSING_SCENARIO
@@ -472,7 +476,7 @@ async def research_stop_words_input(update: Update, context: ContextTypes.DEFAUL
 
     if len(stop_words) > RESEARCH_MAX_STOP_WORDS:
         await update.message.reply_text(
-            f"⚠️ DeepSeek API поддерживает не более {RESEARCH_MAX_STOP_WORDS} стоп-последовательностей.\n"
+            f"⚠️ {MAIN_CLIENT_LABEL} API поддерживает не более {RESEARCH_MAX_STOP_WORDS} стоп-последовательностей.\n"
             f"👉 Укажите не более {RESEARCH_MAX_STOP_WORDS} через запятую."
         )
         return WAITING_STOP_WORDS

@@ -45,13 +45,15 @@ from telegram.ext import (
 )
 
 from config import (
-    DEEPSEEK_MODEL,
+    MAIN_API_KEY_ENV_VAR,
+    MAIN_CLIENT_LABEL,
+    MAIN_MODEL,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_TOKENS,
     REQUEST_TIMEOUT_SECONDS,
     TELEGRAM_MESSAGE_LIMIT,
-    deepseek_client,
 )
+from main_client import main_client
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +97,7 @@ EXPERT_ROLES = {
 }
 
 REASONING_INTRO_TEXT = (
-    "🔬 Режим исследования способов рассуждения DeepSeek API.\n\n"
+    f"🔬 Режим исследования способов рассуждения {MAIN_CLIENT_LABEL} API.\n\n"
     "Это техническое исследование, а не инвестиционный сервис — задача может быть любой, "
     "не обязательно про инвестиции.\n\n"
     "👉 Введите задачу, которую нужно решить."
@@ -162,8 +164,8 @@ def call_reasoning_direct(
     task: str, _extra: object = None
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Способ 1: прямой ответ без дополнительных инструкций (контроль)."""
-    response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": REASONING_SYSTEM_PROMPT},
             {"role": "user", "content": task},
@@ -180,8 +182,8 @@ def call_reasoning_step_by_step(
     task: str, _extra: object = None
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Способ 2: в промпт добавляется инструкция «решай пошагово»."""
-    response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": REASONING_SYSTEM_PROMPT},
             {"role": "user", "content": f"{task}\n\nРешай пошагово."},
@@ -204,8 +206,8 @@ def call_reasoning_self_prompt(
     получения решения. Сгенерированный промпt выводится перед итоговым ответом —
     это и есть предмет исследования данного сценария.
     """
-    prompt_response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    prompt_response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": REASONING_SYSTEM_PROMPT},
             {
@@ -223,10 +225,10 @@ def call_reasoning_self_prompt(
     )
     generated_prompt = _content_or_reasoning_fallback(prompt_response.choices[0].message)
     if not generated_prompt:
-        generated_prompt = "(промпт не сгенерирован: DeepSeek вернул пустой ответ на первом шаге)"
+        generated_prompt = f"(промпт не сгенерирован: {MAIN_CLIENT_LABEL} вернул пустой ответ на первом шаге)"
 
-    solve_response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    solve_response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": REASONING_SYSTEM_PROMPT},
             {
@@ -245,7 +247,7 @@ def call_reasoning_self_prompt(
     choice = solve_response.choices[0]
     final_answer = _content_or_reasoning_fallback(choice.message)
     if not final_answer:
-        final_answer = "⚠️ DeepSeek вернул пустой ответ на сгенерированный промпт."
+        final_answer = f"⚠️ {MAIN_CLIENT_LABEL} вернул пустой ответ на сгенерированный промпт."
     combined_answer = (
         f"🧭 Сгенерированный промпт:\n{generated_prompt}\n\n"
         f"📝 Ответ по этому промпту:\n{final_answer}"
@@ -259,8 +261,8 @@ def call_reasoning_expert(
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Способ 4: решение задачи от лица одного эксперта из группы (аналитик/инженер/критик)."""
     _, expert_instruction = EXPERT_ROLES[expert_id]
-    response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": f"{REASONING_SYSTEM_PROMPT} {expert_instruction}"},
             {"role": "user", "content": task},
@@ -330,8 +332,8 @@ def call_reasoning_compare_all(
         f"### {label}\n{sub_results[label][0] or '[нет ответа: ошибка при обращении к API]'}"
         for label in ordered_labels
     )
-    comparison_response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    comparison_response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": REASONING_SYSTEM_PROMPT},
             {
@@ -356,7 +358,7 @@ def call_reasoning_compare_all(
             text += "\n⚠️ Обрезано из-за ограничения max_tokens."
         result_parts.append(f"🔹 {label}:\n{text}")
     result_parts.append(
-        "🧩 Сравнение способов:\n" + (comparison_answer or "DeepSeek вернул пустой ответ.")
+        "🧩 Сравнение способов:\n" + (comparison_answer or f"{MAIN_CLIENT_LABEL} вернул пустой ответ.")
     )
     combined_answer = "\n\n".join(result_parts)
 
@@ -410,7 +412,7 @@ def _build_expert_keyboard() -> InlineKeyboardMarkup:
 
 def _format_reasoning_answer(answer: str | None, finish_reason: str | None) -> str:
     """Готовит текст ответа сценария к отправке в Telegram."""
-    text = answer or "DeepSeek вернул пустой ответ."
+    text = answer or f"{MAIN_CLIENT_LABEL} вернул пустой ответ."
     if finish_reason == "length":
         text += "\n\n⚠️ ВНИМАНИЕ: Ответ был ОБРЕЗАН из-за ограничения max_tokens!"
     return text
@@ -437,31 +439,33 @@ def _run_reasoning_scenario(
     try:
         answer, finish_reason, usage = handler_fn(task, extra)
     except AuthenticationError:
-        logger.error("Ошибка аутентификации DeepSeek API — проверьте DEEPSEEK_API_KEY.")
+        logger.error(
+            "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
+        )
         return None, (
-            "❌ Ошибка авторизации на сервере DeepSeek. "
+            f"❌ Ошибка авторизации на сервере {MAIN_CLIENT_LABEL}. "
             "Администратору бота нужно проверить API-ключ."
         ), None
     except RateLimitError:
-        logger.warning("Превышен лимит запросов к DeepSeek API.")
+        logger.warning("Превышен лимит запросов к %s API.", MAIN_CLIENT_LABEL)
         return None, (
-            "⏳ Сервис DeepSeek временно перегружен (превышен лимит запросов). "
+            f"⏳ Сервис {MAIN_CLIENT_LABEL} временно перегружен (превышен лимит запросов). "
             "Попробуй, пожалуйста, через минуту."
         ), None
     except (APITimeoutError, TimeoutError):
-        logger.warning("Тайм-аут запроса к DeepSeek API.")
-        return None, "⏳ DeepSeek не ответил вовремя. Попробуй отправить запрос ещё раз.", None
+        logger.warning("Тайм-аут запроса к %s API.", MAIN_CLIENT_LABEL)
+        return None, f"⏳ {MAIN_CLIENT_LABEL} не ответил вовремя. Попробуй отправить запрос ещё раз.", None
     except APIConnectionError:
-        logger.error("Не удалось подключиться к DeepSeek API.")
+        logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
         return None, (
-            "🌐 Не получилось подключиться к серверу DeepSeek. "
+            f"🌐 Не получилось подключиться к серверу {MAIN_CLIENT_LABEL}. "
             "Проверь соединение и попробуй позже."
         ), None
     except APIStatusError as exc:
-        logger.error("DeepSeek API вернул ошибку: %s", exc)
-        return None, "⚠️ Сервер DeepSeek вернул ошибку. Попробуй позже.", None
+        logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
+        return None, f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже.", None
     except Exception:  # noqa: BLE001 — последний рубеж, чтобы бот не падал целиком
-        logger.exception("Непредвиденная ошибка при обращении к DeepSeek API (исследование).")
+        logger.exception("Непредвиденная ошибка при обращении к %s API (исследование).", MAIN_CLIENT_LABEL)
         return None, "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже.", None
 
     formatted = _format_reasoning_answer(answer, finish_reason)

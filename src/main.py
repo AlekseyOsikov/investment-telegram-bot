@@ -1,16 +1,20 @@
-"""Telegram-бот — прокси между пользователями и DeepSeek API.
+"""Telegram-бот — прокси между пользователями и LLM-провайдером.
 
 Архитектура нарочно простая (stateless):
-- Каждое сообщение пользователя — независимый запрос к DeepSeek.
+- Каждое сообщение пользователя — независимый запрос к выбранному провайдеру.
 - История диалога не хранится ни в памяти, ни на диске.
 - Никаких админ-команд и никакого способа для пользователя сменить модель
   или системный промпт — это единственная защита от злоупотреблений,
   доступная без дополнительной инфраструктуры (rate-limit, whitelist и т.д.).
 
-Конфигурация и клиент DeepSeek вынесены в config.py, режим исследования
-ограничений API (/research_response_format) — в research_response_format.py,
-режим исследования способов рассуждения (/research_reasoning) — в research_reasoning.py,
-режим исследования влияния temperature (/research_temperature) — в research_temperature.py.
+Провайдер и модель основного потока настраиваются переменными окружения MAIN_CLIENT
+("deepseek" или "kimi") и MAIN_MODEL (config.py) — сам клиент собирается в
+main_client.py. Общая конфигурация вынесена в config.py, подключения к конкретным
+провайдерам — в deepseek_client.py и kimi_client.py, режим исследования ограничений API
+(/research_response_format) — в research_response_format.py, режим исследования
+способов рассуждения (/research_reasoning) — в research_reasoning.py, режим
+исследования влияния temperature (/research_temperature) — в research_temperature.py,
+режим исследования моделей (/research_models) — в research_models.py.
 """
 
 from __future__ import annotations
@@ -35,15 +39,18 @@ from telegram.ext import (
 )
 
 from config import (
-    DEEPSEEK_MODEL,
+    MAIN_API_KEY_ENV_VAR,
+    MAIN_CLIENT_LABEL,
+    MAIN_MODEL,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_TOKENS,
     REQUEST_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
-    deepseek_client,
 )
+from main_client import main_client
+from research_models import build_models_conversation_handler
 from research_reasoning import build_reasoning_conversation_handler
 from research_response_format import build_conversation_handler
 from research_temperature import build_temperature_conversation_handler
@@ -58,10 +65,10 @@ logger = logging.getLogger(__name__)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /start."""
     welcome_text = (
-        "👋 Привет! Я бот-ассистент по инвестициям и личным финансам на базе DeepSeek AI "
-        f"(модель {DEEPSEEK_MODEL}).\n\n"
+        f"👋 Привет! Я бот-ассистент по инвестициям и личным финансам на базе {MAIN_CLIENT_LABEL} AI "
+        f"(модель {MAIN_MODEL}).\n\n"
         "Просто напиши свой вопрос об инвестициях, накоплениях или личных финансах — "
-        "я перешлю его в DeepSeek и пришлю тебе ответ.\n\n"
+        f"я перешлю его в {MAIN_CLIENT_LABEL} и пришлю тебе ответ.\n\n"
         "⚠️ Важно: я не являюсь лицензированным финансовым советником, а мои ответы — "
         "не индивидуальная инвестиционная рекомендация. Перед принятием решений "
         "проконсультируйся с лицензированным финансовым консультантом.\n\n"
@@ -78,15 +85,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     help_text = (
         "ℹ️ <b>Как пользоваться ботом</b>\n\n"
         "Отправь текстовый вопрос об инвестициях или личных финансах — получишь ответ "
-        "от DeepSeek.\n\n"
+        f"от {MAIN_CLIENT_LABEL}.\n\n"
         "<b>Команды:</b>\n"
         "/start — приветственное сообщение\n"
         "/help — эта справка\n"
-        "/research_response_format — режим исследования влияния ограничений DeepSeek API на ответ "
+        f"/research_response_format — режим исследования влияния ограничений {MAIN_CLIENT_LABEL} API на ответ "
         "(технический эксперимент, не для обычных вопросов)\n"
-        "/research_reasoning — режим исследования способов рассуждения DeepSeek API "
+        f"/research_reasoning — режим исследования способов рассуждения {MAIN_CLIENT_LABEL} API "
         "(технический эксперимент, не для обычных вопросов)\n"
-        "/research_temperature — режим исследования влияния temperature на ответ DeepSeek API "
+        f"/research_temperature — режим исследования влияния temperature на ответ {MAIN_CLIENT_LABEL} API "
+        "(технический эксперимент, не для обычных вопросов)\n"
+        "/research_models — режим исследования разных моделей API "
         "(технический эксперимент, не для обычных вопросов)\n\n"
         "<b>Ограничения:</b>\n"
         f"— максимальная длина запроса: {MAX_INPUT_CHARS} символов\n"
@@ -106,7 +115,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # --------------------------------------------------------------------------- #
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Пересылает текст пользователя в DeepSeek и отправляет ответ обратно."""
+    """Пересылает текст пользователя в основного провайдера (MAIN_CLIENT) и отправляет ответ обратно."""
     user_text = update.message.text
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id if update.effective_user else "unknown"
@@ -124,12 +133,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info("Запрос от пользователя %s (%d символов)", user_id, len(user_text))
 
-    # Показываем статус "печатает..." на время ожидания ответа от DeepSeek.
+    # Показываем статус "печатает..." на время ожидания ответа от провайдера.
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     try:
-        response = deepseek_client.chat.completions.create(
-            model=DEEPSEEK_MODEL,
+        response = main_client.chat.completions.create(
+            model=MAIN_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_text},
@@ -138,43 +147,45 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
         answer = response.choices[0].message.content or (
-            "DeepSeek вернул пустой ответ. Попробуй переформулировать запрос."
+            f"{MAIN_CLIENT_LABEL} вернул пустой ответ. Попробуй переформулировать запрос."
         )
     except AuthenticationError:
-        logger.error("Ошибка аутентификации DeepSeek API — проверьте DEEPSEEK_API_KEY.")
+        logger.error(
+            "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
+        )
         await update.message.reply_text(
-            "❌ Ошибка авторизации на сервере DeepSeek. "
+            f"❌ Ошибка авторизации на сервере {MAIN_CLIENT_LABEL}. "
             "Администратору бота нужно проверить API-ключ."
         )
         return
     except RateLimitError:
-        logger.warning("Превышен лимит запросов к DeepSeek API.")
+        logger.warning("Превышен лимит запросов к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
-            "⏳ Сервис DeepSeek временно перегружен (превышен лимит запросов). "
+            f"⏳ Сервис {MAIN_CLIENT_LABEL} временно перегружен (превышен лимит запросов). "
             "Попробуй, пожалуйста, через минуту."
         )
         return
     except (APITimeoutError, TimeoutError):
-        logger.warning("Тайм-аут запроса к DeepSeek API.")
+        logger.warning("Тайм-аут запроса к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
-            "⏳ DeepSeek не ответил вовремя. Попробуй отправить сообщение ещё раз."
+            f"⏳ {MAIN_CLIENT_LABEL} не ответил вовремя. Попробуй отправить сообщение ещё раз."
         )
         return
     except APIConnectionError:
-        logger.error("Не удалось подключиться к DeepSeek API.")
+        logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
-            "🌐 Не получилось подключиться к серверу DeepSeek. "
+            f"🌐 Не получилось подключиться к серверу {MAIN_CLIENT_LABEL}. "
             "Проверь соединение и попробуй позже."
         )
         return
     except APIStatusError as exc:
-        logger.error("DeepSeek API вернул ошибку: %s", exc)
+        logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
         await update.message.reply_text(
-            "⚠️ Сервер DeepSeek вернул ошибку. Попробуй позже."
+            f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже."
         )
         return
     except Exception:  # noqa: BLE001 — последний рубеж, чтобы бот не падал целиком
-        logger.exception("Непредвиденная ошибка при обращении к DeepSeek API.")
+        logger.exception("Непредвиденная ошибка при обращении к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
             "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже."
         )
@@ -202,13 +213,14 @@ def main() -> None:
     application.add_handler(build_conversation_handler())
     application.add_handler(build_reasoning_conversation_handler())
     application.add_handler(build_temperature_conversation_handler())
+    application.add_handler(build_models_conversation_handler())
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)
     )
     application.add_error_handler(error_handler)
 
-    logger.info("Бот запущен. Модель DeepSeek: %s", DEEPSEEK_MODEL)
+    logger.info("Бот запущен. Провайдер: %s, модель: %s", MAIN_CLIENT_LABEL, MAIN_MODEL)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 

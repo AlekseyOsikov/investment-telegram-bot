@@ -47,13 +47,15 @@ from telegram.ext import (
 )
 
 from config import (
-    DEEPSEEK_MODEL,
+    MAIN_API_KEY_ENV_VAR,
+    MAIN_CLIENT_LABEL,
+    MAIN_MODEL,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_TOKENS,
     REQUEST_TIMEOUT_SECONDS,
     TELEGRAM_MESSAGE_LIMIT,
-    deepseek_client,
 )
+from main_client import main_client
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,7 @@ TEMPERATURE_SYSTEM_PROMPT = (
 )
 
 TEMPERATURE_INTRO_TEXT = (
-    "🔬 Режим исследования влияния temperature на ответ DeepSeek API.\n\n"
+    f"🔬 Режим исследования влияния temperature на ответ {MAIN_CLIENT_LABEL} API.\n\n"
     "Это техническое исследование, а не инвестиционный сервис — задача может быть любой, "
     "не обязательно про инвестиции.\n\n"
     "👉 Введите задачу, которую нужно решить."
@@ -137,8 +139,8 @@ def call_temperature(
     task: str, temperature: float
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Запрашивает решение задачи у DeepSeek с заданным значением temperature."""
-    response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": TEMPERATURE_SYSTEM_PROMPT},
             {"role": "user", "content": task},
@@ -234,8 +236,8 @@ def call_temperature_compare_all(
         f"### {label}\n{sub_results[label][0] or '[нет ответа: ошибка при обращении к API]'}"
         for label in ordered_labels
     )
-    comparison_response = deepseek_client.chat.completions.create(
-        model=DEEPSEEK_MODEL,
+    comparison_response = main_client.chat.completions.create(
+        model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": TEMPERATURE_SYSTEM_PROMPT},
             {
@@ -260,7 +262,7 @@ def call_temperature_compare_all(
             text += "\n⚠️ Обрезано из-за ограничения max_tokens."
         result_parts.append(f"🔹 {label}:\n{text}")
     result_parts.append(
-        "🧩 Сравнение и рекомендации:\n" + (comparison_answer or "DeepSeek вернул пустой ответ.")
+        "🧩 Сравнение и рекомендации:\n" + (comparison_answer or f"{MAIN_CLIENT_LABEL} вернул пустой ответ.")
     )
     combined_answer = "\n\n".join(result_parts)
 
@@ -304,7 +306,7 @@ def _build_temperature_scenario_keyboard() -> InlineKeyboardMarkup:
 
 def _format_temperature_answer(answer: str | None, finish_reason: str | None) -> str:
     """Готовит текст ответа сценария к отправке в Telegram."""
-    text = answer or "DeepSeek вернул пустой ответ."
+    text = answer or f"{MAIN_CLIENT_LABEL} вернул пустой ответ."
     if finish_reason == "length":
         text += "\n\n⚠️ ВНИМАНИЕ: Ответ был ОБРЕЗАН из-за ограничения max_tokens!"
     return text
@@ -331,31 +333,33 @@ def _run_temperature_scenario(
     try:
         answer, finish_reason, usage = handler_fn(task, extra)
     except AuthenticationError:
-        logger.error("Ошибка аутентификации DeepSeek API — проверьте DEEPSEEK_API_KEY.")
+        logger.error(
+            "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
+        )
         return None, (
-            "❌ Ошибка авторизации на сервере DeepSeek. "
+            f"❌ Ошибка авторизации на сервере {MAIN_CLIENT_LABEL}. "
             "Администратору бота нужно проверить API-ключ."
         ), None
     except RateLimitError:
-        logger.warning("Превышен лимит запросов к DeepSeek API.")
+        logger.warning("Превышен лимит запросов к %s API.", MAIN_CLIENT_LABEL)
         return None, (
-            "⏳ Сервис DeepSeek временно перегружен (превышен лимит запросов). "
+            f"⏳ Сервис {MAIN_CLIENT_LABEL} временно перегружен (превышен лимит запросов). "
             "Попробуй, пожалуйста, через минуту."
         ), None
     except (APITimeoutError, TimeoutError):
-        logger.warning("Тайм-аут запроса к DeepSeek API.")
-        return None, "⏳ DeepSeek не ответил вовремя. Попробуй отправить запрос ещё раз.", None
+        logger.warning("Тайм-аут запроса к %s API.", MAIN_CLIENT_LABEL)
+        return None, f"⏳ {MAIN_CLIENT_LABEL} не ответил вовремя. Попробуй отправить запрос ещё раз.", None
     except APIConnectionError:
-        logger.error("Не удалось подключиться к DeepSeek API.")
+        logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
         return None, (
-            "🌐 Не получилось подключиться к серверу DeepSeek. "
+            f"🌐 Не получилось подключиться к серверу {MAIN_CLIENT_LABEL}. "
             "Проверь соединение и попробуй позже."
         ), None
     except APIStatusError as exc:
-        logger.error("DeepSeek API вернул ошибку: %s", exc)
-        return None, "⚠️ Сервер DeepSeek вернул ошибку. Попробуй позже.", None
+        logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
+        return None, f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже.", None
     except Exception:  # noqa: BLE001 — последний рубеж, чтобы бот не падал целиком
-        logger.exception("Непредвиденная ошибка при обращении к DeepSeek API (исследование).")
+        logger.exception("Непредвиденная ошибка при обращении к %s API (исследование).", MAIN_CLIENT_LABEL)
         return None, "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже.", None
 
     formatted = _format_temperature_answer(answer, finish_reason)
