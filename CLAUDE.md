@@ -10,11 +10,14 @@ stateless-прокси без истории диалога и без админ
 полноценного инвестиционного ассистента, поэтому архитектурные и доменные решения ниже стоит
 пересматривать по мере роста функциональности, а не считать зафиксированными навсегда.
 
-Логика разнесена по трём файлам в `src/`:
+Логика разнесена по нескольким файлам в `src/`:
 - `config.py` — переменные окружения, константы, `SYSTEM_PROMPT`, логирование, клиент `deepseek_client`.
 - `research_response_format.py` — режим `/research_response_format` (см. ниже), не используется в обычном потоке сообщений.
+- `research_reasoning.py` — режим `/research_reasoning`, исследование способов рассуждения DeepSeek API, не используется в обычном потоке сообщений.
+- `research_temperature.py` — режим `/research_temperature`, исследование влияния параметра `temperature` на ответ DeepSeek API, не используется в обычном потоке сообщений.
 - `main.py` — обычный прокси-поток (`/start`, `/help`, `handle_message`) и точка входа
-  приложения; подключает `research_response_format.py` через `build_conversation_handler()`.
+  приложения; подключает три режима исследования через `build_conversation_handler()`,
+  `build_reasoning_conversation_handler()` и `build_temperature_conversation_handler()`.
 
 ## Команды
 
@@ -36,7 +39,7 @@ ruff format src/
 Проверка синтаксиса без запуска:
 
 ```bash
-python3 -m py_compile src/config.py src/research_response_format.py src/main.py
+python3 -m py_compile src/config.py src/research_response_format.py src/research_reasoning.py src/research_temperature.py src/main.py
 ```
 
 Тестов пока нет — `tests/` это пустая директория-заглушка.
@@ -118,6 +121,18 @@ inline-кнопки → для сценариев 3 и 4 дополнитель�
   `response.usage`, см. `_format_scenario_stats`), отправляется отдельным
   сообщением сразу после результата сценария (кроме случаев ошибки API, когда
   `response.usage` недоступен).
+
+`research_temperature.py` (режим `/research_temperature`) устроен по тому же принципу,
+что и `research_reasoning.py`: `ConversationHandler` с 2 состояниями (ввод задачи →
+выбор сценария из 5 через inline-кнопки), нейтральный (не инвестиционный) системный
+промпт и отключённое "thinking" (`extra_body={"thinking": {"type": "disabled"}}`), т.к.
+предмет исследования — видимый ответ при разных `temperature`, а не скрытые рассуждения
+модели. Сценарии 1-4 — фиксированные значения `temperature` (0 / 0.7 / 1.2 / 2, весь
+допустимый диапазон API), не запрашиваемые у пользователя. Сценарий 5 запускает
+сценарии 1-4 параллельно через `ThreadPoolExecutor`, затем отдельным запросом просит
+DeepSeek сравнить ответы по точности, креативности и разнообразию и дать рекомендации,
+для каких задач подходит каждое значение — при доработке сохраняй эти три критерия
+сравнения.
 
 ## Правила предметной области: инвестиционные рекомендации
 
