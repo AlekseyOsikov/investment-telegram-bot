@@ -6,21 +6,20 @@
 - Никаких админ-команд и никакого способа для пользователя сменить модель
   или системный промпт — это единственная защита от злоупотреблений,
   доступная без дополнительной инфраструктуры (rate-limit, whitelist и т.д.).
+
+Конфигурация и клиент DeepSeek вынесены в config.py, режим исследования
+ограничений API (/research_response_format) — в research_response_format.py.
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import sys
 
-from dotenv import load_dotenv
 from openai import (
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
     AuthenticationError,
-    OpenAI,
     RateLimitError,
 )
 from telegram import Update
@@ -33,78 +32,19 @@ from telegram.ext import (
     filters,
 )
 
-# --------------------------------------------------------------------------- #
-# Конфигурация
-# --------------------------------------------------------------------------- #
-
-load_dotenv()
-
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat")
-
-# Разумные лимиты, чтобы не улететь по токенам/времени на один запрос.
-REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
-MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2000"))
-MAX_INPUT_CHARS = int(os.getenv("MAX_INPUT_CHARS", "4000"))
-
-# Telegram режет сообщения по 4096 символов — оставляем запас.
-TELEGRAM_MESSAGE_LIMIT = 4000
-
-# Задаёт и доменную роль бота (инвестиционные вопросы), и обязательные ограничения
-# (см. раздел "Правила предметной области" в CLAUDE.md) — при доработке текста
-# проверяй, что дисклеймер и осторожные формулировки не потерялись.
-SYSTEM_PROMPT = (
-    "Ты — ассистент Telegram-бота, отвечающий на вопросы пользователей об инвестициях "
-    "и личных финансах. Отвечай кратко, по существу и на русском языке.\n\n"
-    "Обязательно соблюдай следующие правила:\n"
-    "1. Ты не являешься лицензированным финансовым советником, а твои ответы не являются "
-    "индивидуальной инвестиционной рекомендацией. Если вопрос предполагает конкретное "
-    "решение (купить/продать/во что вложить), явно напоминай об этом и советуй "
-    "проконсультироваться с лицензированным финансовым консультантом перед принятием решения.\n"
-    "2. Никогда не гарантируй доходность, рост стоимости активов или отсутствие риска. "
-    "Не используй формулировки вида «точно вырастет», «гарантированная доходность», "
-    "«безрисковый вариант» — любые инвестиции сопряжены с риском, и об этом нужно говорить "
-    "прямо.\n"
-    "3. Не запрашивай у пользователя чувствительные персональные данные: номера счетов и "
-    "карт, паспортные данные, ИНН, точные суммы на счетах. Если пользователь сам их "
-    "присылает, не проси их подтвердить или уточнить, и не включай в свой ответ.\n"
-    "4. Если вопрос выходит за рамки инвестиций и личных финансов, вежливо сообщи об этом "
-    "и предложи переформулировать вопрос в рамках этой темы."
+from config import (
+    DEEPSEEK_MODEL,
+    MAX_INPUT_CHARS,
+    MAX_OUTPUT_TOKENS,
+    REQUEST_TIMEOUT_SECONDS,
+    SYSTEM_PROMPT,
+    TELEGRAM_BOT_TOKEN,
+    TELEGRAM_MESSAGE_LIMIT,
+    deepseek_client,
 )
+from research_response_format import build_conversation_handler
 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-# Библиотека httpx (используется и telegram, и openai) логирует каждый запрос —
-# приглушаем, чтобы не засорять логи.
-logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
-
-
-def _validate_config() -> None:
-    """Проверяет наличие обязательных переменных окружения перед стартом."""
-    missing = []
-    if not TELEGRAM_BOT_TOKEN:
-        missing.append("TELEGRAM_BOT_TOKEN")
-    if not DEEPSEEK_API_KEY:
-        missing.append("DEEPSEEK_API_KEY")
-
-    if missing:
-        logger.error(
-            "Отсутствуют обязательные переменные окружения: %s. "
-            "Скопируйте .env.example в .env и заполните значения.",
-            ", ".join(missing),
-        )
-        sys.exit(1)
-
-
-_validate_config()
-
-# Клиент OpenAI SDK, направленный на DeepSeek (OpenAI-совместимый API).
-deepseek_client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL)
 
 
 # --------------------------------------------------------------------------- #
@@ -137,7 +77,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "от DeepSeek.\n\n"
         "<b>Команды:</b>\n"
         "/start — приветственное сообщение\n"
-        "/help — эта справка\n\n"
+        "/help — эта справка\n"
+        "/research_response_format — режим исследования влияния ограничений DeepSeek API на ответ "
+        "(технический эксперимент, не для обычных вопросов)\n\n"
         "<b>Ограничения:</b>\n"
         f"— максимальная длина запроса: {MAX_INPUT_CHARS} символов\n"
         "— бот не хранит историю диалога (каждый вопрос — новый контекст)\n"
@@ -249,6 +191,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(build_conversation_handler())
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)
