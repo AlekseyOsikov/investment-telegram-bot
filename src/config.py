@@ -19,8 +19,10 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import warnings
 
 from dotenv import load_dotenv
+from telegram.warnings import PTBUserWarning
 
 load_dotenv()
 
@@ -85,6 +87,21 @@ logging.basicConfig(
 # Библиотека httpx (используется и telegram, и openai) логирует каждый запрос —
 # приглушаем, чтобы не засорять логи.
 logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# python-telegram-bot предупреждает про каждый ConversationHandler, где в состояниях
+# есть CallbackQueryHandler, а per_message=False (по умолчанию) — это ожидаемо и
+# безопасно для наших research-режимов (research/constraints.py, reasoning.py,
+# temperature.py, models.py): их состояния вперемешку принимают и текст (вопрос,
+# max_tokens, стоп-слова), и нажатия inline-кнопок, а per_message=True требует, чтобы
+# *все* обработчики (entry_points/states/fallbacks) были CallbackQueryHandler — что
+# ломает ввод текста в этих режимах. Каждый чат ведёт только один активный диалог, так
+# что отслеживание разговора по конкретному сообщению с кнопками (то, что даёт
+# per_message=True) здесь не нужно — предупреждение только шумит в логах при старте.
+warnings.filterwarnings(
+    "ignore",
+    message=r"If 'per_message=False', 'CallbackQueryHandler' will not be tracked for every message\.",
+    category=PTBUserWarning,
+)
 
 logger = logging.getLogger(__name__)
 

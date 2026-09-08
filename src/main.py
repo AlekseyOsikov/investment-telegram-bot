@@ -15,7 +15,9 @@ providers/main_client.py. Общая конфигурация вынесена �
 research/constraints.py, режим исследования способов рассуждения
 (/research_reasoning) — в research/reasoning.py, режим исследования влияния
 temperature (/research_temperature) — в research/temperature.py, режим исследования
-моделей (/research_models) — в research/models.py.
+моделей (/research_models) — в research/models.py. Команда /agent — простой LLM-агент,
+оформленный как отдельная сущность (класс SimpleAgent), — в agents/simple_agent.py и
+agents/agent_command.py.
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from agents.agent_command import build_agent_conversation_handler
 from providers.main_client import main_client
 from research.constraints import build_constraints_conversation_handler
 from research.models import build_models_conversation_handler
@@ -97,7 +100,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         f"/research_temperature — режим исследования влияния temperature на ответ {MAIN_CLIENT_LABEL} API "
         "(технический эксперимент, не для обычных вопросов)\n"
         "/research_models — режим исследования разных моделей API "
-        "(технический эксперимент, не для обычных вопросов)\n\n"
+        "(технический эксперимент, не для обычных вопросов)\n"
+        "/agent — простой LLM-агент: задавай вопросы один за другим, "
+        "пока не отправишь /cancel\n\n"
         "<b>Ограничения:</b>\n"
         f"— максимальная длина запроса: {MAX_INPUT_CHARS} символов\n"
         "— бот не хранит историю диалога (каждый вопрос — новый контекст)\n"
@@ -215,6 +220,7 @@ def main() -> None:
     application.add_handler(build_reasoning_conversation_handler())
     application.add_handler(build_temperature_conversation_handler())
     application.add_handler(build_models_conversation_handler())
+    application.add_handler(build_agent_conversation_handler())
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)
