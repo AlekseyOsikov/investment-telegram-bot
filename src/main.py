@@ -9,12 +9,13 @@
 
 Провайдер и модель основного потока настраиваются переменными окружения MAIN_CLIENT
 ("deepseek" или "kimi") и MAIN_MODEL (config.py) — сам клиент собирается в
-main_client.py. Общая конфигурация вынесена в config.py, подключения к конкретным
-провайдерам — в deepseek_client.py и kimi_client.py, режим исследования ограничений API
-(/research_response_format) — в research_response_format.py, режим исследования
-способов рассуждения (/research_reasoning) — в research_reasoning.py, режим
-исследования влияния temperature (/research_temperature) — в research_temperature.py,
-режим исследования моделей (/research_models) — в research_models.py.
+providers/main_client.py. Общая конфигурация вынесена в config.py, подключения к
+конкретным провайдерам — в providers/deepseek_client.py и providers/kimi_client.py,
+режим исследования ограничений API (/research_constraints) — в
+research/constraints.py, режим исследования способов рассуждения
+(/research_reasoning) — в research/reasoning.py, режим исследования влияния
+temperature (/research_temperature) — в research/temperature.py, режим исследования
+моделей (/research_models) — в research/models.py.
 """
 
 from __future__ import annotations
@@ -49,11 +50,11 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
 )
-from main_client import main_client
-from research_models import build_models_conversation_handler
-from research_reasoning import build_reasoning_conversation_handler
-from research_response_format import build_conversation_handler
-from research_temperature import build_temperature_conversation_handler
+from providers.main_client import main_client
+from research.constraints import build_constraints_conversation_handler
+from research.models import build_models_conversation_handler
+from research.reasoning import build_reasoning_conversation_handler
+from research.temperature import build_temperature_conversation_handler
 
 logger = logging.getLogger(__name__)
 
@@ -89,8 +90,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>Команды:</b>\n"
         "/start — приветственное сообщение\n"
         "/help — эта справка\n"
-        f"/research_response_format — режим исследования влияния ограничений {MAIN_CLIENT_LABEL} API на ответ "
-        "(технический эксперимент, не для обычных вопросов)\n"
+        f"/research_constraints — режим исследования влияния ограничений {MAIN_CLIENT_LABEL} API "
+        "(включая формат ответа) на ответ (технический эксперимент, не для обычных вопросов)\n"
         f"/research_reasoning — режим исследования способов рассуждения {MAIN_CLIENT_LABEL} API "
         "(технический эксперимент, не для обычных вопросов)\n"
         f"/research_temperature — режим исследования влияния temperature на ответ {MAIN_CLIENT_LABEL} API "
@@ -210,7 +211,7 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(build_conversation_handler())
+    application.add_handler(build_constraints_conversation_handler())
     application.add_handler(build_reasoning_conversation_handler())
     application.add_handler(build_temperature_conversation_handler())
     application.add_handler(build_models_conversation_handler())

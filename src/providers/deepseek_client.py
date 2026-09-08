@@ -1,11 +1,11 @@
 """Подключение к DeepSeek API (OpenAI-совместимый).
 
 Вынесено из config.py в отдельный файл, т.к. подключение к Kimi (см. kimi_client.py)
-устроено иначе: свой API-ключ, свой базовый URL. config.py остаётся источником общих для
-бота настроек (Telegram-токен, MAIN_CLIENT/MAIN_MODEL, лимиты, системный промпт,
-логирование) и импортируется здесь исключительно ради побочного эффекта — load_dotenv() и
-logging.basicConfig() должны отработать раньше, чем этот модуль прочитает переменные
-окружения и что-либо залогирует.
+устроено иначе: свой API-ключ, свой базовый URL. config.py (на уровень выше, вне пакета
+providers) остаётся источником общих для бота настроек (Telegram-токен,
+MAIN_CLIENT/MAIN_MODEL, лимиты, системный промпт, логирование) и импортируется здесь
+исключительно ради побочного эффекта — load_dotenv() и logging.basicConfig() должны
+отработать раньше, чем этот модуль прочитает переменные окружения и что-либо залогирует.
 
 Обязательность DEEPSEEK_API_KEY зависит от MAIN_CLIENT (config.py): если основной поток
 бота работает через DeepSeek (MAIN_CLIENT=deepseek, значение по умолчанию), ключ
@@ -31,7 +31,7 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 
 # DEEPSEEK_MODEL_PRO/DEEPSEEK_MODEL_FLASH — модели DeepSeek, сравниваемые в
-# /research_models (research_models.py). MAIN_MODEL (модель основного потока) не
+# /research_models (research/models.py). MAIN_MODEL (модель основного потока) не
 # определяется здесь — он общий для обоих провайдеров и живёт в config.py, т.к. в
 # конкретный момент используется только с одним из них (см. main_client.py).
 DEEPSEEK_MODEL_PRO = os.getenv("DEEPSEEK_MODEL_PRO", "deepseek-v4-pro")

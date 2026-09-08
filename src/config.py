@@ -1,16 +1,17 @@
 """Общая конфигурация, логирование и настройки, не привязанные к конкретному провайдеру.
 
 Подключения к LLM-провайдерам (API-ключ, базовый URL, клиент openai.OpenAI, идентификаторы
-моделей) вынесены в отдельные модули — deepseek_client.py и kimi_client.py. Какой из них
-обслуживает основной поток бота, определяет MAIN_CLIENT (см. ниже) — от него зависит,
-какой из двух API-ключей обязателен для старта, а какой нужен только техническому режиму
-/research_models и не должен блокировать запуск остального бота (эту проверку выполняет
-каждый клиентский модуль сам, см. их докстринги). Сам выбор клиента для основного потока
-(объект main_client) собирается в main_client.py — не здесь, чтобы не создавать цикл
-импорта: deepseek_client.py и kimi_client.py импортируют config.py ради побочного эффекта
-(load_dotenv() и logging.basicConfig() должны отработать раньше, чем они читают переменные
-окружения и логируют), поэтому только config.py вызывает load_dotenv(), а сам он не может
-импортировать их в ответ.
+моделей) вынесены в отдельные модули — providers/deepseek_client.py и
+providers/kimi_client.py. Какой из них обслуживает основной поток бота, определяет
+MAIN_CLIENT (см. ниже) — от него зависит, какой из двух API-ключей обязателен для
+старта, а какой нужен только техническому режиму /research_models и не должен блокировать
+запуск остального бота (эту проверку выполняет каждый клиентский модуль сам, см. их
+докстринги). Сам выбор клиента для основного потока (объект main_client) собирается в
+providers/main_client.py — не здесь, чтобы не создавать цикл импорта:
+providers/deepseek_client.py и providers/kimi_client.py импортируют config.py ради
+побочного эффекта (load_dotenv() и logging.basicConfig() должны отработать раньше, чем
+они читают переменные окружения и логируют), поэтому только config.py вызывает
+load_dotenv(), а сам он не может импортировать их в ответ.
 """
 
 from __future__ import annotations
@@ -26,9 +27,10 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 # Провайдер, обслуживающий основной поток бота (main.py) и research-режимы, которые сами
-# не выбирают конкретную модель (research_reasoning.py, research_temperature.py,
-# research_response_format.py) — все они используют main_client.py. research_models.py
-# не зависит от MAIN_CLIENT: он всегда сравнивает обе пары моделей обоих провайдеров.
+# не выбирают конкретную модель (research/reasoning.py, research/temperature.py,
+# research/constraints.py) — все они используют providers/main_client.py.
+# research/models.py не зависит от MAIN_CLIENT: он всегда сравнивает обе пары моделей
+# обоих провайдеров.
 _SUPPORTED_MAIN_CLIENTS = ("deepseek", "kimi")
 MAIN_CLIENT = os.getenv("MAIN_CLIENT", "deepseek").strip().lower()
 
@@ -91,7 +93,7 @@ def _validate_config() -> None:
     """Проверяет наличие обязательных переменных окружения перед стартом.
 
     Обязательность DEEPSEEK_API_KEY/KIMI_API_KEY зависит от MAIN_CLIENT и проверяется
-    отдельно в deepseek_client.py/kimi_client.py (модуль выбранного провайдера сам
+    отдельно в providers/deepseek_client.py/providers/kimi_client.py (модуль выбранного провайдера сам
     завершает процесс, если его ключа нет) — здесь только TELEGRAM_BOT_TOKEN и сам
     MAIN_CLIENT, т.к. это переменные, за которые отвечает именно этот модуль.
     """

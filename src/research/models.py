@@ -1,22 +1,23 @@
 """Режим исследования (/research_models): сравнение моделей DeepSeek и Kimi.
 
-Отдельный от основного прокси-потока модуль, по аналогии с research_reasoning.py и
-research_temperature.py: техническое исследование того, как разные модели отвечают на
-одну и ту же произвольную задачу (не обязательно инвестиционную), а не часть обычного
-сценария использования бота. Системный промпт, как и в этих двух модулях, намеренно
-нейтральный, а не investment-специфичный config.SYSTEM_PROMPT.
+Отдельный от основного прокси-потока модуль, по аналогии с reasoning.py и
+temperature.py: техническое исследование того, как разные модели отвечают на одну и ту
+же произвольную задачу (не обязательно инвестиционную), а не часть обычного сценария
+использования бота. Системный промпт, как и в этих двух модулях, намеренно нейтральный,
+а не investment-специфичный config.SYSTEM_PROMPT.
 
 Сценарии 1-4 отправляют одну и ту же задачу одной из четырёх фиксированных моделей —
-две модели Kimi (kimi_client.py) и две модели DeepSeek (deepseek_client.py), порядок
-задан от самой сильной к самой слабой, см. MODEL_CATALOG. В отличие от temperature в
-research_temperature.py, конкретные идентификаторы моделей и клиент, через который
-каждая из них вызывается, не хардкодятся, а берутся из deepseek_client.py/kimi_client.py
-(в конечном счёте — из переменных окружения DEEPSEEK_MODEL_PRO, DEEPSEEK_MODEL_FLASH,
-KIMI_MODEL_K3, KIMI_MODEL_K2_6, см. .env.example): у разных провайдеров идентификаторы
-моделей меняются быстрее кода, поэтому здесь они — настройка, а не предмет
-исследования. Если конкретный идентификатор недоступен на используемом API-эндпоинте,
-вызов завершится ошибкой DeepSeek/OpenAI SDK, которая перехватывается общим блоком
-обработки ошибок (см. _run_models_scenario), как и любая другая ошибка API в проекте.
+две модели Kimi (providers/kimi_client.py) и две модели DeepSeek
+(providers/deepseek_client.py), порядок задан от самой сильной к самой слабой, см.
+MODEL_CATALOG. В отличие от temperature в temperature.py, конкретные идентификаторы
+моделей и клиент, через который каждая из них вызывается, не хардкодятся, а берутся из
+providers/deepseek_client.py и providers/kimi_client.py (в конечном счёте — из
+переменных окружения DEEPSEEK_MODEL_PRO, DEEPSEEK_MODEL_FLASH, KIMI_MODEL_K3,
+KIMI_MODEL_K2_6, см. .env.example): у разных провайдеров идентификаторы моделей
+меняются быстрее кода, поэтому здесь они — настройка, а не предмет исследования. Если
+конкретный идентификатор недоступен на используемом API-эндпоинте, вызов завершится
+ошибкой DeepSeek/OpenAI SDK, которая перехватывается общим блоком обработки ошибок (см.
+_run_models_scenario), как и любая другая ошибка API в проекте.
 
 Стоимость (USD) в MODEL_CATALOG — иллюстративные оценочные величины для целей сравнения
 между сценариями этого модуля, а не проверенные официальные тарифы конкретных
@@ -27,13 +28,17 @@ KIMI_MODEL_K3, KIMI_MODEL_K2_6, см. .env.example): у разных прова�
 очереди внутри этого потока, т.к. Kimi отвечает RateLimitError (429, "max organization
 concurrency: 1") на два одновременных запроса от одного аккаунта — см. докстринг
 call_model_compare_all и _group_sub_scenarios_by_client(). Затем одним отдельным
-запросом к MAIN_CLIENT/MAIN_MODEL (main_client.py, config.py) — тому же провайдеру и той
-же модели, что и в остальных research-режимах без собственного выбора модели
-(research_reasoning.py, research_temperature.py, research_response_format.py), а не к
-одной из четырёх сравниваемых моделей — просит сравнить полученные ответы вместе со
-статистикой (токены, время ответа, стоимость) по качеству, скорости и ресурсоёмкости и
-дать краткий вывод — показывает и все исходные ответы со статистикой, и итоговое
-сравнение.
+запросом к MAIN_CLIENT/MAIN_MODEL (providers/main_client.py, config.py) — тому же
+провайдеру и той же модели, что и в остальных research-режимах без собственного выбора
+модели (reasoning.py, temperature.py, constraints.py), а не к одной из четырёх
+сравниваемых моделей — просит сравнить полученные ответы вместе со статистикой
+(токены, время ответа, стоимость) по качеству, скорости и ресурсоёмкости и дать краткий
+вывод — показывает и все исходные ответы со статистикой, и итоговое сравнение.
+
+Не использует run_scenario/api_error_to_message из research/_shared.py: сообщения об
+ошибках здесь намеренно провайдер-нейтральны (вызов может уйти как к DeepSeek, так и к
+Kimi), а статистика сценария шире (время ответа, стоимость) — extract_usage,
+content_or_reasoning_fallback и sum_usage используются как есть, см. их докстринги.
 
 main.py подключает фичу через build_models_conversation_handler() — единственную точку
 интеграции с остальным приложением.
@@ -71,9 +76,11 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     TELEGRAM_MESSAGE_LIMIT,
 )
-from deepseek_client import DEEPSEEK_MODEL_FLASH, DEEPSEEK_MODEL_PRO, deepseek_client
-from kimi_client import KIMI_MODEL_K2_6, KIMI_MODEL_K3, kimi_client
-from main_client import main_client
+from providers.deepseek_client import DEEPSEEK_MODEL_FLASH, DEEPSEEK_MODEL_PRO, deepseek_client
+from providers.kimi_client import KIMI_MODEL_K2_6, KIMI_MODEL_K3, kimi_client
+from providers.main_client import main_client
+
+from ._shared import build_cancel_handler, content_or_reasoning_fallback, extract_usage, sum_usage
 
 logger = logging.getLogger(__name__)
 
@@ -138,33 +145,6 @@ MODELS_INTRO_TEXT = (
 # --------------------------------------------------------------------------- #
 
 
-def _extract_usage(response) -> dict[str, int] | None:
-    """Достаёт минимальную статистику по токенам из ответа API, если она есть."""
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return None
-    return {
-        "prompt_tokens": getattr(usage, "prompt_tokens", None),
-        "completion_tokens": getattr(usage, "completion_tokens", None),
-        "total_tokens": getattr(usage, "total_tokens", None),
-    }
-
-
-def _content_or_reasoning_fallback(message) -> str | None:
-    """Возвращает видимый content, а если он пуст — обрезанный reasoning_content.
-
-    На моделях с рассуждениями весь лимит max_tokens может целиком уйти на скрытые
-    размышления, оставляя видимый content пустым при finish_reason == "length" — тот же
-    случай, что и в research_reasoning.py и research_temperature.py.
-    """
-    content = message.content
-    if not content:
-        reasoning = getattr(message, "reasoning_content", None)
-        if reasoning:
-            return "[Модель ещё не начала видимый ответ, вот её рассуждения]\n\n" + reasoning
-    return content
-
-
 def _calculate_cost_usd(model_id: str, usage: dict[str, int] | None) -> float | None:
     """Считает иллюстративную стоимость вызова по тарифам из MODEL_CATALOG."""
     if not usage:
@@ -178,21 +158,6 @@ def _calculate_cost_usd(model_id: str, usage: dict[str, int] | None) -> float | 
         prompt_tokens * catalog_entry["price_input_per_million"]
         + completion_tokens * catalog_entry["price_output_per_million"]
     ) / 1_000_000
-
-
-def _sum_usage(
-    first: dict[str, int] | None, second: dict[str, int] | None
-) -> dict[str, int] | None:
-    """Складывает статистику по токенам двух вызовов API (для сценария 5)."""
-    if first is None and second is None:
-        return None
-    result: dict[str, int] = {}
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-        a, b = (first or {}).get(key), (second or {}).get(key)
-        if a is None and b is None:
-            continue
-        result[key] = (a or 0) + (b or 0)
-    return result or None
 
 
 def _sum_cost(first: float | None, second: float | None) -> float | None:
@@ -221,9 +186,15 @@ def call_model(
     )
     elapsed_seconds = time.monotonic() - start
     choice = response.choices[0]
-    usage = _extract_usage(response)
+    usage = extract_usage(response)
     cost_usd = _calculate_cost_usd(model_id, usage)
-    return _content_or_reasoning_fallback(choice.message), choice.finish_reason, usage, elapsed_seconds, cost_usd
+    return (
+        content_or_reasoning_fallback(choice.message),
+        choice.finish_reason,
+        usage,
+        elapsed_seconds,
+        cost_usd,
+    )
 
 
 def call_model_kimi_k3(task: str, _extra: object = None):
@@ -306,10 +277,10 @@ def call_model_compare_all(
 ) -> tuple[str | None, str | None, dict[str, int] | None, float, float | None]:
     """Способ 5: параллельно запускает все 4 модели и просит MAIN_CLIENT/MAIN_MODEL их сравнить.
 
-    Сравнивающий запрос идёт через main_client/MAIN_MODEL (config.py, main_client.py) —
+    Сравнивающий запрос идёт через main_client/MAIN_MODEL (config.py, providers/main_client.py) —
     тот же провайдер и модель, что и в остальных research-режимах без собственного
-    выбора модели (research_reasoning.py, research_temperature.py,
-    research_response_format.py), а не через одну из четырёх сравниваемых моделей.
+    выбора модели (reasoning.py, temperature.py, constraints.py), а не через одну из
+    четырёх сравниваемых моделей.
 
     Разные провайдеры опрашиваются параллельно (свой поток на провайдера), а модели
     одного провайдера — последовательно внутри этого потока: Kimi возвращает
@@ -371,8 +342,8 @@ def call_model_compare_all(
     )
     comparison_elapsed = time.monotonic() - comparison_start
     choice = comparison_response.choices[0]
-    comparison_answer = _content_or_reasoning_fallback(choice.message)
-    comparison_usage = _extract_usage(comparison_response)
+    comparison_answer = content_or_reasoning_fallback(choice.message)
+    comparison_usage = extract_usage(comparison_response)
     # MAIN_MODEL обычно не входит в MODEL_CATALOG (это отдельная, "судейская" модель),
     # поэтому для неё чаще всего нет тарифа — _calculate_cost_usd в этом случае вернёт
     # None, и стоимость сравнивающего запроса просто не попадёт в итоговую статистику.
@@ -395,7 +366,7 @@ def call_model_compare_all(
     total_usage = comparison_usage
     total_cost = comparison_cost
     for _answer, _finish_reason, usage, _elapsed, cost in sub_results.values():
-        total_usage = _sum_usage(total_usage, usage)
+        total_usage = sum_usage(total_usage, usage)
         total_cost = _sum_cost(total_cost, cost)
     total_elapsed = parallel_elapsed + comparison_elapsed
 
@@ -590,11 +561,7 @@ async def models_scenario_callback(update: Update, context: ContextTypes.DEFAULT
     return CHOOSING_SCENARIO
 
 
-async def models_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Fallback /cancel — принудительный выход из режима исследования."""
-    context.user_data.pop("models_task", None)
-    await update.message.reply_text("Исследование прервано. Возвращаюсь в обычный режим.")
-    return ConversationHandler.END
+models_cancel = build_cancel_handler("models_task")
 
 
 def build_models_conversation_handler() -> ConversationHandler:

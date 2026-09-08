@@ -21,7 +21,8 @@ deepseek-telegram-bot = "main:main"
 
 [tool.setuptools]
 package-dir = { "" = "src" }
-py-modules = ["main"]
+py-modules = ["main", "config"]
+packages = ["providers", "research"]
 
 [tool.ruff]
 line-length = 100

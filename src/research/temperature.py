@@ -1,16 +1,16 @@
 """Режим исследования (/research_temperature): сравнение температур DeepSeek API.
 
-Отдельный от основного прокси-потока модуль, по аналогии с research_reasoning.py: это
+Отдельный от основного прокси-потока модуль, по аналогии с reasoning.py: это
 техническое исследование того, как параметр temperature влияет на форму и содержание
 ответа на произвольную задачу (не обязательно инвестиционную), а не часть обычного
-сценария использования бота. Поэтому системный промпт здесь, как и в
-research_reasoning.py, намеренно нейтральный, а не investment-специфичный
-config.SYSTEM_PROMPT — задачи в этом режиме могут быть любыми.
+сценария использования бота. Поэтому системный промпт здесь, как и в reasoning.py,
+намеренно нейтральный, а не investment-специфичный config.SYSTEM_PROMPT — задачи в
+этом режиме могут быть любыми.
 
 Сценарии 1-4 отправляют одну и ту же задачу с одним и тем же промптом при разных
 фиксированных значениях temperature — 0, 0.7, 1.2 и 2 (весь допустимый для DeepSeek/
 OpenAI API диапазон [0, 2]). Значения не запрашиваются у пользователя (в отличие от
-max_tokens/стоп-слов в research_response_format.py), это предмет исследования, а не
+max_tokens/стоп-слов в constraints.py), это предмет исследования, а не
 настраиваемый параметр.
 
 Сценарий 5 запускает сценарии 1-4 параллельно в пуле потоков, затем одним отдельным
@@ -18,6 +18,9 @@ max_tokens/стоп-слов в research_response_format.py), это предм�
 креативности и разнообразию и сформулировать рекомендации, для каких задач лучше
 подходит каждое значение temperature — показывает и все исходные ответы, и итоговое
 сравнение.
+
+Перехват ошибок API и статистика по токенам вынесены в research/_shared.py (общие для
+нескольких research-режимов, см. его докстринг).
 
 main.py подключает фичу через build_temperature_conversation_handler() — единственную
 точку интеграции с остальным приложением.
@@ -28,13 +31,6 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from openai import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    AuthenticationError,
-    RateLimitError,
-)
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -47,7 +43,6 @@ from telegram.ext import (
 )
 
 from config import (
-    MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
     MAIN_MODEL,
     MAX_INPUT_CHARS,
@@ -55,7 +50,15 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     TELEGRAM_MESSAGE_LIMIT,
 )
-from main_client import main_client
+from providers.main_client import main_client
+
+from ._shared import (
+    build_cancel_handler,
+    content_or_reasoning_fallback,
+    extract_usage,
+    run_scenario,
+    sum_usage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +67,9 @@ WAITING_TASK, CHOOSING_SCENARIO = range(2)
 # Этот режим сравнивает влияние temperature на уже сгенерированный видимый ответ, а не
 # собственное скрытое рассуждение модели — оно не только не нужно для сравнения, но и
 # мешает: на моделях с рассуждениями весь max_tokens может уйти на reasoning_content,
-# оставляя видимый ответ пустым (см. _content_or_reasoning_fallback). "thinking" не
-# входит в типизированную сигнатуру chat.completions.create в openai SDK, поэтому
-# передаётся через extra_body — как и в research_reasoning.py.
+# оставляя видимый ответ пустым (см. content_or_reasoning_fallback в research/_shared.py).
+# "thinking" не входит в типизированную сигнатуру chat.completions.create в openai SDK,
+# поэтому передаётся через extra_body — как и в reasoning.py.
 DISABLE_THINKING = {"thinking": {"type": "disabled"}}
 
 # Нарочно нейтральный системный промпт: этот режим исследует влияние temperature на
@@ -91,50 +94,6 @@ TEMPERATURE_INTRO_TEXT = (
 # --------------------------------------------------------------------------- #
 
 
-def _extract_usage(response) -> dict[str, int] | None:
-    """Достаёт минимальную статистику по токенам из ответа DeepSeek, если она есть."""
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return None
-    return {
-        "prompt_tokens": getattr(usage, "prompt_tokens", None),
-        "completion_tokens": getattr(usage, "completion_tokens", None),
-        "total_tokens": getattr(usage, "total_tokens", None),
-    }
-
-
-def _content_or_reasoning_fallback(message) -> str | None:
-    """Возвращает видимый content, а если он пуст — обрезанный reasoning_content.
-
-    На моделях с рассуждениями (deepseek-reasoner и т.п.) весь лимит max_tokens может
-    целиком уйти на скрытые размышления, оставляя видимый content пустым при
-    finish_reason == "length" — тот же случай, что и в research_reasoning.py.
-    """
-    content = message.content
-    if not content:
-        reasoning = getattr(message, "reasoning_content", None)
-        if reasoning:
-            return (
-                "[Модель ещё не начала видимый ответ, вот её рассуждения]\n\n" + reasoning
-            )
-    return content
-
-
-def _sum_usage(
-    first: dict[str, int] | None, second: dict[str, int] | None
-) -> dict[str, int] | None:
-    """Складывает статистику по токенам двух вызовов API (для сценария 5)."""
-    if first is None and second is None:
-        return None
-    result: dict[str, int] = {}
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-        a, b = (first or {}).get(key), (second or {}).get(key)
-        if a is None and b is None:
-            continue
-        result[key] = (a or 0) + (b or 0)
-    return result or None
-
-
 def call_temperature(
     task: str, temperature: float
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
@@ -151,7 +110,7 @@ def call_temperature(
         extra_body=DISABLE_THINKING,
     )
     choice = response.choices[0]
-    return _content_or_reasoning_fallback(choice.message), choice.finish_reason, _extract_usage(response)
+    return content_or_reasoning_fallback(choice.message), choice.finish_reason, extract_usage(response)
 
 
 def call_temperature_0(task: str, _extra: object = None) -> tuple[str | None, str | None, dict[str, int] | None]:
@@ -252,7 +211,7 @@ def call_temperature_compare_all(
         extra_body=DISABLE_THINKING,
     )
     choice = comparison_response.choices[0]
-    comparison_answer = _content_or_reasoning_fallback(choice.message)
+    comparison_answer = content_or_reasoning_fallback(choice.message)
 
     result_parts = []
     for label in ordered_labels:
@@ -266,9 +225,9 @@ def call_temperature_compare_all(
     )
     combined_answer = "\n\n".join(result_parts)
 
-    usage = _extract_usage(comparison_response)
+    usage = extract_usage(comparison_response)
     for sub_usage in sub_usages:
-        usage = _sum_usage(usage, sub_usage)
+        usage = sum_usage(usage, sub_usage)
     return combined_answer, choice.finish_reason, usage
 
 
@@ -312,59 +271,11 @@ def _format_temperature_answer(answer: str | None, finish_reason: str | None) ->
     return text
 
 
-def _format_scenario_stats(finish_reason: str | None, usage: dict[str, int] | None) -> str:
-    """Минимальная статистика по итогам сценария: причина остановки и токены."""
-    parts = [f"finish_reason={finish_reason or 'н/д'}"]
-    if usage:
-        parts.append(f"prompt_tokens={usage.get('prompt_tokens', 'н/д')}")
-        parts.append(f"completion_tokens={usage.get('completion_tokens', 'н/д')}")
-        parts.append(f"total_tokens={usage.get('total_tokens', 'н/д')}")
-    return "📈 " + ", ".join(parts)
-
-
 def _run_temperature_scenario(
     handler_fn, task: str, extra: object = None
 ) -> tuple[str | None, str | None, str | None]:
-    """Выполняет сценарий, возвращает (текст_ответа, текст_ошибки, статистика).
-
-    При ошибке текст_ответа и статистика отсутствуют (None) — обращения к API не
-    случилось или оно не завершилось валидным ответом.
-    """
-    try:
-        answer, finish_reason, usage = handler_fn(task, extra)
-    except AuthenticationError:
-        logger.error(
-            "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
-        )
-        return None, (
-            f"❌ Ошибка авторизации на сервере {MAIN_CLIENT_LABEL}. "
-            "Администратору бота нужно проверить API-ключ."
-        ), None
-    except RateLimitError:
-        logger.warning("Превышен лимит запросов к %s API.", MAIN_CLIENT_LABEL)
-        return None, (
-            f"⏳ Сервис {MAIN_CLIENT_LABEL} временно перегружен (превышен лимит запросов). "
-            "Попробуй, пожалуйста, через минуту."
-        ), None
-    except (APITimeoutError, TimeoutError):
-        logger.warning("Тайм-аут запроса к %s API.", MAIN_CLIENT_LABEL)
-        return None, f"⏳ {MAIN_CLIENT_LABEL} не ответил вовремя. Попробуй отправить запрос ещё раз.", None
-    except APIConnectionError:
-        logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
-        return None, (
-            f"🌐 Не получилось подключиться к серверу {MAIN_CLIENT_LABEL}. "
-            "Проверь соединение и попробуй позже."
-        ), None
-    except APIStatusError as exc:
-        logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
-        return None, f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже.", None
-    except Exception:  # noqa: BLE001 — последний рубеж, чтобы бот не падал целиком
-        logger.exception("Непредвиденная ошибка при обращении к %s API (исследование).", MAIN_CLIENT_LABEL)
-        return None, "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже.", None
-
-    formatted = _format_temperature_answer(answer, finish_reason)
-    stats = _format_scenario_stats(finish_reason, usage)
-    return formatted, None, stats
+    """Выполняет сценарий, возвращает (текст_ответа, текст_ошибки, статистика)."""
+    return run_scenario(handler_fn, task, extra, format_answer=_format_temperature_answer)
 
 
 async def _send_scenario_result(
@@ -456,11 +367,7 @@ async def temperature_scenario_callback(update: Update, context: ContextTypes.DE
     return CHOOSING_SCENARIO
 
 
-async def temperature_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Fallback /cancel — принудительный выход из режима исследования."""
-    context.user_data.pop("temperature_task", None)
-    await update.message.reply_text("Исследование прервано. Возвращаюсь в обычный режим.")
-    return ConversationHandler.END
+temperature_cancel = build_cancel_handler("temperature_task")
 
 
 def build_temperature_conversation_handler() -> ConversationHandler:

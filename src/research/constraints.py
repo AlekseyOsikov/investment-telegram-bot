@@ -1,17 +1,32 @@
-"""Режим исследования (/research_response_format): сравнение сценариев ограничений DeepSeek API.
+"""Режим исследования (/research_constraints): сравнение сценариев ограничений API на ответ.
 
-Отдельный от основного прокси-потока модуль: это техническое исследование влияния
-параметров DeepSeek API (response_format, max_tokens, stop) на форму ответа, а не
-часть обычного сценария использования бота.
+Отдельный от основного прокси-потока модуль, по аналогии с reasoning.py: это
+техническое исследование влияния разных ограничений API — без ограничений (контроль),
+формат ответа (`response_format`, JSON), `max_tokens`, стоп-слова (`stop`) — на форму
+ответа, а не часть обычного сценария использования бота. В отличие от reasoning.py/
+temperature.py/models.py, здесь используется инвестиционный `config.SYSTEM_PROMPT`, а не
+нейтральный промпт: предмет исследования — сами ограничения API поверх штатного
+инвестиционного ответа бота, а не поведение модели на произвольных задачах.
 
 Сценарии 3 и 4 интерактивны: после выбора сценария бот дополнительно спрашивает
 параметр (max_tokens / список стоп-слов) прямо у пользователя, а не берёт его из
 фиксированной константы — это и есть предмет исследования в этих двух сценариях.
-Оба ограничения выполняются на стороне DeepSeek (через параметры запроса), а не
+Оба ограничения выполняются на стороне API (через параметры запроса), а не
 постобработкой ответа ботом — это экономит токены и время ответа.
 
-main.py подключает фичу через build_conversation_handler() — единственную точку
-интеграции с остальным приложением.
+Часть докстрингов/комментариев ниже описывает то, что было эмпирически найдено конкретно
+на DeepSeek (например, что его API не поддерживает
+`response_format={"type": "json_schema"}`) — сами сценарии всё равно идут через
+выбранного `MAIN_CLIENT`, а не всегда через DeepSeek напрямую, и на другом провайдере
+(Kimi) это конкретное ограничение не проверялось.
+
+Перехват ошибок API и статистика по токенам вынесены в research/_shared.py (общие для
+нескольких research-режимов, см. его докстринг) — здесь остаётся то, что специфично
+именно для этого режима: сами 4 сценария вызова API и JSON-специфичное форматирование
+ответа сценария 2 (проверка формата ответа).
+
+main.py подключает фичу через build_constraints_conversation_handler() — единственную
+точку интеграции с остальным приложением.
 """
 
 from __future__ import annotations
@@ -19,13 +34,6 @@ from __future__ import annotations
 import json
 import logging
 
-from openai import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    AuthenticationError,
-    RateLimitError,
-)
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -38,7 +46,6 @@ from telegram.ext import (
 )
 
 from config import (
-    MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
     MAIN_MODEL,
     MAX_INPUT_CHARS,
@@ -47,32 +54,36 @@ from config import (
     SYSTEM_PROMPT,
     TELEGRAM_MESSAGE_LIMIT,
 )
-from main_client import main_client
+from providers.main_client import main_client
+
+from ._shared import build_cancel_handler, content_or_reasoning_fallback, extract_usage, run_scenario
 
 logger = logging.getLogger(__name__)
 
 WAITING_QUESTION, CHOOSING_SCENARIO, WAITING_MAX_TOKENS, WAITING_STOP_WORDS = range(4)
 
-# DeepSeek (как и OpenAI) принимает не более 4 стоп-последовательностей за запрос.
-RESEARCH_MAX_STOP_WORDS = 4
+# Лимит на количество стоп-последовательностей за один запрос — так было эмпирически
+# найдено на DeepSeek (совпадает с лимитом OpenAI API); на Kimi отдельно не проверялось.
+CONSTRAINTS_MAX_STOP_WORDS = 4
 
-# DeepSeek API не поддерживает response_format={"type": "json_schema"} (structured
-# outputs из OpenAI) — запрос с ним падает с ошибкой 400 "This response_format type
-# is unavailable now". Доступен только базовый JSON-режим {"type": "json_object"},
-# поэтому нужная структура ответа задаётся текстом прямо в пользовательском
-# сообщении, а не схемой на стороне API; корректность и состав полей проверяются
-# уже на стороне бота в _format_research_answer.
-RESEARCH_JSON_RESPONSE_FORMAT = {"type": "json_object"}
+# Эмпирически найдено на DeepSeek: его API не поддерживает OpenAI-style
+# response_format={"type": "json_schema"} (structured outputs, падает с 400 "This
+# response_format type is unavailable now") — доступен только базовый JSON-режим
+# {"type": "json_object"}, поэтому нужная структура ответа задаётся текстом прямо в
+# пользовательском сообщении, а не схемой на стороне API; корректность и состав полей
+# проверяются уже на стороне бота в _format_constraints_answer. На Kimi отдельно не
+# проверялось — сценарий всё равно идёт через выбранного MAIN_CLIENT.
+CONSTRAINTS_JSON_RESPONSE_FORMAT = {"type": "json_object"}
 
-RESEARCH_JSON_FIELDS = ["ticker", "company_name", "sector", "summary"]
-RESEARCH_JSON_LIST_KEY = "companies"
+CONSTRAINTS_JSON_FIELDS = ["ticker", "company_name", "sector", "summary"]
+CONSTRAINTS_JSON_LIST_KEY = "companies"
 
 # Top-level должен оставаться JSON-объектом (этого требует response_format
 # {"type": "json_object"}), поэтому список компаний оборачивается в один ключ,
 # а не возвращается как «голый» массив.
-RESEARCH_JSON_INSTRUCTION = (
+CONSTRAINTS_JSON_INSTRUCTION = (
     "Ответь строго в формате JSON-объекта (только JSON, без markdown-разметки и "
-    f'пояснений вне него) с единственным полем "{RESEARCH_JSON_LIST_KEY}" — списком '
+    f'пояснений вне него) с единственным полем "{CONSTRAINTS_JSON_LIST_KEY}" — списком '
     "объектов, по одному объекту на каждую компанию/тикер из вопроса (если компания "
     "одна — список из одного элемента). Каждый объект должен содержать следующие и "
     "только следующие поля:\n"
@@ -84,8 +95,9 @@ RESEARCH_JSON_INSTRUCTION = (
     "на котором задан сам вопрос (ticker — всегда как есть, латиницей)."
 )
 
-RESEARCH_INTRO_TEXT = (
-    f"🔬 Режим исследования влияния ограничений {MAIN_CLIENT_LABEL} API на ответ.\n\n"
+CONSTRAINTS_INTRO_TEXT = (
+    f"🔬 Режим исследования влияния ограничений {MAIN_CLIENT_LABEL} API (включая формат "
+    "ответа) на ответ.\n\n"
     "⚠️ Напоминание: бот не является лицензированным финансовым советником, а ответы в "
     "этом режиме — часть технического исследования, а не инвестиционная рекомендация.\n\n"
     "👉 Введите вопрос для исследования влияния ограничений на ответ."
@@ -93,23 +105,11 @@ RESEARCH_INTRO_TEXT = (
 
 
 # --------------------------------------------------------------------------- #
-# 4 сценария вызова DeepSeek API
+# 4 сценария вызова API
 # --------------------------------------------------------------------------- #
 
 
-def _extract_usage(response) -> dict[str, int] | None:
-    """Достаёт минимальную статистику по токенам из ответа DeepSeek, если она есть."""
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return None
-    return {
-        "prompt_tokens": getattr(usage, "prompt_tokens", None),
-        "completion_tokens": getattr(usage, "completion_tokens", None),
-        "total_tokens": getattr(usage, "total_tokens", None),
-    }
-
-
-def call_deepseek_no_restrictions(
+def call_constraint_no_restrictions(
     question: str, _extra: object = None
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Сценарий 1: обычный запрос без дополнительных ограничений (контроль)."""
@@ -123,34 +123,37 @@ def call_deepseek_no_restrictions(
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     choice = response.choices[0]
-    return choice.message.content, choice.finish_reason, _extract_usage(response)
+    return choice.message.content, choice.finish_reason, extract_usage(response)
 
 
-def call_deepseek_json_schema(
+def call_constraint_json_schema(
     question: str, _extra: object = None
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
-    """Сценарий 2: JSON-режим DeepSeek со структурой, заданной в промпте."""
+    """Сценарий 2: проверка формата ответа — JSON-режим со структурой, заданной в промпте."""
     response = main_client.chat.completions.create(
         model=MAIN_MODEL,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": f"{question}\n\n{RESEARCH_JSON_INSTRUCTION}"},
+            {"role": "user", "content": f"{question}\n\n{CONSTRAINTS_JSON_INSTRUCTION}"},
         ],
-        response_format=RESEARCH_JSON_RESPONSE_FORMAT,
+        response_format=CONSTRAINTS_JSON_RESPONSE_FORMAT,
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     choice = response.choices[0]
-    return choice.message.content, choice.finish_reason, _extract_usage(response)
+    return choice.message.content, choice.finish_reason, extract_usage(response)
 
 
-def call_deepseek_max_tokens(
+def call_constraint_max_tokens(
     question: str, max_tokens: int
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Сценарий 3: жёсткое ограничение длины ответа через API-параметр max_tokens.
 
-    Ограничение выполняется на стороне DeepSeek (модель прекращает генерацию по
-    достижении лимита), а не постобработкой полного ответа ботом — это экономит
-    токены и время по сравнению с обрезкой уже сгенерированного текста.
+    Ограничение выполняется на стороне API (модель прекращает генерацию по достижении
+    лимита), а не постобработкой полного ответа ботом — это экономит токены и время по
+    сравнению с обрезкой уже сгенерированного текста. У моделей с рассуждениями весь
+    лимит может уйти на скрытые размышления, оставляя видимый content пустым —
+    content_or_reasoning_fallback подставляет в этом случае обрезанный reasoning_content
+    вместо пустоты (см. её докстринг в research/_shared.py).
     """
     response = main_client.chat.completions.create(
         model=MAIN_MODEL,
@@ -162,20 +165,11 @@ def call_deepseek_max_tokens(
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     choice = response.choices[0]
-    content = choice.message.content
-    if not content:
-        # У моделей с рассуждениями (например, deepseek-reasoner) весь лимит
-        # max_tokens может уйти на скрытые рассуждения (reasoning_content), не
-        # дойдя до видимого ответа: content пуст, а finish_reason всё равно
-        # "length". Показываем обрезанные рассуждения вместо пустоты — обрезка
-        # всё так же видна пользователю, просто на уровне "мыслей" модели.
-        reasoning = getattr(choice.message, "reasoning_content", None)
-        if reasoning:
-            content = "[Модель ещё не начала видимый ответ, вот её рассуждения]\n\n" + reasoning
-    return content, choice.finish_reason, _extract_usage(response)
+    content = content_or_reasoning_fallback(choice.message)
+    return content, choice.finish_reason, extract_usage(response)
 
 
-def call_deepseek_stop_sequence(
+def call_constraint_stop_sequence(
     question: str, stop_words: list[str]
 ) -> tuple[str | None, str | None, dict[str, int] | None]:
     """Сценарий 4: остановка генерации на первом совпадении со стоп-словом пользователя."""
@@ -189,14 +183,14 @@ def call_deepseek_stop_sequence(
         timeout=REQUEST_TIMEOUT_SECONDS,
     )
     choice = response.choices[0]
-    return choice.message.content, choice.finish_reason, _extract_usage(response)
+    return choice.message.content, choice.finish_reason, extract_usage(response)
 
 
 SCENARIO_HANDLERS = {
-    "1": ("Без ограничений", call_deepseek_no_restrictions),
-    "2": ("JSON-режим (структура задана в промпте)", call_deepseek_json_schema),
-    "3": ("Ограничение max_tokens", call_deepseek_max_tokens),
-    "4": ("Свои стоп-слова", call_deepseek_stop_sequence),
+    "1": ("Без ограничений", call_constraint_no_restrictions),
+    "2": ("Формат ответа: JSON-режим (структура задана в промпте)", call_constraint_json_schema),
+    "3": ("Ограничение max_tokens", call_constraint_max_tokens),
+    "4": ("Свои стоп-слова", call_constraint_stop_sequence),
 }
 
 
@@ -205,19 +199,19 @@ SCENARIO_HANDLERS = {
 # --------------------------------------------------------------------------- #
 
 
-def _build_research_keyboard() -> InlineKeyboardMarkup:
+def _build_constraints_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
-                InlineKeyboardButton("1️⃣ Без ограничений", callback_data="research:scenario:1"),
-                InlineKeyboardButton("2️⃣ JSON-режим", callback_data="research:scenario:2"),
+                InlineKeyboardButton("1️⃣ Без ограничений", callback_data="constraints:scenario:1"),
+                InlineKeyboardButton("2️⃣ Формат ответа (JSON)", callback_data="constraints:scenario:2"),
             ],
             [
-                InlineKeyboardButton("3️⃣ Max tokens", callback_data="research:scenario:3"),
-                InlineKeyboardButton("4️⃣ Свои стоп-слова", callback_data="research:scenario:4"),
+                InlineKeyboardButton("3️⃣ Max tokens", callback_data="constraints:scenario:3"),
+                InlineKeyboardButton("4️⃣ Свои стоп-слова", callback_data="constraints:scenario:4"),
             ],
-            [InlineKeyboardButton("❓ Новый вопрос", callback_data="research:new_question")],
-            [InlineKeyboardButton("🚪 Выйти из исследования", callback_data="research:exit")],
+            [InlineKeyboardButton("❓ Новый вопрос", callback_data="constraints:new_question")],
+            [InlineKeyboardButton("🚪 Выйти из исследования", callback_data="constraints:exit")],
         ]
     )
 
@@ -232,7 +226,7 @@ def _strip_code_fence(text: str) -> str:
     return text.strip()
 
 
-def _format_research_answer(scenario_id: str, answer: str | None, finish_reason: str | None) -> str:
+def _format_constraints_answer(scenario_id: str, answer: str | None, finish_reason: str | None) -> str:
     """Готовит текст ответа сценария к отправке в Telegram."""
     if scenario_id == "2":
         if not answer:
@@ -248,14 +242,14 @@ def _format_research_answer(scenario_id: str, answer: str | None, finish_reason:
         )
         if not isinstance(parsed, dict):
             return invalid_structure
-        companies = parsed.get(RESEARCH_JSON_LIST_KEY)
+        companies = parsed.get(CONSTRAINTS_JSON_LIST_KEY)
         if not isinstance(companies, list) or not companies:
             return invalid_structure
 
         for company in companies:
             if not isinstance(company, dict):
                 return invalid_structure
-            missing_fields = [f for f in RESEARCH_JSON_FIELDS if f not in company]
+            missing_fields = [f for f in CONSTRAINTS_JSON_FIELDS if f not in company]
             if missing_fields:
                 return (
                     f"⚠️ Введённый запрос не может быть обработан: {MAIN_CLIENT_LABEL} вернул JSON без "
@@ -271,60 +265,19 @@ def _format_research_answer(scenario_id: str, answer: str | None, finish_reason:
     return text
 
 
-def _format_scenario_stats(finish_reason: str | None, usage: dict[str, int] | None) -> str:
-    """Минимальная статистика по итогам сценария: причина остановки и токены."""
-    parts = [f"finish_reason={finish_reason or 'н/д'}"]
-    if usage:
-        parts.append(f"prompt_tokens={usage.get('prompt_tokens', 'н/д')}")
-        parts.append(f"completion_tokens={usage.get('completion_tokens', 'н/д')}")
-        parts.append(f"total_tokens={usage.get('total_tokens', 'н/д')}")
-    return "📈 " + ", ".join(parts)
-
-
-def _run_research_scenario(
+def _run_constraints_scenario(
     scenario_id: str, question: str, extra: object = None
 ) -> tuple[str | None, str | None, str | None]:
-    """Выполняет сценарий, возвращает (текст_ответа, текст_ошибки, статистика).
-
-    При ошибке текст_ответа и статистика отсутствуют (None) — обращения к API не
-    случилось или оно не завершилось валидным ответом.
-    """
+    """Выполняет сценарий, возвращает (текст_ответа, текст_ошибки, статистика)."""
     _, handler_fn = SCENARIO_HANDLERS[scenario_id]
-    try:
-        answer, finish_reason, usage = handler_fn(question, extra)
-    except AuthenticationError:
-        logger.error(
-            "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
-        )
-        return None, (
-            f"❌ Ошибка авторизации на сервере {MAIN_CLIENT_LABEL}. "
-            "Администратору бота нужно проверить API-ключ."
-        ), None
-    except RateLimitError:
-        logger.warning("Превышен лимит запросов к %s API.", MAIN_CLIENT_LABEL)
-        return None, (
-            f"⏳ Сервис {MAIN_CLIENT_LABEL} временно перегружен (превышен лимит запросов). "
-            "Попробуй, пожалуйста, через минуту."
-        ), None
-    except (APITimeoutError, TimeoutError):
-        logger.warning("Тайм-аут запроса к %s API.", MAIN_CLIENT_LABEL)
-        return None, f"⏳ {MAIN_CLIENT_LABEL} не ответил вовремя. Попробуй отправить запрос ещё раз.", None
-    except APIConnectionError:
-        logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
-        return None, (
-            f"🌐 Не получилось подключиться к серверу {MAIN_CLIENT_LABEL}. "
-            "Проверь соединение и попробуй позже."
-        ), None
-    except APIStatusError as exc:
-        logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
-        return None, f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже.", None
-    except Exception:  # noqa: BLE001 — последний рубеж, чтобы бот не падал целиком
-        logger.exception("Непредвиденная ошибка при обращении к %s API (исследование).", MAIN_CLIENT_LABEL)
-        return None, "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже.", None
-
-    formatted = _format_research_answer(scenario_id, answer, finish_reason)
-    stats = _format_scenario_stats(finish_reason, usage)
-    return formatted, None, stats
+    return run_scenario(
+        handler_fn,
+        question,
+        extra,
+        format_answer=lambda answer, finish_reason: _format_constraints_answer(
+            scenario_id, answer, finish_reason
+        ),
+    )
 
 
 async def _send_scenario_result(
@@ -338,7 +291,7 @@ async def _send_scenario_result(
     """Запускает сценарий и отправляет результат + статистику + клавиатуру дальше."""
     label = SCENARIO_HANDLERS[scenario_id][0]
     await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
-    result_text, error_text, stats_text = _run_research_scenario(scenario_id, question, extra)
+    result_text, error_text, stats_text = _run_constraints_scenario(scenario_id, question, extra)
 
     await message.reply_text(f"📊 Сценарий: {label}{label_suffix}")
     if error_text:
@@ -351,7 +304,7 @@ async def _send_scenario_result(
 
     await message.reply_text(
         "👉 Выберите следующий сценарий или завершите исследование:",
-        reply_markup=_build_research_keyboard(),
+        reply_markup=_build_constraints_keyboard(),
     )
 
 
@@ -360,13 +313,13 @@ async def _send_scenario_result(
 # --------------------------------------------------------------------------- #
 
 
-async def research_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Точка входа в режим исследования (/research_response_format)."""
-    await update.message.reply_text(RESEARCH_INTRO_TEXT)
+async def constraints_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Точка входа в режим исследования (/research_constraints)."""
+    await update.message.reply_text(CONSTRAINTS_INTRO_TEXT)
     return WAITING_QUESTION
 
 
-async def research_receive_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def constraints_receive_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Сохраняет вопрос для исследования и показывает выбор сценария."""
     question = update.message.text
 
@@ -381,38 +334,38 @@ async def research_receive_question(update: Update, context: ContextTypes.DEFAUL
         )
         return WAITING_QUESTION
 
-    context.user_data["research_question"] = question
+    context.user_data["constraints_question"] = question
     await update.message.reply_text(
         f"Вопрос сохранён.\n\n👉 Выберите сценарий запроса к {MAIN_CLIENT_LABEL}:",
-        reply_markup=_build_research_keyboard(),
+        reply_markup=_build_constraints_keyboard(),
     )
     return CHOOSING_SCENARIO
 
 
-async def research_scenario_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def constraints_scenario_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Обрабатывает нажатие кнопки сценария / новый вопрос / выход."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_reply_markup(reply_markup=None)
     data = query.data
 
-    if data == "research:exit":
-        context.user_data.pop("research_question", None)
+    if data == "constraints:exit":
+        context.user_data.pop("constraints_question", None)
         await query.message.reply_text(
             "Исследование завершено. Можешь просто написать вопрос — отвечу в обычном режиме."
         )
         return ConversationHandler.END
 
-    if data == "research:new_question":
+    if data == "constraints:new_question":
         await query.message.reply_text(
             "👉 Введите новый вопрос для исследования влияния ограничений на ответ."
         )
         return WAITING_QUESTION
 
-    question = context.user_data.get("research_question")
+    question = context.user_data.get("constraints_question")
     if not question:
         await query.message.reply_text(
-            "Не найден сохранённый вопрос для исследования. Начните заново командой /research_response_format."
+            "Не найден сохранённый вопрос для исследования. Начните заново командой /research_constraints."
         )
         return ConversationHandler.END
 
@@ -427,7 +380,7 @@ async def research_scenario_callback(update: Update, context: ContextTypes.DEFAU
     if scenario_id == "4":
         await query.message.reply_text(
             "👉 Введите стоп-слова через запятую "
-            f"(не более {RESEARCH_MAX_STOP_WORDS}), например: точка, конец"
+            f"(не более {CONSTRAINTS_MAX_STOP_WORDS}), например: точка, конец"
         )
         return WAITING_STOP_WORDS
 
@@ -435,7 +388,7 @@ async def research_scenario_callback(update: Update, context: ContextTypes.DEFAU
     return CHOOSING_SCENARIO
 
 
-async def research_max_tokens_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def constraints_max_tokens_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Принимает значение max_tokens для сценария 3 и запускает его."""
     text = (update.message.text or "").strip()
     if not text.isdigit() or int(text) <= 0:
@@ -444,10 +397,10 @@ async def research_max_tokens_input(update: Update, context: ContextTypes.DEFAUL
         )
         return WAITING_MAX_TOKENS
 
-    question = context.user_data.get("research_question")
+    question = context.user_data.get("constraints_question")
     if not question:
         await update.message.reply_text(
-            "Не найден сохранённый вопрос для исследования. Начните заново командой /research_response_format."
+            "Не найден сохранённый вопрос для исследования. Начните заново командой /research_constraints."
         )
         return ConversationHandler.END
 
@@ -463,7 +416,7 @@ async def research_max_tokens_input(update: Update, context: ContextTypes.DEFAUL
     return CHOOSING_SCENARIO
 
 
-async def research_stop_words_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def constraints_stop_words_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Принимает список стоп-слов для сценария 4 и запускает его."""
     raw_text = update.message.text or ""
     stop_words = [w.strip() for w in raw_text.split(",") if w.strip()]
@@ -474,17 +427,17 @@ async def research_stop_words_input(update: Update, context: ContextTypes.DEFAUL
         )
         return WAITING_STOP_WORDS
 
-    if len(stop_words) > RESEARCH_MAX_STOP_WORDS:
+    if len(stop_words) > CONSTRAINTS_MAX_STOP_WORDS:
         await update.message.reply_text(
-            f"⚠️ {MAIN_CLIENT_LABEL} API поддерживает не более {RESEARCH_MAX_STOP_WORDS} стоп-последовательностей.\n"
-            f"👉 Укажите не более {RESEARCH_MAX_STOP_WORDS} через запятую."
+            f"⚠️ {MAIN_CLIENT_LABEL} API поддерживает не более {CONSTRAINTS_MAX_STOP_WORDS} стоп-последовательностей.\n"
+            f"👉 Укажите не более {CONSTRAINTS_MAX_STOP_WORDS} через запятую."
         )
         return WAITING_STOP_WORDS
 
-    question = context.user_data.get("research_question")
+    question = context.user_data.get("constraints_question")
     if not question:
         await update.message.reply_text(
-            "Не найден сохранённый вопрос для исследования. Начните заново командой /research_response_format."
+            "Не найден сохранённый вопрос для исследования. Начните заново командой /research_constraints."
         )
         return ConversationHandler.END
 
@@ -499,25 +452,21 @@ async def research_stop_words_input(update: Update, context: ContextTypes.DEFAUL
     return CHOOSING_SCENARIO
 
 
-async def research_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Fallback /cancel — принудительный выход из режима исследования."""
-    context.user_data.pop("research_question", None)
-    await update.message.reply_text("Исследование прервано. Возвращаюсь в обычный режим.")
-    return ConversationHandler.END
+constraints_cancel = build_cancel_handler("constraints_question")
 
 
-def build_conversation_handler() -> ConversationHandler:
+def build_constraints_conversation_handler() -> ConversationHandler:
     """Собирает ConversationHandler режима исследования для регистрации в main.py."""
     text_filter = filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE
     return ConversationHandler(
-        entry_points=[CommandHandler("research_response_format", research_command)],
+        entry_points=[CommandHandler("research_constraints", constraints_command)],
         states={
-            WAITING_QUESTION: [MessageHandler(text_filter, research_receive_question)],
+            WAITING_QUESTION: [MessageHandler(text_filter, constraints_receive_question)],
             CHOOSING_SCENARIO: [
-                CallbackQueryHandler(research_scenario_callback, pattern=r"^research:"),
+                CallbackQueryHandler(constraints_scenario_callback, pattern=r"^constraints:"),
             ],
-            WAITING_MAX_TOKENS: [MessageHandler(text_filter, research_max_tokens_input)],
-            WAITING_STOP_WORDS: [MessageHandler(text_filter, research_stop_words_input)],
+            WAITING_MAX_TOKENS: [MessageHandler(text_filter, constraints_max_tokens_input)],
+            WAITING_STOP_WORDS: [MessageHandler(text_filter, constraints_stop_words_input)],
         },
-        fallbacks=[CommandHandler("cancel", research_cancel)],
+        fallbacks=[CommandHandler("cancel", constraints_cancel)],
     )

@@ -7,7 +7,7 @@
 значение по умолчанию), Kimi нужен только сценариям /research_models на его моделях,
 поэтому отсутствие ключа — не фатально: такие сценарии просто вернут ошибку авторизации
 при вызове API, что уже перехватывается общим блоком обработки ошибок в
-research_models.py, как и любая другая ошибка API.
+research/models.py, как и любая другая ошибка API.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 KIMI_API_KEY = os.getenv("KIMI_API_KEY")
 KIMI_BASE_URL = os.getenv("KIMI_BASE_URL", "https://api.moonshot.ai/v1")
 
-# Модели Kimi, сравниваемые в /research_models (research_models.py).
+# Модели Kimi, сравниваемые в /research_models (research/models.py).
 KIMI_MODEL_K3 = os.getenv("KIMI_MODEL_K3", "kimi-k3")
 KIMI_MODEL_K2_6 = os.getenv("KIMI_MODEL_K2_6", "kimi-k2.6")
 

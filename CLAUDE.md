@@ -10,26 +10,35 @@ stateless-прокси без истории диалога и без админ
 полноценного инвестиционного ассистента, поэтому архитектурные и доменные решения ниже стоит
 пересматривать по мере роста функциональности, а не считать зафиксированными навсегда.
 
-Логика разнесена по нескольким файлам в `src/`:
+Логика разнесена по нескольким файлам и двум пакетам в `src/`:
 - `config.py` — переменные окружения и константы, не привязанные к конкретному
   LLM-провайдеру: Telegram-токен, `MAIN_CLIENT`/`MAIN_MODEL` (см. "Конфигурация"),
   `SYSTEM_PROMPT`, лимиты, логирование. Единственное место, вызывающее `load_dotenv()`.
-- `deepseek_client.py` — подключение к DeepSeek: `DEEPSEEK_API_KEY`/`DEEPSEEK_BASE_URL`,
-  клиент `deepseek_client`, модели `DEEPSEEK_MODEL_PRO`/`DEEPSEEK_MODEL_FLASH` (только
-  для `/research_models`).
-- `kimi_client.py` — подключение к Kimi/Moonshot AI: `KIMI_API_KEY`/`KIMI_BASE_URL`,
-  клиент `kimi_client`, модели `KIMI_MODEL_K3`/`KIMI_MODEL_K2_6` (только для
-  `/research_models`).
-- `main_client.py` — выбирает `deepseek_client` или `kimi_client` по `MAIN_CLIENT` и
-  экспортирует результат как `main_client`; основной поток и три research-режима без
-  собственного выбора модели импортируют клиента отсюда, а не из `deepseek_client.py`
-  напрямую (см. "Конфигурация" и "Архитектура").
-- `research_response_format.py` — режим `/research_response_format` (см. ниже), не используется в обычном потоке сообщений.
-- `research_reasoning.py` — режим `/research_reasoning`, исследование способов рассуждения DeepSeek API, не используется в обычном потоке сообщений.
-- `research_temperature.py` — режим `/research_temperature`, исследование влияния параметра `temperature` на ответ DeepSeek API, не используется в обычном потоке сообщений.
-- `research_models.py` — режим `/research_models`, сравнение четырёх моделей DeepSeek и Kimi по качеству, скорости и стоимости ответа, не используется в обычном потоке сообщений.
+- `providers/` — подключения к конкретным LLM-провайдерам и выбор основного клиента:
+  - `providers/deepseek_client.py` — подключение к DeepSeek: `DEEPSEEK_API_KEY`/
+    `DEEPSEEK_BASE_URL`, клиент `deepseek_client`, модели `DEEPSEEK_MODEL_PRO`/
+    `DEEPSEEK_MODEL_FLASH` (только для `/research_models`).
+  - `providers/kimi_client.py` — подключение к Kimi/Moonshot AI: `KIMI_API_KEY`/
+    `KIMI_BASE_URL`, клиент `kimi_client`, модели `KIMI_MODEL_K3`/`KIMI_MODEL_K2_6`
+    (только для `/research_models`).
+  - `providers/main_client.py` — выбирает `deepseek_client` или `kimi_client` по
+    `MAIN_CLIENT` и экспортирует результат как `main_client`; основной поток и три
+    research-режима без собственного выбора модели импортируют клиента отсюда, а не
+    из `providers/deepseek_client.py` напрямую (см. "Конфигурация" и "Архитектура").
+- `research/` — технические режимы исследования API, каждый — не используется в
+  обычном потоке сообщений:
+  - `research/_shared.py` — общий каркас нескольких режимов: перехват ошибок OpenAI
+    SDK и перевод их в сообщение на русском (`run_scenario`/`api_error_to_message`),
+    статистика по токенам (`extract_usage`/`sum_usage`/`format_scenario_stats`),
+    fallback на `reasoning_content` (`content_or_reasoning_fallback`), фабрика
+    обработчика `/cancel` (`build_cancel_handler`) — см. "Архитектура" про то, какой
+    режим что из него использует и почему `research/models.py` не использует всё.
+  - `research/constraints.py` — режим `/research_constraints`, исследование ограничений API на ответ, включая формат ответа (см. ниже).
+  - `research/reasoning.py` — режим `/research_reasoning`, исследование способов рассуждения DeepSeek API.
+  - `research/temperature.py` — режим `/research_temperature`, исследование влияния параметра `temperature` на ответ DeepSeek API.
+  - `research/models.py` — режим `/research_models`, сравнение четырёх моделей DeepSeek и Kimi по качеству, скорости и стоимости ответа.
 - `main.py` — обычный прокси-поток (`/start`, `/help`, `handle_message`) и точка входа
-  приложения; подключает четыре режима исследования через `build_conversation_handler()`,
+  приложения; подключает четыре режима исследования через `build_constraints_conversation_handler()`,
   `build_reasoning_conversation_handler()`, `build_temperature_conversation_handler()` и
   `build_models_conversation_handler()`.
 
@@ -53,7 +62,7 @@ ruff format src/
 Проверка синтаксиса без запуска:
 
 ```bash
-python3 -m py_compile src/config.py src/deepseek_client.py src/kimi_client.py src/main_client.py src/research_response_format.py src/research_reasoning.py src/research_temperature.py src/research_models.py src/main.py
+python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/main.py
 ```
 
 Тестов пока нет — `tests/` это пустая директория-заглушка.
@@ -62,43 +71,44 @@ python3 -m py_compile src/config.py src/deepseek_client.py src/kimi_client.py sr
 
 Все секреты и настраиваемые параметры загружаются из переменных окружения через
 `python-dotenv` (`.env`, в gitignore). `.env.example` документирует каждую переменную.
-`load_dotenv()` вызывается только в `config.py`; `deepseek_client.py` и `kimi_client.py`
-делают `import config` ради побочного эффекта (dotenv и `logging.basicConfig()` должны
-отработать раньше, чем эти модули прочитают переменные окружения) и сами `load_dotenv()`
-не вызывают.
+`load_dotenv()` вызывается только в `config.py`; `providers/deepseek_client.py` и
+`providers/kimi_client.py` делают `import config` ради побочного эффекта (dotenv и
+`logging.basicConfig()` должны отработать раньше, чем эти модули прочитают переменные
+окружения) и сами `load_dotenv()` не вызывают.
 
 `MAIN_CLIENT` (`config.py`, значения `"deepseek"` или `"kimi"`, по умолчанию
 `"deepseek"`) выбирает провайдера основного потока бота (`main.py`) и трёх
-research-режимов, которые сами не выбирают конкретную модель (`research_reasoning.py`,
-`research_temperature.py`, `research_response_format.py`) — `research_models.py` от него
+research-режимов, которые сами не выбирают конкретную модель (`research/reasoning.py`,
+`research/temperature.py`, `research/constraints.py`) — `research/models.py` от него
 не зависит, см. его отдельное описание ниже. `MAIN_MODEL` (`config.py`) — модель,
 которая используется с этим провайдером; значение по умолчанию зависит от `MAIN_CLIENT`
 (`deepseek-v4-flash` для DeepSeek, `kimi-k3` для Kimi). Сам клиент для основного потока
-собирается в `main_client.py` (`main_client = deepseek_client if MAIN_CLIENT ==
-"deepseek" else kimi_client`) — этот модуль, а не `config.py`, импортирует оба
+собирается в `providers/main_client.py` (`main_client = deepseek_client if MAIN_CLIENT
+== "deepseek" else kimi_client`) — этот модуль, а не `config.py`, импортирует оба
 клиентских модуля, чтобы не создавать цикл импорта (см. докстринг `config.py`).
 
 **Обязательность DEEPSEEK_API_KEY/KIMI_API_KEY зависит от MAIN_CLIENT** — это ключевое
-поведение, которое нужно сохранять при доработке: `deepseek_client.py` завершает процесс
-при старте, только если `MAIN_CLIENT == "deepseek"` и `DEEPSEEK_API_KEY` не задан;
-симметрично `kimi_client.py` завершает процесс, только если `MAIN_CLIENT == "kimi"` и
-`KIMI_API_KEY` не задан. Ключ провайдера, который не выбран как `MAIN_CLIENT`, остаётся
-опциональным — он нужен только сценариям `/research_models` на моделях этого провайдера,
-и его отсутствие лишь логирует предупреждение (клиент создаётся с плейсхолдером вместо
-пустого ключа — см. докстрings обоих `*_client.py` про то, зачем: конструктор
-`OpenAI()` иначе поднял бы ошибку сразу при пустом `api_key`, ещё до первого реального
-запроса). `TELEGRAM_BOT_TOKEN` и допустимость самого значения `MAIN_CLIENT` (только
+поведение, которое нужно сохранять при доработке: `providers/deepseek_client.py`
+завершает процесс при старте, только если `MAIN_CLIENT == "deepseek"` и
+`DEEPSEEK_API_KEY` не задан; симметрично `providers/kimi_client.py` завершает процесс,
+только если `MAIN_CLIENT == "kimi"` и `KIMI_API_KEY` не задан. Ключ провайдера, который
+не выбран как `MAIN_CLIENT`, остаётся опциональным — он нужен только сценариям
+`/research_models` на моделях этого провайдера, и его отсутствие лишь логирует
+предупреждение (клиент создаётся с плейсхолдером вместо пустого ключа — см. докстрings
+обоих `providers/*_client.py` про то, зачем: конструктор `OpenAI()` иначе поднял бы
+ошибку сразу при пустом `api_key`, ещё до первого реального запроса).
+`TELEGRAM_BOT_TOKEN` и допустимость самого значения `MAIN_CLIENT` (только
 `"deepseek"`/`"kimi"`) проверяются в `config._validate_config()`. При добавлении новой
 обязательной или опциональной переменной окружения ориентируйся на это же разделение:
-провайдер-специфичные переменные — в соответствующий `*_client.py`, общие для бота — в
-`config.py`.
+провайдер-специфичные переменные — в соответствующий `providers/*_client.py`, общие для
+бота — в `config.py`.
 
 У опциональных переменных (`DEEPSEEK_BASE_URL`, `KIMI_BASE_URL`, `REQUEST_TIMEOUT_SECONDS`,
 `MAX_OUTPUT_TOKENS`, `MAX_INPUT_CHARS` и т.д.) значения по умолчанию заданы прямо в коде —
-`config.py`/`deepseek_client.py`/`kimi_client.py` являются источником истины по составу
-настроек, а не данный документ.
+`config.py`/`providers/deepseek_client.py`/`providers/kimi_client.py` являются источником
+истины по составу настроек, а не данный документ.
 
-Параметры сценариев `/research_response_format` (структура JSON-ответа, лимит токенов,
+Параметры сценариев `/research_constraints` (структура JSON-ответа, лимит токенов,
 stop-последовательность) и `/research_temperature` (значения `temperature`) заданы
 константами в соответствующих модулях и намеренно не вынесены в `.env` — они предмет
 самого исследования, а не настройка поведения бота. Идентификаторы моделей в
@@ -117,8 +127,8 @@ stop-последовательность) и `/research_temperature` (знач�
    молча отфильтровываются самим фильтром, а не обрабатываются с последующим отказом.
 2. `handle_message` проверяет длину сообщения (`MAX_INPUT_CHARS`), отправляет индикатор
    `ChatAction.TYPING`, затем вызывает провайдера через клиент SDK `openai`
-   (`main_client` из `main_client.py` — фактически `deepseek_client` или `kimi_client` в
-   зависимости от `MAIN_CLIENT`, см. "Конфигурация"), с моделью `MAIN_MODEL`.
+   (`main_client` из `providers/main_client.py` — фактически `deepseek_client` или
+   `kimi_client` в зависимости от `MAIN_CLIENT`, см. "Конфигурация"), с моделью `MAIN_MODEL`.
 3. Каждый вызов провайдера отправляет ровно два сообщения: `SYSTEM_PROMPT` и текущий текст
    пользователя — история намеренно не подмешивается (см. докстринг модуля). Каждый запрос
    полностью независим от предыдущих.
@@ -139,54 +149,70 @@ stop-последовательность) и `/research_temperature` (знач�
 Все строки, которые видит пользователь бота (`/start`, `/help`, сообщения об ошибках) — на
 русском языке.
 
-`research_response_format.py`, `research_reasoning.py` и `research_temperature.py` все
-импортируют `main_client`/`MAIN_MODEL` так же, как `main.py` (см. "Конфигурация") — их
-функции-сценарии всё ещё называются `call_deepseek_*` (историческое имя, не
-переименовано) и их докстринги/комментарии про специфику API описывают то, что было
-эмпирически найдено на DeepSeek (см. "Особенности сценариев" ниже) — но фактически они
-идут через выбранного `MAIN_CLIENT`, а не всегда через DeepSeek напрямую. Их
-пользовательский текст и обработка ошибок (`_run_*_scenario`) параметризованы через
-`MAIN_CLIENT_LABEL`/`MAIN_API_KEY_ENV_VAR` по тому же принципу, что и `handle_message`
-в `main.py` — сохраняй этот принцип при доработке текстов и не возвращай туда
-захардкоженное "DeepSeek".
+`research/constraints.py`, `research/reasoning.py` и `research/temperature.py` все
+импортируют `main_client`/`MAIN_MODEL` так же, как `main.py` (см. "Конфигурация"). Их
+пользовательский текст и обработка ошибок параметризованы через `MAIN_CLIENT_LABEL`/
+`MAIN_API_KEY_ENV_VAR` по тому же принципу, что и `handle_message` в `main.py` —
+сохраняй этот принцип при доработке текстов и не возвращай туда захардкоженное
+"DeepSeek". `research/constraints.py` — исключение: часть его докстрингов/комментариев
+(про сценарий 2 и лимит стоп-слов, см. "Особенности сценариев" ниже) описывает то, что
+было эмпирически найдено конкретно на DeepSeek, а не гарантированно верно для любого
+`MAIN_CLIENT` — сами сценарии всё равно идут через выбранного `MAIN_CLIENT`, а не всегда
+через DeepSeek напрямую; сохраняй эту оговорку при доработке, а не выдавай найденное на
+DeepSeek за универсальное свойство API. Сам перехват ошибок и сборка статистики для этих трёх режимов вынесены в
+общий `research/_shared.py` (`run_scenario`, `api_error_to_message`,
+`format_scenario_stats`, `extract_usage`, `content_or_reasoning_fallback`, `sum_usage`,
+`build_cancel_handler`) — три research-режима буквально дублировали этот код до
+рефакторинга, поэтому изменение принципа обработки ошибок API или статистики нужно
+вносить в `research/_shared.py`, а не в трёх местах по отдельности; специфику
+конкретного режима (сами сценарии, форматирование ответа, тексты кнопок) оставляй в
+его собственном модуле. `research/models.py` не использует `run_scenario`/
+`api_error_to_message` из `_shared.py` — его сообщения об ошибках намеренно
+провайдер-нейтральны, а статистика шире (см. его отдельное описание ниже) — но
+`extract_usage`/`content_or_reasoning_fallback`/`sum_usage`/`build_cancel_handler`
+использует наравне с остальными.
 
-Отдельно, в `research_response_format.py`, живёт технический режим `/research_response_format` — `ConversationHandler` с
+Отдельно, в `research/constraints.py`, живёт технический режим `/research_constraints` — `ConversationHandler` с
 4 состояниями (ввод вопроса → выбор одного из 4 сценариев вызова API через
 inline-кнопки → для сценариев 3 и 4 дополнительно запрашивается параметр текстом),
 не пересекающийся с основным потоком `handle_message`. Это не альтернативный способ
 отвечать пользователю на инвестиционные вопросы, а инструмент исследования поведения
-самого API и постобработки ответа — интеграция с `main.py` ограничена одной функцией
-`build_conversation_handler()`.
+самого API (включая формат ответа, сценарий 2) и постобработки ответа — интеграция с
+`main.py` ограничена одной функцией `build_constraints_conversation_handler()`.
 
 Особенности сценариев, важные при доработке:
-- Сценарий 2 (`call_deepseek_json_schema`): DeepSeek не поддерживает OpenAI-style
-  `response_format={"type": "json_schema"}` (structured outputs, падает с 400 "This
-  response_format type is unavailable now") — используется `{"type": "json_object"}`,
-  а нужные поля задаются текстом в пользовательском сообщении, а не схемой на стороне
-  API; не возвращай `json_schema` обратно.
-- Сценарий 3 (`call_deepseek_max_tokens`): значение `max_tokens` запрашивается у
+- Сценарий 2 (`call_constraint_json_schema`, тестирует формат ответа): DeepSeek не
+  поддерживает OpenAI-style `response_format={"type": "json_schema"}` (structured
+  outputs, падает с 400 "This response_format type is unavailable now") —
+  используется `{"type": "json_object"}`, а нужные поля задаются текстом в
+  пользовательском сообщении, а не схемой на стороне API; не возвращай `json_schema`
+  обратно. Это найдено конкретно на DeepSeek — на Kimi (если он выбран как
+  `MAIN_CLIENT`) отдельно не проверялось.
+- Сценарий 3 (`call_constraint_max_tokens`): значение `max_tokens` запрашивается у
   пользователя (состояние `WAITING_MAX_TOKENS`) и передаётся в API как есть —
-  ограничение выполняется на стороне DeepSeek (экономит токены и время), а не
+  ограничение выполняется на стороне API (экономит токены и время), а не
   постобработкой уже сгенерированного полного ответа ботом. На моделях с
-  рассуждениями (deepseek-reasoner и т.п.) весь лимит может целиком уйти на скрытые
+  рассуждениями (например, deepseek-reasoner) весь лимит может целиком уйти на скрытые
   размышления, оставляя видимый `content` пустым при `finish_reason == "length"` —
-  в этом случае функция подставляет обрезанный `reasoning_content` вместо пустоты
-  (см. её docstring), это поведение нужно сохранить при доработке.
-- Сценарий 4 (`call_deepseek_stop_sequence`): стоп-слова тоже запрашиваются у
+  в этом случае `content_or_reasoning_fallback` (`research/_shared.py`) подставляет
+  обрезанный `reasoning_content` вместо пустоты, это поведение нужно сохранить при
+  доработке.
+- Сценарий 4 (`call_constraint_stop_sequence`): стоп-слова тоже запрашиваются у
   пользователя (состояние `WAITING_STOP_WORDS`), через запятую, не более
-  `RESEARCH_MAX_STOP_WORDS` (4 — лимит самого DeepSeek/OpenAI API на `stop`).
+  `CONSTRAINTS_MAX_STOP_WORDS` (4 — лимит, эмпирически найденный на DeepSeek/OpenAI
+  API на `stop`; на Kimi отдельно не проверялся).
 
-Условные обозначения сообщений `/research_response_format` (сохраняй при доработке текстов):
+Условные обозначения сообщений `/research_constraints` (сохраняй при доработке текстов):
 - 👉 — перед любым сообщением, ожидающим выбора (кнопки) или текстового ввода
   от пользователя — визуально отличает такие сообщения от результата.
 - 📊 — перед результатом сценария ("Сценарий: …").
 - 📈 — перед минимальной статистикой ответа (`finish_reason` и токены из
-  `response.usage`, см. `_format_scenario_stats`), отправляется отдельным
-  сообщением сразу после результата сценария (кроме случаев ошибки API, когда
+  `response.usage`, см. `format_scenario_stats` в `research/_shared.py`), отправляется
+  отдельным сообщением сразу после результата сценария (кроме случаев ошибки API, когда
   `response.usage` недоступен).
 
-`research_temperature.py` (режим `/research_temperature`) устроен по тому же принципу,
-что и `research_reasoning.py`: `ConversationHandler` с 2 состояниями (ввод задачи →
+`research/temperature.py` (режим `/research_temperature`) устроен по тому же принципу,
+что и `research/reasoning.py`: `ConversationHandler` с 2 состояниями (ввод задачи →
 выбор сценария из 5 через inline-кнопки), нейтральный (не инвестиционный) системный
 промпт и отключённое "thinking" (`extra_body={"thinking": {"type": "disabled"}}`), т.к.
 предмет исследования — видимый ответ при разных `temperature`, а не скрытые рассуждения
@@ -197,19 +223,20 @@ inline-кнопки → для сценариев 3 и 4 дополнитель�
 разнообразию и дать рекомендации, для каких задач подходит каждое значение — при
 доработке сохраняй эти три критерия сравнения.
 
-`research_models.py` (режим `/research_models`) устроен по тому же принципу, что и
-`research_temperature.py`: `ConversationHandler` с 2 состояниями, нейтральный системный
+`research/models.py` (режим `/research_models`) устроен по тому же принципу, что и
+`research/temperature.py`: `ConversationHandler` с 2 состояниями, нейтральный системный
 промпт. Сценарии 1-4 — четыре модели из `MODEL_CATALOG`, отсортированные от самой
 сильной (слот "Kimi K3") к самой слабой ("DeepSeek V4 Flash"). В отличие от остальных
 research-режимов, идентификаторы моделей здесь не хардкодятся в модуле, а приходят из
-`deepseek_client.py`/`kimi_client.py` (в конечном счёте — из `.env`, см. раздел
-"Конфигурация"): `MODEL_CATALOG` — список словарей `{"id", "label", "client", ...цены}`,
-каждый со своим клиентом (`kimi_client` для двух моделей Kimi, `deepseek_client` для
-двух моделей DeepSeek) — `call_model()` принимает и `client`, и `model_id` явно, а не
-всегда использует один и тот же клиент. При добавлении/замене модели меняй элемент
-`MODEL_CATALOG` (и переменную окружения по умолчанию в `deepseek_client.py`/
-`kimi_client.py`), а не переменную основного потока `MAIN_MODEL`. В отличие от
-`research_reasoning.py`/`research_temperature.py`, здесь "thinking" не отключается —
+`providers/deepseek_client.py`/`providers/kimi_client.py` (в конечном счёте — из `.env`,
+см. раздел "Конфигурация"): `MODEL_CATALOG` — список словарей `{"id", "label", "client",
+...цены}`, каждый со своим клиентом (`kimi_client` для двух моделей Kimi,
+`deepseek_client` для двух моделей DeepSeek) — `call_model()` принимает и `client`, и
+`model_id` явно, а не всегда использует один и тот же клиент. При добавлении/замене
+модели меняй элемент `MODEL_CATALOG` (и переменную окружения по умолчанию в
+`providers/deepseek_client.py`/`providers/kimi_client.py`), а не переменную основного
+потока `MAIN_MODEL`. В отличие от `research/reasoning.py`/`research/temperature.py`,
+здесь "thinking" не отключается —
 предмет сравнения включает и штатное поведение модели в целом. Статистика каждого
 вызова (`_format_scenario_stats`) расширена по сравнению с другими research-режимами:
 помимо `finish_reason` и токенов включает время ответа (`time.monotonic()` вокруг

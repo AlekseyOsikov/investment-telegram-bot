@@ -1,11 +1,11 @@
 """Режим исследования (/research_reasoning): сравнение способов рассуждения DeepSeek API.
 
-Отдельный от основного прокси-потока модуль, по аналогии с research_response_format.py:
-это техническое исследование того, как разные приёмы построения промпта влияют на
-качество решения произвольной задачи (не обязательно инвестиционной), а не часть
-обычного сценария использования бота. Поэтому системный промпт здесь намеренно не
-позиционирует модель как инвестиционного ассистента (в отличие от config.SYSTEM_PROMPT) —
-задачи в этом режиме могут быть любыми, а не только про инвестиции.
+Отдельный от основного прокси-потока модуль, по аналогии с constraints.py: это
+техническое исследование того, как разные приёмы построения промпта влияют на качество
+решения произвольной задачи (не обязательно инвестиционной), а не часть обычного
+сценария использования бота. Поэтому системный промпт здесь намеренно не позиционирует
+модель как инвестиционного ассистента (в отличие от config.SYSTEM_PROMPT) — задачи в
+этом режиме могут быть любыми, а не только про инвестиции.
 
 Сценарий 4 интерактивен: после выбора сценария бот показывает отдельную клавиатуру
 выбора роли эксперта (аналитик/инженер/критик) и позволяет запросить решение от
@@ -17,6 +17,9 @@
 просит модель сравнить полученные ответы между собой — отличаются ли они и какой из
 них точнее — и показывает и все исходные ответы, и итоговое сравнение.
 
+Перехват ошибок API и статистика по токенам вынесены в research/_shared.py (общие для
+нескольких research-режимов, см. его докстринг).
+
 main.py подключает фичу через build_reasoning_conversation_handler() — единственную
 точку интеграции с остальным приложением.
 """
@@ -26,13 +29,6 @@ from __future__ import annotations
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from openai import (
-    APIConnectionError,
-    APIStatusError,
-    APITimeoutError,
-    AuthenticationError,
-    RateLimitError,
-)
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ChatAction
 from telegram.ext import (
@@ -45,7 +41,6 @@ from telegram.ext import (
 )
 
 from config import (
-    MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
     MAIN_MODEL,
     MAX_INPUT_CHARS,
@@ -53,7 +48,10 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     TELEGRAM_MESSAGE_LIMIT,
 )
-from main_client import main_client
+from providers.main_client import main_client
+
+from ._shared import build_cancel_handler, extract_usage, run_scenario, sum_usage
+from ._shared import content_or_reasoning_fallback as _base_content_or_reasoning_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -109,55 +107,18 @@ REASONING_INTRO_TEXT = (
 # --------------------------------------------------------------------------- #
 
 
-def _extract_usage(response) -> dict[str, int] | None:
-    """Достаёт минимальную статистику по токенам из ответа DeepSeek, если она есть."""
-    usage = getattr(response, "usage", None)
-    if usage is None:
-        return None
-    return {
-        "prompt_tokens": getattr(usage, "prompt_tokens", None),
-        "completion_tokens": getattr(usage, "completion_tokens", None),
-        "total_tokens": getattr(usage, "total_tokens", None),
-    }
-
-
 def _content_or_reasoning_fallback(message) -> str | None:
-    """Возвращает видимый content, а если он пуст — обрезанный reasoning_content.
+    """Как content_or_reasoning_fallback в research/_shared.py, но с уточнением, что
 
-    На моделях с рассуждениями (deepseek-reasoner и т.п.) весь лимит max_tokens
-    может целиком уйти на скрытые размышления, оставляя видимый content пустым при
-    finish_reason == "length" (тот же случай уже описан в
-    research_response_format.call_deepseek_max_tokens) — здесь это актуально для
-    любого сценария, а не только с явным ограничением токенов пользователем.
+    reasoning_content — сырой ход мыслей модели, а не финальный ответ: язык инструкции
+    про "отвечай на языке задачи" на него не распространяется, поэтому он может
+    оказаться на другом языке (часто на английском), даже если задача была на русском —
+    это ожидаемо, а не баг перевода. Уточнение актуально только в этом модуле, поэтому
+    оно не часть общего reasoning_note по умолчанию в _shared.py.
     """
-    content = message.content
-    if not content:
-        reasoning = getattr(message, "reasoning_content", None)
-        if reasoning:
-            # reasoning_content — сырой ход мыслей модели, а не финальный ответ: язык
-            # инструкции про "отвечай на языке задачи" на него не распространяется,
-            # поэтому он может оказаться на другом языке (часто на английском) даже
-            # если задача была на русском — это ожидаемо, а не баг перевода.
-            return (
-                "[Модель ещё не начала видимый ответ, вот её рассуждения "
-                "(могут быть на другом языке, чем задача)]\n\n" + reasoning
-            )
-    return content
-
-
-def _sum_usage(
-    first: dict[str, int] | None, second: dict[str, int] | None
-) -> dict[str, int] | None:
-    """Складывает статистику по токенам двух вызовов API (для сценария 3, два запроса)."""
-    if first is None and second is None:
-        return None
-    result: dict[str, int] = {}
-    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
-        a, b = (first or {}).get(key), (second or {}).get(key)
-        if a is None and b is None:
-            continue
-        result[key] = (a or 0) + (b or 0)
-    return result or None
+    return _base_content_or_reasoning_fallback(
+        message, reasoning_note=" (могут быть на другом языке, чем задача)"
+    )
 
 
 def call_reasoning_direct(
@@ -175,7 +136,7 @@ def call_reasoning_direct(
         extra_body=DISABLE_THINKING,
     )
     choice = response.choices[0]
-    return _content_or_reasoning_fallback(choice.message), choice.finish_reason, _extract_usage(response)
+    return _content_or_reasoning_fallback(choice.message), choice.finish_reason, extract_usage(response)
 
 
 def call_reasoning_step_by_step(
@@ -193,7 +154,7 @@ def call_reasoning_step_by_step(
         extra_body=DISABLE_THINKING,
     )
     choice = response.choices[0]
-    return _content_or_reasoning_fallback(choice.message), choice.finish_reason, _extract_usage(response)
+    return _content_or_reasoning_fallback(choice.message), choice.finish_reason, extract_usage(response)
 
 
 def call_reasoning_self_prompt(
@@ -252,7 +213,7 @@ def call_reasoning_self_prompt(
         f"🧭 Сгенерированный промпт:\n{generated_prompt}\n\n"
         f"📝 Ответ по этому промпту:\n{final_answer}"
     )
-    usage = _sum_usage(_extract_usage(prompt_response), _extract_usage(solve_response))
+    usage = sum_usage(extract_usage(prompt_response), extract_usage(solve_response))
     return combined_answer, choice.finish_reason, usage
 
 
@@ -272,7 +233,7 @@ def call_reasoning_expert(
         extra_body=DISABLE_THINKING,
     )
     choice = response.choices[0]
-    return _content_or_reasoning_fallback(choice.message), choice.finish_reason, _extract_usage(response)
+    return _content_or_reasoning_fallback(choice.message), choice.finish_reason, extract_usage(response)
 
 
 # Подзадачи сценария 5 — те же вызовы, что стоят за сценариями 1-4 (эксперты — по
@@ -362,9 +323,9 @@ def call_reasoning_compare_all(
     )
     combined_answer = "\n\n".join(result_parts)
 
-    usage = _extract_usage(comparison_response)
+    usage = extract_usage(comparison_response)
     for sub_usage in sub_usages:
-        usage = _sum_usage(usage, sub_usage)
+        usage = sum_usage(usage, sub_usage)
     return combined_answer, choice.finish_reason, usage
 
 
@@ -418,59 +379,11 @@ def _format_reasoning_answer(answer: str | None, finish_reason: str | None) -> s
     return text
 
 
-def _format_scenario_stats(finish_reason: str | None, usage: dict[str, int] | None) -> str:
-    """Минимальная статистика по итогам сценария: причина остановки и токены."""
-    parts = [f"finish_reason={finish_reason or 'н/д'}"]
-    if usage:
-        parts.append(f"prompt_tokens={usage.get('prompt_tokens', 'н/д')}")
-        parts.append(f"completion_tokens={usage.get('completion_tokens', 'н/д')}")
-        parts.append(f"total_tokens={usage.get('total_tokens', 'н/д')}")
-    return "📈 " + ", ".join(parts)
-
-
 def _run_reasoning_scenario(
     handler_fn, task: str, extra: object = None
 ) -> tuple[str | None, str | None, str | None]:
-    """Выполняет сценарий, возвращает (текст_ответа, текст_ошибки, статистика).
-
-    При ошибке текст_ответа и статистика отсутствуют (None) — обращения к API не
-    случилось или оно не завершилось валидным ответом.
-    """
-    try:
-        answer, finish_reason, usage = handler_fn(task, extra)
-    except AuthenticationError:
-        logger.error(
-            "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
-        )
-        return None, (
-            f"❌ Ошибка авторизации на сервере {MAIN_CLIENT_LABEL}. "
-            "Администратору бота нужно проверить API-ключ."
-        ), None
-    except RateLimitError:
-        logger.warning("Превышен лимит запросов к %s API.", MAIN_CLIENT_LABEL)
-        return None, (
-            f"⏳ Сервис {MAIN_CLIENT_LABEL} временно перегружен (превышен лимит запросов). "
-            "Попробуй, пожалуйста, через минуту."
-        ), None
-    except (APITimeoutError, TimeoutError):
-        logger.warning("Тайм-аут запроса к %s API.", MAIN_CLIENT_LABEL)
-        return None, f"⏳ {MAIN_CLIENT_LABEL} не ответил вовремя. Попробуй отправить запрос ещё раз.", None
-    except APIConnectionError:
-        logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
-        return None, (
-            f"🌐 Не получилось подключиться к серверу {MAIN_CLIENT_LABEL}. "
-            "Проверь соединение и попробуй позже."
-        ), None
-    except APIStatusError as exc:
-        logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
-        return None, f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже.", None
-    except Exception:  # noqa: BLE001 — последний рубеж, чтобы бот не падал целиком
-        logger.exception("Непредвиденная ошибка при обращении к %s API (исследование).", MAIN_CLIENT_LABEL)
-        return None, "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже.", None
-
-    formatted = _format_reasoning_answer(answer, finish_reason)
-    stats = _format_scenario_stats(finish_reason, usage)
-    return formatted, None, stats
+    """Выполняет сценарий, возвращает (текст_ответа, текст_ошибки, статистика)."""
+    return run_scenario(handler_fn, task, extra, format_answer=_format_reasoning_answer)
 
 
 async def _send_scenario_result(
@@ -599,11 +512,7 @@ async def reasoning_expert_callback(update: Update, context: ContextTypes.DEFAUL
     return CHOOSING_EXPERT
 
 
-async def reasoning_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Fallback /cancel — принудительный выход из режима исследования."""
-    context.user_data.pop("reasoning_task", None)
-    await update.message.reply_text("Исследование прервано. Возвращаюсь в обычный режим.")
-    return ConversationHandler.END
+reasoning_cancel = build_cancel_handler("reasoning_task")
 
 
 def build_reasoning_conversation_handler() -> ConversationHandler:
