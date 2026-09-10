@@ -15,9 +15,12 @@ providers/main_client.py. Общая конфигурация вынесена �
 research/constraints.py, режим исследования способов рассуждения
 (/research_reasoning) — в research/reasoning.py, режим исследования влияния
 temperature (/research_temperature) — в research/temperature.py, режим исследования
-моделей (/research_models) — в research/models.py. Команда /agent — простой LLM-агент,
-оформленный как отдельная сущность (класс SimpleAgent), — в agents/simple_agent.py и
-agents/agent_command.py.
+моделей (/research_models) — в research/models.py. Команда /agent — LLM-агент с
+памятью диалога, оформленный как отдельная сущность (класс Agent), — в
+agents/agent.py и agents/agent_command.py; в отличие от остального бота, он хранит
+историю переписки в JSON на диске (осознанное исключение по явному запросу, см.
+«Ограничения безопасности» в CLAUDE.md), которую можно посмотреть командой
+/agent_history и очистить командой /agent_reset.
 """
 
 from __future__ import annotations
@@ -52,7 +55,11 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
 )
-from agents.agent_command import build_agent_conversation_handler
+from agents.agent_command import (
+    build_agent_conversation_handler,
+    build_agent_history_handler,
+    build_agent_reset_handler,
+)
 from providers.main_client import main_client
 from research.constraints import build_constraints_conversation_handler
 from research.models import build_models_conversation_handler
@@ -76,9 +83,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "⚠️ Важно: я не являюсь лицензированным финансовым советником, а мои ответы — "
         "не индивидуальная инвестиционная рекомендация. Перед принятием решений "
         "проконсультируйся с лицензированным финансовым консультантом.\n\n"
-        "🔒 Я не запоминаю историю переписки: каждое сообщение обрабатывается независимо "
-        "от предыдущих. Не присылай, пожалуйста, номера счетов, карт и другие "
-        "чувствительные данные.\n\n"
+        "🔒 Обычные сообщения я не запоминаю: каждое обрабатывается независимо от "
+        "предыдущих. Исключение — режим /agent: там я сохраняю историю диалога на "
+        "диске, чтобы отвечать с учётом предыдущих вопросов, даже после моего "
+        "перезапуска; очистить её можно командой /agent_reset. В любом режиме не "
+        "присылай, пожалуйста, номера счетов, карт и другие чувствительные данные.\n\n"
         "Используй /help, чтобы посмотреть список команд."
     )
     await update.message.reply_text(welcome_text)
@@ -101,11 +110,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "(технический эксперимент, не для обычных вопросов)\n"
         "/research_models — режим исследования разных моделей API "
         "(технический эксперимент, не для обычных вопросов)\n"
-        "/agent — простой LLM-агент: задавай вопросы один за другим, "
-        "пока не отправишь /cancel\n\n"
+        "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
+        "контекст сохраняется даже после перезапуска бота, пока не отправишь /cancel\n"
+        "/agent_history — показать сохранённую историю диалога с агентом\n"
+        "/agent_reset — очистить историю диалога с агентом\n\n"
         "<b>Ограничения:</b>\n"
         f"— максимальная длина запроса: {MAX_INPUT_CHARS} символов\n"
-        "— бот не хранит историю диалога (каждый вопрос — новый контекст)\n"
+        "— бот не хранит историю обычных сообщений (каждый вопрос — новый контекст); "
+        "в режиме /agent история сохраняется до команды /agent_reset\n"
         "— бот работает только с текстом (без файлов, фото и голосовых)\n\n"
         "<b>⚠️ Дисклеймер:</b>\n"
         "Бот не является лицензированным финансовым советником, а его ответы не являются "
@@ -221,6 +233,8 @@ def main() -> None:
     application.add_handler(build_temperature_conversation_handler())
     application.add_handler(build_models_conversation_handler())
     application.add_handler(build_agent_conversation_handler())
+    application.add_handler(build_agent_reset_handler())
+    application.add_handler(build_agent_history_handler())
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)

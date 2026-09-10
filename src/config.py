@@ -55,6 +55,12 @@ REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2000"))
 MAX_INPUT_CHARS = int(os.getenv("MAX_INPUT_CHARS", "4000"))
 
+# Каталог для JSON-файлов истории диалога агента (agents/agent.py), один файл на
+# chat_id. Единственное место в проекте, где история диалога сохраняется на диск —
+# см. «Ограничения безопасности» в CLAUDE.md про то, почему это осознанное
+# исключение, а не общее правило для всего бота.
+AGENT_HISTORY_DIR = os.getenv("AGENT_HISTORY_DIR", "data/agent_history")
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 

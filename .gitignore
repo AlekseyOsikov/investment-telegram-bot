@@ -33,6 +33,9 @@ build/
 .coverage
 htmlcov/
 
+# История диалога агента (/agent) — персональные данные пользователей, не в git
+/data/agent_history/
+
 # Прочее
 .DS_Store
 *.swp

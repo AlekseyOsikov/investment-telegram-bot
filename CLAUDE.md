@@ -37,10 +37,26 @@ stateless-прокси без истории диалога и без админ
   - `research/reasoning.py` — режим `/research_reasoning`, исследование способов рассуждения DeepSeek API.
   - `research/temperature.py` — режим `/research_temperature`, исследование влияния параметра `temperature` на ответ DeepSeek API.
   - `research/models.py` — режим `/research_models`, сравнение четырёх моделей DeepSeek и Kimi по качеству, скорости и стоимости ответа.
+- `agents/` — агенты: сущности, инкапсулирующие цикл «вопрос пользователя -> вызов
+  LLM -> разбор ответа» отдельно от Telegram-обработчиков:
+  - `agents/agent.py` — класс `Agent`, использует `main_client`/`MAIN_MODEL` (как и
+    `main.py`). В отличие от остального бота, хранит историю диалога — в JSON-файле
+    на chat_id в `AGENT_HISTORY_DIR` (`config.py`) — это осознанное, явно
+    запрошенное пользователем исключение из общего правила «никакой памяти», см.
+    «Ограничения безопасности» ниже.
+  - `agents/agent_command.py` — команда `/agent` (`ConversationHandler`, диалог
+    «вопрос за вопросом» до `/cancel` или кнопки выхода), команда `/agent_reset`
+    (полностью очищает историю чата) и команда `/agent_history` (печатает
+    сохранённую историю чата как есть, без ограничения длины — режется на части
+    по `TELEGRAM_MESSAGE_LIMIT`, как и обычные ответы) — все три строятся через
+    `build_agent_conversation_handler()`/`build_agent_reset_handler()`/
+    `build_agent_history_handler()`.
 - `main.py` — обычный прокси-поток (`/start`, `/help`, `handle_message`) и точка входа
   приложения; подключает четыре режима исследования через `build_constraints_conversation_handler()`,
-  `build_reasoning_conversation_handler()`, `build_temperature_conversation_handler()` и
-  `build_models_conversation_handler()`.
+  `build_reasoning_conversation_handler()`, `build_temperature_conversation_handler()`,
+  `build_models_conversation_handler()`, а также агента через
+  `build_agent_conversation_handler()`/`build_agent_reset_handler()`/
+  `build_agent_history_handler()`.
 
 ## Команды
 
@@ -62,7 +78,7 @@ ruff format src/
 Проверка синтаксиса без запуска:
 
 ```bash
-python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/main.py
+python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/agents/agent.py src/agents/agent_command.py src/main.py
 ```
 
 Тестов пока нет — `tests/` это пустая директория-заглушка.
@@ -116,6 +132,11 @@ stop-последовательность) и `/research_temperature` (знач�
 `KIMI_MODEL_K2_6`) — исключение из этого принципа: они вынесены в `.env`, потому что
 конкретные идентификаторы моделей у провайдеров меняются быстрее кода бота, и здесь это
 настройка (что именно доступно на счёте пользователя), а не предмет исследования.
+
+`AGENT_HISTORY_DIR` (`config.py`, по умолчанию `data/agent_history`) — каталог, где
+`agents/agent.py` хранит по одному JSON-файлу истории диалога на chat_id; каталог не
+коммитится (см. `.gitignore`). Это единственное место в проекте, где диалог
+сохраняется на диск — см. «Ограничения безопасности» ниже.
 
 ## Архитектура
 
@@ -294,5 +315,14 @@ research-режимов, идентификаторы моделей здесь 
 - История сообщений не сохраняется и не передаётся между запросами — не добавляй
   функциональность памяти/истории без явного запроса пользователя (см. также раздел выше про
   инвестиционные данные — здесь это не только архитектурное, но и доменное ограничение).
+  **Исключение** — команда `/agent` (`agents/agent.py`, `agents/agent_command.py`): по
+  явному запросу пользователя она хранит историю диалога в JSON на диске
+  (`AGENT_HISTORY_DIR`, см. «Конфигурация») и переживает перезапуск бота — это
+  единственное место в проекте с таким поведением, оно не распространяется ни на
+  `handle_message` (`main.py`), ни на research-режимы. Пользователь может
+  посмотреть свою историю командой `/agent_history` и очистить её командой
+  `/agent_reset`. При дальнейшей доработке `/agent` сохраняй этот принцип (история —
+  только там, видимая и явно очищаемая пользователем), а не расширяй память на
+  остальной бот молча.
 - Групповые чаты исключены через фильтр обработчика; сохраняй этот фильтр при добавлении
   новых обработчиков текстовых сообщений.
