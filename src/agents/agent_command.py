@@ -28,7 +28,14 @@ research-режимах) или, как и раньше, команда /cancel 
 бота, пока пользователь остаётся в состоянии WAITING_QUESTION (а не только один раз
 к приветствию) — так кнопка гарантированно не пропадает из чата ни после ошибок
 валидации/API, ни после ответа модели, а исчезает только через ReplyKeyboardRemove в
-_exit_agent_mode.
+_exit_agent_mode. После каждого ответа агента (но не после ошибок API) отдельным
+сообщением отправляется статистика по токенам (_format_token_stats) — см. докстринги
+AgentAnswer и Agent.ask в agents/agent.py про то, откуда берётся каждое из чисел.
+
+Переполнение контекста (BadRequestError с кодом/текстом про context length) —
+единственная ошибка API агента, в которой пользователю показывается сырая причина от
+сервера и явная подсказка /agent_reset, а не общий текст "попробуй позже" — см.
+комментарий внутри except APIStatusError в agent_receive_question.
 
 main.py подключает команду через build_agent_conversation_handler(),
 build_agent_reset_handler() и build_agent_history_handler() — единственные точки
@@ -44,6 +51,7 @@ from openai import (
     APIStatusError,
     APITimeoutError,
     AuthenticationError,
+    BadRequestError,
     RateLimitError,
 )
 from telegram import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
@@ -63,7 +71,7 @@ from config import (
     TELEGRAM_MESSAGE_LIMIT,
 )
 
-from .agent import Agent
+from .agent import Agent, AgentAnswer
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +107,20 @@ def _get_agent(chat_id: int) -> Agent:
         agent = Agent(chat_id)
         _agents[chat_id] = agent
     return agent
+
+
+def _format_token_stats(result: AgentAnswer) -> str:
+    """Строка статистики по токенам, отправляемая отдельным сообщением после ответа
+    агента (см. докстринг AgentAnswer/Agent.ask в agents/agent.py про то, что значит
+    каждое из чисел и почему для diff возможно "н/д").
+    """
+    diff = result.request_tokens_diff if result.request_tokens_diff is not None else "н/д"
+    history = result.history_tokens if result.history_tokens is not None else "н/д"
+    response = result.response_tokens if result.response_tokens is not None else "н/д"
+    return (
+        f"📈 Токены: запрос ≈{result.request_tokens_approx} (по символам) / {diff} (по разнице), "
+        f"история={history}, ответ={response}"
+    )
 
 
 async def _exit_agent_mode(update: Update) -> int:
@@ -140,7 +162,7 @@ async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_T
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     try:
-        answer = _get_agent(chat_id).ask(user_text)
+        result = _get_agent(chat_id).ask(user_text)
     except AuthenticationError:
         logger.error(
             "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
@@ -175,6 +197,35 @@ async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_T
         )
         return WAITING_QUESTION
     except APIStatusError as exc:
+        # BadRequestError (400) — подкласс APIStatusError, отдельного except для него не
+        # заводим (перехватился бы этой же веткой), а разбираем частный случай прямо
+        # здесь: переполнение контекста диалога — единственная ошибка API агента, где
+        # пользователю имеет смысл показать сырую причину от сервера и явно подсказать
+        # /agent_reset, а не только общий текст "попробуй позже", т.к. история у /agent
+        # ничем не ограничена (см. CLAUDE.md) и повтор того же вопроса ту же ошибку
+        # повторит снова.
+        if isinstance(exc, BadRequestError):
+            reason = exc.message or str(exc)
+            is_context_length_error = (
+                exc.code == "context_length_exceeded"
+                or "context length" in reason.lower()
+                or "maximum context" in reason.lower()
+            )
+            if is_context_length_error:
+                logger.warning(
+                    "Превышена максимальная длина контекста %s API (агент): %s",
+                    MAIN_CLIENT_LABEL,
+                    exc,
+                )
+                await update.message.reply_text(
+                    f"⚠️ История диалога с агентом стала слишком большой для {MAIN_CLIENT_LABEL} "
+                    "(превышена максимальная длина контекста).\n"
+                    f"Причина от сервера: {reason}\n\n"
+                    "Используй /agent_reset, чтобы очистить историю и продолжить.",
+                    reply_markup=AGENT_KEYBOARD,
+                )
+                return WAITING_QUESTION
+
         logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
         await update.message.reply_text(
             f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже.",
@@ -192,9 +243,12 @@ async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_T
     # Клавиатуру достаточно прикрепить к последнему куску ответа — Telegram и так
     # держит её показанной до следующего reply_markup, но делаем это явно на каждом
     # сообщении бота в этом состоянии (см. докстринг модуля), а не только на первом.
+    answer = result.text
     chunks = [answer[i : i + TELEGRAM_MESSAGE_LIMIT] for i in range(0, len(answer), TELEGRAM_MESSAGE_LIMIT)]
     for chunk in chunks:
         await update.message.reply_text(chunk, reply_markup=AGENT_KEYBOARD)
+
+    await update.message.reply_text(_format_token_stats(result), reply_markup=AGENT_KEYBOARD)
 
     return WAITING_QUESTION
 
