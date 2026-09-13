@@ -44,6 +44,16 @@ from telegram.ext import (
     filters,
 )
 
+from agents.agent_command import (
+    build_agent_branch_handler,
+    build_agent_checkpoint_handler,
+    build_agent_context_handlers,
+    build_agent_conversation_handler,
+    build_agent_history_handler,
+    build_agent_mode_handler,
+    build_agent_reset_handler,
+    build_agent_switch_branch_handlers,
+)
 from config import (
     MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
@@ -54,11 +64,6 @@ from config import (
     SYSTEM_PROMPT,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
-)
-from agents.agent_command import (
-    build_agent_conversation_handler,
-    build_agent_history_handler,
-    build_agent_reset_handler,
 )
 from providers.main_client import main_client
 from research.constraints import build_constraints_conversation_handler
@@ -113,7 +118,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
         "контекст сохраняется даже после перезапуска бота, пока не отправишь /cancel\n"
         "/agent_history — показать сохранённую историю диалога с агентом\n"
-        "/agent_reset — очистить историю диалога с агентом\n\n"
+        "/agent_reset — очистить историю диалога с агентом\n"
+        "/agent_mode — показать текущий режим чата (активную стратегию и ветку)\n"
+        "/agent_context — выбрать стратегию управления контекстом агента\n"
+        "/agent_checkpoint &lt;имя&gt; — отметить текущую точку диалога чекпоинтом "
+        "(стратегия Branching)\n"
+        "/agent_branch &lt;чекпоинт&gt; &lt;ветка&gt; — создать от чекпоинта новую "
+        "ветку диалога (Branching)\n"
+        "/agent_switch_branch — переключиться на другую ветку диалога (Branching)\n\n"
         "<b>Ограничения:</b>\n"
         f"— максимальная длина запроса: {MAX_INPUT_CHARS} символов\n"
         "— бот не хранит историю обычных сообщений (каждый вопрос — новый контекст); "
@@ -235,6 +247,13 @@ def main() -> None:
     application.add_handler(build_agent_conversation_handler())
     application.add_handler(build_agent_reset_handler())
     application.add_handler(build_agent_history_handler())
+    application.add_handler(build_agent_mode_handler())
+    for handler in build_agent_context_handlers():
+        application.add_handler(handler)
+    application.add_handler(build_agent_checkpoint_handler())
+    application.add_handler(build_agent_branch_handler())
+    for handler in build_agent_switch_branch_handlers():
+        application.add_handler(handler)
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)

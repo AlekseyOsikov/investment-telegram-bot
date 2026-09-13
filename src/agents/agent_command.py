@@ -37,9 +37,21 @@ AgentAnswer и Agent.ask в agents/agent.py про то, откуда берёт
 сервера и явная подсказка /agent_reset, а не общий текст "попробуй позже" — см.
 комментарий внутри except APIStatusError в agent_receive_question.
 
+Управление контекстом (см. докстринг Agent в agents/agent.py про сами 4 стратегии —
+sliding_window/sticky_facts/branching/summary) переключается командой /agent_context
+(инлайн-кнопки, работает вне зависимости от того, находится ли пользователь в режиме
+/agent — как /agent_reset/agent_history). Команды /agent_checkpoint, /agent_branch и
+/agent_switch_branch управляют чекпоинтами и ветками диалога и имеют смысл только при
+активной стратегии Branching — вне неё отклоняются с подсказкой переключиться (см.
+_require_branching_strategy); ветки при этом хранятся всегда (общий слой хранения для
+всех стратегий, см. докстринг Agent), просто эти три команды ничего не показывают о
+них, пока выбрана другая стратегия.
+
 main.py подключает команду через build_agent_conversation_handler(),
-build_agent_reset_handler() и build_agent_history_handler() — единственные точки
-интеграции с остальным приложением.
+build_agent_reset_handler(), build_agent_history_handler(),
+build_agent_context_handlers(), build_agent_checkpoint_handler(),
+build_agent_branch_handler() и build_agent_switch_branch_handlers() — единственные
+точки интеграции с остальным приложением.
 """
 
 from __future__ import annotations
@@ -54,9 +66,17 @@ from openai import (
     BadRequestError,
     RateLimitError,
 )
-from telegram import KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    Update,
+)
 from telegram.constants import ChatAction
 from telegram.ext import (
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -65,6 +85,8 @@ from telegram.ext import (
 )
 
 from config import (
+    AGENT_ENABLED_STRATEGIES,
+    AGENT_STRATEGY_LABELS,
     MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
     MAX_INPUT_CHARS,
@@ -72,6 +94,11 @@ from config import (
 )
 
 from .agent import Agent, AgentAnswer
+
+# Стратегия, при которой команды /agent_checkpoint, /agent_branch, /agent_switch_branch
+# осмысленны (см. докстринг Agent про то, почему ветки — общий слой хранения, но
+# управлять ими имеет смысл только пока активна именно эта стратегия).
+BRANCHING_STRATEGY = "branching"
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +113,16 @@ AGENT_KEYBOARD = ReplyKeyboardMarkup(
     [[KeyboardButton(EXIT_BUTTON_TEXT)]], resize_keyboard=True
 )
 
-AGENT_INTRO_TEXT = (
-    "🤖 Режим агента.\n\n"
-    f"Задавай вопросы — агент помнит историю этого диалога и передаёт её в "
-    f"{MAIN_CLIENT_LABEL} при каждом следующем вопросе, даже после перезапуска бота.\n\n"
-    "👉 Введи вопрос. Чтобы выйти, нажми кнопку внизу (или отправь /cancel). "
-    "Команда /agent_reset в любой момент очищает историю."
-)
+def _agent_intro_text(strategy: str) -> str:
+    return (
+        "🤖 Режим агента.\n\n"
+        f"Задавай вопросы — агент помнит историю этого диалога и передаёт её в "
+        f"{MAIN_CLIENT_LABEL} при каждом следующем вопросе, даже после перезапуска бота.\n\n"
+        f"Текущая стратегия управления контекстом: {AGENT_STRATEGY_LABELS[strategy]} "
+        "(сменить — /agent_context).\n\n"
+        "👉 Введи вопрос. Чтобы выйти, нажми кнопку внизу (или отправь /cancel). "
+        "Команда /agent_reset в любой момент очищает историю."
+    )
 
 # Экземпляр Agent хранит историю диалога конкретного чата (см. докстринг Agent),
 # поэтому, в отличие от прежней stateless-версии, не может быть один на все чаты —
@@ -112,14 +142,13 @@ def _get_agent(chat_id: int) -> Agent:
 def _format_token_stats(result: AgentAnswer) -> str:
     """Строка статистики по токенам, отправляемая отдельным сообщением после ответа
     агента (см. докстринг AgentAnswer/Agent.ask в agents/agent.py про то, что значит
-    каждое из чисел и почему для diff возможно "н/д").
+    каждое из чисел).
     """
-    diff = result.request_tokens_diff if result.request_tokens_diff is not None else "н/д"
-    history = result.history_tokens if result.history_tokens is not None else "н/д"
+    context_tokens = result.context_tokens if result.context_tokens is not None else "н/д"
     response = result.response_tokens if result.response_tokens is not None else "н/д"
     return (
-        f"📈 Токены: запрос ≈{result.request_tokens_approx} (по символам) / {diff} (по разнице), "
-        f"история={history}, ответ={response}"
+        f"📈 Токены: запрос ≈{result.request_tokens_approx} (по символам), "
+        f"контекст={context_tokens}, ответ={response}"
     )
 
 
@@ -134,7 +163,9 @@ async def _exit_agent_mode(update: Update) -> int:
 
 async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Точка входа в режим агента (/agent)."""
-    await update.message.reply_text(AGENT_INTRO_TEXT, reply_markup=AGENT_KEYBOARD)
+    chat_id = update.effective_chat.id
+    strategy = _get_agent(chat_id).get_strategy()
+    await update.message.reply_text(_agent_intro_text(strategy), reply_markup=AGENT_KEYBOARD)
     return WAITING_QUESTION
 
 
@@ -277,12 +308,16 @@ async def agent_history_command(update: Update, context: ContextTypes.DEFAULT_TY
 
     Как и /agent_reset, работает независимо от того, находится ли пользователь
     сейчас в режиме /agent — не входит в ConversationHandler и не меняет его
-    состояние. История не ограничена по длине (см. докстринг Agent), поэтому
-    результат режется на части по TELEGRAM_MESSAGE_LIMIT так же, как в
+    состояние. Печатает историю АКТИВНОЙ ветки как есть (не сокращённый контекст,
+    см. докстринг Agent) — при нескольких ветках (стратегия Branching) отдельной
+    строкой указывает, какая ветка активна и какие ещё существуют. Не ограничена по
+    длине, поэтому результат режется на части по TELEGRAM_MESSAGE_LIMIT так же, как в
     handle_message (main.py).
     """
     chat_id = update.effective_chat.id
-    history = _get_agent(chat_id).get_history()
+    agent = _get_agent(chat_id)
+    history = agent.get_history()
+    branches = agent.list_branches()
 
     if not history:
         await update.message.reply_text(
@@ -291,6 +326,11 @@ async def agent_history_command(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     lines = [f"📜 История диалога с агентом ({len(history) // 2} вопрос(ов)):"]
+    if len(branches) > 1:
+        lines.append(
+            f"🌿 Активная ветка: «{agent.get_active_branch()}». "
+            f"Все ветки: {', '.join(branches)}."
+        )
     for i in range(0, len(history), 2):
         pair_number = i // 2 + 1
         lines.append(f"\n{pair_number}. 🙋 {history[i]['content']}")
@@ -300,6 +340,206 @@ async def agent_history_command(update: Update, context: ContextTypes.DEFAULT_TY
     text = "\n".join(lines)
     for i in range(0, len(text), TELEGRAM_MESSAGE_LIMIT):
         await update.message.reply_text(text[i : i + TELEGRAM_MESSAGE_LIMIT])
+
+
+async def agent_mode_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /agent_mode — показывает текущий режим чата: активную стратегию
+    управления контекстом и, только при стратегии Branching, активную ветку диалога
+    (вне Branching понятие "активная ветка" не видно пользователю нигде ещё —
+    /agent_checkpoint/agent_branch/agent_switch_branch тоже работают только при ней,
+    см. _require_branching_strategy). Как и /agent_reset/agent_history/agent_context,
+    работает независимо от того, находится ли пользователь сейчас в режиме /agent —
+    не входит в ConversationHandler и не меняет его состояние.
+    """
+    agent = _get_agent(update.effective_chat.id)
+    strategy = agent.get_strategy()
+    strategy_label = AGENT_STRATEGY_LABELS[strategy]
+
+    lines = [f"⚙️ Стратегия управления контекстом: {strategy_label}."]
+    if strategy == BRANCHING_STRATEGY:
+        branches = agent.list_branches()
+        if len(branches) > 1:
+            lines.append(
+                f"🌿 Активная ветка: «{agent.get_active_branch()}». "
+                f"Все ветки: {', '.join(branches)}."
+            )
+        else:
+            lines.append(f"🌿 Активная ветка: «{agent.get_active_branch()}».")
+
+    await update.message.reply_text("\n".join(lines))
+
+
+# --------------------------------------------------------------------------- #
+# /agent_context — переключение стратегии управления контекстом
+# --------------------------------------------------------------------------- #
+
+_AGENT_CONTEXT_CALLBACK_PREFIX = "agent_ctx:"
+
+
+def _strategy_keyboard(current: str) -> InlineKeyboardMarkup:
+    """Кнопки только для стратегий из AGENT_ENABLED_STRATEGIES (config.py) — оператор
+    бота может скрыть часть стратегий из выбора; если текущая стратегия чата в список
+    не входит (например, его сузили уже после того, как чат её выбрал), кнопки для
+    неё просто не будет — сама стратегия при этом продолжает работать как обычно."""
+    buttons = [
+        [
+            InlineKeyboardButton(
+                f"{'✅ ' if name == current else ''}{label}",
+                callback_data=f"{_AGENT_CONTEXT_CALLBACK_PREFIX}{name}",
+            )
+        ]
+        for name, label in AGENT_STRATEGY_LABELS.items()
+        if name in AGENT_ENABLED_STRATEGIES
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+async def agent_context_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /agent_context — показывает текущую стратегию и кнопки для переключения
+    на одну из остальных. Работает независимо от того, находится ли пользователь в
+    режиме /agent, как /agent_reset и /agent_history."""
+    agent = _get_agent(update.effective_chat.id)
+    current_label = AGENT_STRATEGY_LABELS[agent.get_strategy()]
+    await update.message.reply_text(
+        f"👉 Текущая стратегия управления контекстом: {current_label}.\nВыбери другую:",
+        reply_markup=_strategy_keyboard(agent.get_strategy()),
+    )
+
+
+async def agent_context_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатие кнопки выбора стратегии из agent_context_command."""
+    query = update.callback_query
+    await query.answer()
+    strategy = query.data[len(_AGENT_CONTEXT_CALLBACK_PREFIX) :]
+    if strategy not in AGENT_STRATEGY_LABELS or strategy not in AGENT_ENABLED_STRATEGIES:
+        return
+    agent = _get_agent(update.effective_chat.id)
+    agent.set_strategy(strategy)
+    await query.edit_message_text(
+        f"✅ Стратегия управления контекстом переключена на: {AGENT_STRATEGY_LABELS[strategy]}."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# /agent_checkpoint, /agent_branch, /agent_switch_branch — стратегия Branching
+# --------------------------------------------------------------------------- #
+
+_AGENT_SWITCH_BRANCH_CALLBACK_PREFIX = "agent_switch_branch:"
+
+
+def _require_branching_strategy(agent: Agent) -> str | None:
+    """Возвращает текст ошибки, если активная стратегия чата — не Branching, иначе
+    None. Чекпоинты и ветки осмысленны только при этой стратегии (см. BRANCHING_STRATEGY
+    выше и докстринг Agent про то, почему ветки — общий слой хранения, но управлять
+    ими имеет смысл только при ней) — вне неё команды отклоняются с подсказкой
+    переключиться через /agent_context, а не молча работают поверх другой стратегии.
+    """
+    if agent.get_strategy() != BRANCHING_STRATEGY:
+        return (
+            "⚠️ Чекпоинты и ветки доступны только при стратегии "
+            f"{AGENT_STRATEGY_LABELS[BRANCHING_STRATEGY]}.\n"
+            f"Сейчас выбрана: {AGENT_STRATEGY_LABELS[agent.get_strategy()]}.\n"
+            "Переключись командой /agent_context."
+        )
+    return None
+
+
+async def agent_checkpoint_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /agent_checkpoint <имя> — помечает текущую точку активной ветки."""
+    agent = _get_agent(update.effective_chat.id)
+    error = _require_branching_strategy(agent)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    if not context.args:
+        await update.message.reply_text("👉 Формат: /agent_checkpoint <имя>")
+        return
+
+    name = context.args[0]
+    agent.create_checkpoint(name)
+    await update.message.reply_text(
+        f"📍 Чекпоинт «{name}» сохранён в ветке «{agent.get_active_branch()}»."
+    )
+
+
+async def agent_branch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /agent_branch <чекпоинт> <ветка> — создаёт одну новую ветку от
+    указанного чекпоинта (см. Agent.create_branch). Чтобы получить несколько веток
+    от одной точки (например, классические две), вызови команду повторно с тем же
+    чекпоинтом и другим именем ветки."""
+    agent = _get_agent(update.effective_chat.id)
+    error = _require_branching_strategy(agent)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    if len(context.args) != 2:
+        await update.message.reply_text("👉 Формат: /agent_branch <чекпоинт> <ветка>")
+        return
+
+    checkpoint_name, branch_name = context.args
+    if not agent.checkpoint_exists(checkpoint_name):
+        await update.message.reply_text(f"⚠️ Чекпоинт «{checkpoint_name}» не найден.")
+        return
+    if agent.branch_exists(branch_name):
+        await update.message.reply_text(
+            "⚠️ Ветка с таким именем уже существует — выбери другое имя."
+        )
+        return
+
+    agent.create_branch(checkpoint_name, branch_name)
+    await update.message.reply_text(
+        f"🌿 Создана ветка «{branch_name}» от чекпоинта «{checkpoint_name}».\n"
+        "Переключиться на неё — /agent_switch_branch."
+    )
+
+
+def _branch_keyboard(agent: Agent) -> InlineKeyboardMarkup:
+    current = agent.get_active_branch()
+    buttons = [
+        [
+            InlineKeyboardButton(
+                f"{'✅ ' if name == current else ''}{name}",
+                callback_data=f"{_AGENT_SWITCH_BRANCH_CALLBACK_PREFIX}{name}",
+            )
+        ]
+        for name in agent.list_branches()
+    ]
+    return InlineKeyboardMarkup(buttons)
+
+
+async def agent_switch_branch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /agent_switch_branch — показывает кнопки со всеми ветками чата и
+    переключает активную по выбору (см. Agent.switch_branch)."""
+    agent = _get_agent(update.effective_chat.id)
+    error = _require_branching_strategy(agent)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    await update.message.reply_text(
+        f"👉 Текущая ветка: «{agent.get_active_branch()}». Выбери, на какую переключиться:",
+        reply_markup=_branch_keyboard(agent),
+    )
+
+
+async def agent_switch_branch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает нажатие кнопки выбора ветки из agent_switch_branch_command."""
+    query = update.callback_query
+    await query.answer()
+    agent = _get_agent(update.effective_chat.id)
+    error = _require_branching_strategy(agent)
+    if error:
+        await query.edit_message_text(error)
+        return
+
+    branch_name = query.data[len(_AGENT_SWITCH_BRANCH_CALLBACK_PREFIX) :]
+    if not agent.branch_exists(branch_name):
+        await query.edit_message_text("⚠️ Такой ветки уже нет.")
+        return
+    agent.switch_branch(branch_name)
+    await query.edit_message_text(f"✅ Активная ветка переключена на «{branch_name}».")
 
 
 def build_agent_conversation_handler() -> ConversationHandler:
@@ -320,3 +560,38 @@ def build_agent_reset_handler() -> CommandHandler:
 def build_agent_history_handler() -> CommandHandler:
     """Собирает CommandHandler команды /agent_history для регистрации в main.py."""
     return CommandHandler("agent_history", agent_history_command)
+
+
+def build_agent_mode_handler() -> CommandHandler:
+    """Собирает CommandHandler команды /agent_mode для регистрации в main.py."""
+    return CommandHandler("agent_mode", agent_mode_command)
+
+
+def build_agent_context_handlers() -> list:
+    """Собирает обработчики команды /agent_context (переключатель стратегий) для
+    регистрации в main.py — команду и обработчик нажатий на её inline-кнопки."""
+    return [
+        CommandHandler("agent_context", agent_context_command),
+        CallbackQueryHandler(agent_context_callback, pattern=f"^{_AGENT_CONTEXT_CALLBACK_PREFIX}"),
+    ]
+
+
+def build_agent_checkpoint_handler() -> CommandHandler:
+    """Собирает CommandHandler команды /agent_checkpoint для регистрации в main.py."""
+    return CommandHandler("agent_checkpoint", agent_checkpoint_command)
+
+
+def build_agent_branch_handler() -> CommandHandler:
+    """Собирает CommandHandler команды /agent_branch для регистрации в main.py."""
+    return CommandHandler("agent_branch", agent_branch_command)
+
+
+def build_agent_switch_branch_handlers() -> list:
+    """Собирает обработчики команды /agent_switch_branch для регистрации в main.py —
+    команду и обработчик нажатий на её inline-кнопки."""
+    return [
+        CommandHandler("agent_switch_branch", agent_switch_branch_command),
+        CallbackQueryHandler(
+            agent_switch_branch_callback, pattern=f"^{_AGENT_SWITCH_BRANCH_CALLBACK_PREFIX}"
+        ),
+    ]
