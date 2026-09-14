@@ -93,6 +93,13 @@ from config import (
     TELEGRAM_MESSAGE_LIMIT,
 )
 
+from .active_mode import (
+    AGENT_MODE,
+    COMPARE_MODE,
+    clear_active_mode,
+    get_active_mode,
+    set_active_mode,
+)
 from .agent import Agent, AgentAnswer
 
 # Стратегия, при которой команды /agent_checkpoint, /agent_branch, /agent_switch_branch
@@ -154,6 +161,7 @@ def _format_token_stats(result: AgentAnswer) -> str:
 
 async def _exit_agent_mode(update: Update) -> int:
     """Общий выход из режима агента — по кнопке и по /cancel (см. build_..._handler)."""
+    clear_active_mode(update.effective_chat.id)
     await update.message.reply_text(
         "Режим агента завершён. Возвращаюсь в обычный режим.",
         reply_markup=ReplyKeyboardRemove(),
@@ -162,8 +170,21 @@ async def _exit_agent_mode(update: Update) -> int:
 
 
 async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Точка входа в режим агента (/agent)."""
+    """Точка входа в режим агента (/agent).
+
+    Взаимоисключается с /agent_compare (agents/compare_command.py, см. active_mode.py
+    про то, почему) — если чат уже в режиме сравнения, вход отклоняется с подсказкой
+    сначала выйти оттуда.
+    """
     chat_id = update.effective_chat.id
+    if get_active_mode(chat_id) == COMPARE_MODE:
+        await update.message.reply_text(
+            "⚠️ Сейчас активен режим сравнения стратегий (/agent_compare). "
+            "Сначала выйди из него (кнопка выхода или /cancel), потом заходи в /agent."
+        )
+        return ConversationHandler.END
+
+    set_active_mode(chat_id, AGENT_MODE)
     strategy = _get_agent(chat_id).get_strategy()
     await update.message.reply_text(_agent_intro_text(strategy), reply_markup=AGENT_KEYBOARD)
     return WAITING_QUESTION

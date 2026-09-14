@@ -54,6 +54,11 @@ from agents.agent_command import (
     build_agent_reset_handler,
     build_agent_switch_branch_handlers,
 )
+from agents.compare_command import (
+    build_agent_compare_conversation_handler,
+    build_agent_compare_report_handler,
+    build_agent_compare_reset_handler,
+)
 from config import (
     MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
@@ -125,7 +130,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "(стратегия Branching)\n"
         "/agent_branch &lt;чекпоинт&gt; &lt;ветка&gt; — создать от чекпоинта новую "
         "ветку диалога (Branching)\n"
-        "/agent_switch_branch — переключиться на другую ветку диалога (Branching)\n\n"
+        "/agent_switch_branch — переключиться на другую ветку диалога (Branching)\n"
+        "/agent_compare — параллельно сравнить Sliding Window/Sticky Facts/Branching "
+        "на одном диалоге (технический эксперимент, не для обычных вопросов)\n"
+        "/agent_compare_report — сравнить последние ответы всех трёх (только в "
+        "режиме /agent_compare)\n"
+        "/agent_compare_reset — очистить историю всех трёх сразу\n\n"
         "<b>Ограничения:</b>\n"
         f"— максимальная длина запроса: {MAX_INPUT_CHARS} символов\n"
         "— бот не хранит историю обычных сообщений (каждый вопрос — новый контекст); "
@@ -254,6 +264,9 @@ def main() -> None:
     application.add_handler(build_agent_branch_handler())
     for handler in build_agent_switch_branch_handlers():
         application.add_handler(handler)
+    application.add_handler(build_agent_compare_conversation_handler())
+    application.add_handler(build_agent_compare_report_handler())
+    application.add_handler(build_agent_compare_reset_handler())
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)

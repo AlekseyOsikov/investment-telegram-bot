@@ -209,7 +209,7 @@ class Agent:
 
     def __init__(
         self,
-        chat_id: int,
+        chat_id: int | str,
         client=main_client,
         model: str = MAIN_MODEL,
         system_prompt: str = SYSTEM_PROMPT,
@@ -229,6 +229,11 @@ class Agent:
         self._system_prompt = system_prompt
         self._max_output_tokens = max_output_tokens
         self._timeout = timeout
+        # chat_id используется только для имени файла — обычно это реальный chat_id
+        # (int), но agents/compare_command.py передаёт составной строковый
+        # идентификатор (f"{chat_id}_compare_<стратегия>"), чтобы у каждой из трёх
+        # "теневых" стратегий сравнения был свой файл истории, не пересекающийся ни
+        # с обычным /agent того же чата, ни друг с другом.
         self._history_path = Path(history_dir) / f"{chat_id}.json"
         self._recent_pairs = recent_pairs
         self._summary_chunk_pairs = summary_chunk_pairs

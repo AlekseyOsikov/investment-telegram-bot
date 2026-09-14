@@ -78,11 +78,42 @@ stateless-прокси без истории диалога и без админ
     `build_agent_history_handler()`/`build_agent_mode_handler()`/
     `build_agent_context_handlers()`/`build_agent_checkpoint_handler()`/
     `build_agent_branch_handler()`/`build_agent_switch_branch_handlers()`.
+  - `agents/active_mode.py` — общий в памяти процесса трекер `{chat_id: "agent" |
+    "compare"}`, используемый и `agent_command.py`, и `compare_command.py`, чтобы
+    `/agent` и `/agent_compare` были взаимоисключающими для одного чата (у каждого
+    свой независимый `ConversationHandler`, и без этой отметки ничто не мешало бы
+    быть "внутри" обоих сразу) — отдельный модуль, а не общее состояние в одном из
+    двух, чтобы не создавать цикл импорта.
+  - `agents/compare_command.py` — команда `/agent_compare`: инструмент тестирования
+    (ближе по духу к `research/*`, чем к `/agent`), параллельно сравнивающий три
+    ФИКСИРОВАННЫЕ стратегии управления контекстом (Sliding Window, Sticky Facts,
+    Branching — "summary" не участвует) на одном диалоге. Каждая стратегия — свой
+    `Agent` (`agents/agent.py`) со своим файлом истории
+    (`AGENT_HISTORY_DIR/<chat_id>_compare_<стратегия>.json`, отдельно от обычного
+    `<chat_id>.json` того же чата), кэшируются в `_compare_agents` по chat_id, как
+    `_agents` в `agent_command.py`. На каждый вопрос все три `Agent.ask()`
+    вызываются параллельно через `ThreadPoolExecutor` (тот же приём, что в
+    `research/temperature.py`/`research/models.py`, сценарий 5), но результаты
+    выводятся в чат в ФИКСИРОВАННОМ порядке (Sliding Window → Sticky Facts →
+    Branching, `COMPARE_STRATEGIES`) — не в порядке завершения — каждый отдельными
+    сообщениями с меткой-префиксом и своей строкой токенов
+    (`_format_token_stats`, переиспользована из `agent_command.py`). Сбой одной
+    стратегии не мешает показать другие — ошибка каждой обрабатывается отдельно
+    через `api_error_to_message` из `research/_shared.py`. Команда
+    `/agent_compare_report` (не `/summary` — так называется другая, не участвующая
+    в сравнении стратегия) берёт последний ответ каждой из трёх и одним вызовом
+    через `main_client`/`MAIN_MODEL` (`AGENT_COMPARE_REPORT_SYSTEM_PROMPT` в
+    `config.py`) просит сравнить их по качеству/устойчивости/токенам — работает,
+    только если чат сейчас в режиме сравнения. `/agent_compare_reset` очищает
+    историю всех трёх сразу, работает независимо от активного режима (как
+    `/agent_reset`). Три сборщика — `build_agent_compare_conversation_handler()`/
+    `build_agent_compare_report_handler()`/`build_agent_compare_reset_handler()`.
 - `main.py` — обычный прокси-поток (`/start`, `/help`, `handle_message`) и точка входа
   приложения; подключает четыре режима исследования через `build_constraints_conversation_handler()`,
   `build_reasoning_conversation_handler()`, `build_temperature_conversation_handler()`,
-  `build_models_conversation_handler()`, а также агента через все восемь
-  `build_agent_*` из `agents/agent_command.py`.
+  `build_models_conversation_handler()`, агента через все восемь `build_agent_*` из
+  `agents/agent_command.py`, а также сравнение стратегий через три `build_agent_compare_*`
+  из `agents/compare_command.py`.
 
 ## Команды
 
@@ -104,7 +135,7 @@ ruff format src/
 Проверка синтаксиса без запуска:
 
 ```bash
-python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/agents/agent.py src/agents/agent_command.py src/agents/context_strategies.py src/main.py
+python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/agents/agent.py src/agents/agent_command.py src/agents/context_strategies.py src/agents/active_mode.py src/agents/compare_command.py src/main.py
 ```
 
 Тестов пока нет — `tests/` это пустая директория-заглушка.
@@ -200,6 +231,13 @@ stop-последовательность) и `/research_temperature` (знач�
 лимит 500) — по тому же принципу, что `AGENT_SUMMARY_SYSTEM_PROMPT`/
 `AGENT_SUMMARY_MAX_TOKENS`, но для стратегии Sticky Facts: промпт просит модель
 вернуть строго JSON-объект (словарь фактов), а не текст сводки.
+
+`AGENT_COMPARE_REPORT_SYSTEM_PROMPT` (`config.py`) — системный промпт для
+`/agent_compare_report` (`agents/compare_command.py`): просит сравнить три ответа
+по качеству/устойчивости/токенам, теми же тремя критериями, что обсуждались как
+метрики сравнения стратегий. Не инвестиционный совет, дисклеймеры из
+`SYSTEM_PROMPT` не нужны — по тому же принципу, что и у `AGENT_SUMMARY_SYSTEM_PROMPT`/
+`AGENT_FACTS_SYSTEM_PROMPT`.
 
 ## Архитектура
 
@@ -543,5 +581,9 @@ per-branch (см. выше) — ТОЖЕ их не сбрасывает: пос�
   командой `/agent_reset` (очищает все ветки/чекпоинты/facts/summary разом). При
   дальнейшей доработке `/agent` сохраняй этот принцип (история — только там, видимая
   и явно очищаемая пользователем), а не расширяй память на остальной бот молча.
+  `/agent_compare` (`agents/compare_command.py`) — то же исключение, применённое
+  трижды: по явному запросу пользователя (вход в `/agent_compare`) три
+  дополнительных файла истории на чат, по одному на сравниваемую стратегию;
+  очищаются разом командой `/agent_compare_reset`, отдельно от `/agent_reset`.
 - Групповые чаты исключены через фильтр обработчика; сохраняй этот фильтр при добавлении
   новых обработчиков текстовых сообщений.
