@@ -21,6 +21,11 @@ agents/agent.py и agents/agent_command.py; в отличие от осталь�
 историю переписки в JSON на диске (осознанное исключение по явному запросу, см.
 «Ограничения безопасности» в CLAUDE.md), которую можно посмотреть командой
 /agent_history и очистить командой /agent_reset.
+
+Исследовательские/технические команды (/research_*, /agent_compare*, /agent_mode,
+/agent_context) регистрируются здесь и упоминаются в /help, только если включена
+переменная окружения RESEARCH (config.py, RESEARCH_ENABLED) — оператор бота может
+скрыть их на проде, не трогая остальную функциональность /agent.
 """
 
 from __future__ import annotations
@@ -66,6 +71,7 @@ from config import (
     MAX_INPUT_CHARS,
     MAX_OUTPUT_TOKENS,
     REQUEST_TIMEOUT_SECONDS,
+    RESEARCH_ENABLED,
     SYSTEM_PROMPT,
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
@@ -104,38 +110,63 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /help."""
+    """Обработчик команды /help.
+
+    Исследовательские/технические команды (/research_*, /agent_compare*, /agent_mode,
+    /agent_context) перечисляются здесь, только если они включены переменной окружения
+    RESEARCH (config.py) — см. её докстринг про то, какие команды это затрагивает и
+    почему остальные команды /agent_* в этот список не входят.
+    """
+    command_lines = [
+        "/start — приветственное сообщение",
+        "/help — эта справка",
+    ]
+    if RESEARCH_ENABLED:
+        command_lines += [
+            f"/research_constraints — режим исследования влияния ограничений {MAIN_CLIENT_LABEL} "
+            "API (включая формат ответа) на ответ (технический эксперимент, не для обычных "
+            "вопросов)",
+            f"/research_reasoning — режим исследования способов рассуждения {MAIN_CLIENT_LABEL} "
+            "API (технический эксперимент, не для обычных вопросов)",
+            f"/research_temperature — режим исследования влияния temperature на ответ "
+            f"{MAIN_CLIENT_LABEL} API (технический эксперимент, не для обычных вопросов)",
+            "/research_models — режим исследования разных моделей API "
+            "(технический эксперимент, не для обычных вопросов)",
+        ]
+    command_lines += [
+        "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
+        "контекст сохраняется даже после перезапуска бота, пока не отправишь /cancel",
+        "/agent_history — показать сохранённую историю диалога с агентом",
+        "/agent_reset — очистить историю диалога с агентом",
+    ]
+    if RESEARCH_ENABLED:
+        command_lines += [
+            "/agent_mode — показать текущий режим чата (активную стратегию и ветку)",
+            "/agent_context — выбрать стратегию управления контекстом агента",
+        ]
+    command_lines += [
+        "/agent_checkpoint &lt;имя&gt; — отметить текущую точку диалога чекпоинтом "
+        "(стратегия Branching)",
+        "/agent_branch &lt;чекпоинт&gt; &lt;ветка&gt; — создать от чекпоинта новую "
+        "ветку диалога (Branching)",
+        "/agent_switch_branch — переключиться на другую ветку диалога (Branching)",
+    ]
+    if RESEARCH_ENABLED:
+        command_lines += [
+            "/agent_compare — параллельно сравнить Sliding Window/Sticky Facts/Branching "
+            "на одном диалоге (технический эксперимент, не для обычных вопросов)",
+            "/agent_compare_report — сравнить последние ответы всех трёх (только в "
+            "режиме /agent_compare)",
+            "/agent_compare_reset — очистить историю всех трёх сразу",
+        ]
+
     help_text = (
         "ℹ️ <b>Как пользоваться ботом</b>\n\n"
         "Отправь текстовый вопрос об инвестициях или личных финансах — получишь ответ "
         f"от {MAIN_CLIENT_LABEL}.\n\n"
         "<b>Команды:</b>\n"
-        "/start — приветственное сообщение\n"
-        "/help — эта справка\n"
-        f"/research_constraints — режим исследования влияния ограничений {MAIN_CLIENT_LABEL} API "
-        "(включая формат ответа) на ответ (технический эксперимент, не для обычных вопросов)\n"
-        f"/research_reasoning — режим исследования способов рассуждения {MAIN_CLIENT_LABEL} API "
-        "(технический эксперимент, не для обычных вопросов)\n"
-        f"/research_temperature — режим исследования влияния temperature на ответ {MAIN_CLIENT_LABEL} API "
-        "(технический эксперимент, не для обычных вопросов)\n"
-        "/research_models — режим исследования разных моделей API "
-        "(технический эксперимент, не для обычных вопросов)\n"
-        "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
-        "контекст сохраняется даже после перезапуска бота, пока не отправишь /cancel\n"
-        "/agent_history — показать сохранённую историю диалога с агентом\n"
-        "/agent_reset — очистить историю диалога с агентом\n"
-        "/agent_mode — показать текущий режим чата (активную стратегию и ветку)\n"
-        "/agent_context — выбрать стратегию управления контекстом агента\n"
-        "/agent_checkpoint &lt;имя&gt; — отметить текущую точку диалога чекпоинтом "
-        "(стратегия Branching)\n"
-        "/agent_branch &lt;чекпоинт&gt; &lt;ветка&gt; — создать от чекпоинта новую "
-        "ветку диалога (Branching)\n"
-        "/agent_switch_branch — переключиться на другую ветку диалога (Branching)\n"
-        "/agent_compare — параллельно сравнить Sliding Window/Sticky Facts/Branching "
-        "на одном диалоге (технический эксперимент, не для обычных вопросов)\n"
-        "/agent_compare_report — сравнить последние ответы всех трёх (только в "
-        "режиме /agent_compare)\n"
-        "/agent_compare_reset — очистить историю всех трёх сразу\n\n"
+        + "\n".join(command_lines)
+        + "\n\n"
         "<b>Ограничения:</b>\n"
         f"— максимальная длина запроса: {MAX_INPUT_CHARS} символов\n"
         "— бот не хранит историю обычных сообщений (каждый вопрос — новый контекст); "
@@ -250,23 +281,29 @@ def main() -> None:
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(build_constraints_conversation_handler())
-    application.add_handler(build_reasoning_conversation_handler())
-    application.add_handler(build_temperature_conversation_handler())
-    application.add_handler(build_models_conversation_handler())
+    # Исследовательские/технические команды регистрируются, только если включены
+    # переменной окружения RESEARCH (config.py) — см. её докстринг и help_command
+    # про то, какие команды это затрагивает и почему остальные /agent_* не входят.
+    if RESEARCH_ENABLED:
+        application.add_handler(build_constraints_conversation_handler())
+        application.add_handler(build_reasoning_conversation_handler())
+        application.add_handler(build_temperature_conversation_handler())
+        application.add_handler(build_models_conversation_handler())
     application.add_handler(build_agent_conversation_handler())
     application.add_handler(build_agent_reset_handler())
     application.add_handler(build_agent_history_handler())
-    application.add_handler(build_agent_mode_handler())
-    for handler in build_agent_context_handlers():
-        application.add_handler(handler)
+    if RESEARCH_ENABLED:
+        application.add_handler(build_agent_mode_handler())
+        for handler in build_agent_context_handlers():
+            application.add_handler(handler)
     application.add_handler(build_agent_checkpoint_handler())
     application.add_handler(build_agent_branch_handler())
     for handler in build_agent_switch_branch_handlers():
         application.add_handler(handler)
-    application.add_handler(build_agent_compare_conversation_handler())
-    application.add_handler(build_agent_compare_report_handler())
-    application.add_handler(build_agent_compare_reset_handler())
+    if RESEARCH_ENABLED:
+        application.add_handler(build_agent_compare_conversation_handler())
+        application.add_handler(build_agent_compare_report_handler())
+        application.add_handler(build_agent_compare_reset_handler())
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)

@@ -176,6 +176,24 @@ research-режимов, которые сами не выбирают конк�
 провайдер-специфичные переменные — в соответствующий `providers/*_client.py`, общие для
 бота — в `config.py`.
 
+`RESEARCH` (`config.py`, булево значение `true`/`false`, также принимает `1`/`0`,
+`yes`/`no`, `on`/`off`, по умолчанию `true`; допустимость значения проверяется в
+`_validate_config()` как и `MAIN_CLIENT`) — включает или выключает исследовательские
+и служебные команды: `/research_constraints`, `/research_reasoning`,
+`/research_temperature`, `/research_models`, `/agent_compare`,
+`/agent_compare_report`, `/agent_compare_reset`, `/agent_mode`, `/agent_context`. Это
+решение оператора бота (например, скрыть технические эксперименты на проде), а не
+то, что пользователь чата переключает сам. При `RESEARCH=false` эти команды не
+регистрируются как обработчики в `main.py` (`RESEARCH_ENABLED`) и не упоминаются в
+тексте `/help` — попытка отправить такую команду боту при выключенном флаге ничем не
+отличается от отправки любой другой незарегистрированной команды (бот молча её
+игнорирует, отдельного сообщения об отказе нет). Флаг не затрагивает `/agent`,
+`/agent_reset`, `/agent_history` и `/agent_checkpoint`/`/agent_branch`/
+`/agent_switch_branch` — они не являются исследовательскими и остаются доступны
+всегда, независимо от `RESEARCH`. При добавлении новой исследовательской команды
+добавляй её проверку в этот же список (регистрация в `main.py` и текст `/help`), а
+не создавай для неё отдельный флаг.
+
 У опциональных переменных (`DEEPSEEK_BASE_URL`, `KIMI_BASE_URL`, `REQUEST_TIMEOUT_SECONDS`,
 `MAX_OUTPUT_TOKENS`, `MAX_INPUT_CHARS` и т.д.) значения по умолчанию заданы прямо в коде —
 `config.py`/`providers/deepseek_client.py`/`providers/kimi_client.py` являются источником

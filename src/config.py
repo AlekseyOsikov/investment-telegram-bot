@@ -50,6 +50,19 @@ MAIN_MODEL = os.getenv(
 MAIN_CLIENT_LABEL = "DeepSeek" if MAIN_CLIENT == "deepseek" else "Kimi"
 MAIN_API_KEY_ENV_VAR = "DEEPSEEK_API_KEY" if MAIN_CLIENT == "deepseek" else "KIMI_API_KEY"
 
+# Доступ к исследовательским/техническим командам — /research_*, /agent_compare*,
+# /agent_mode, /agent_context. Это инструменты отладки и экспериментов с API, а не
+# часть основного сценария использования бота (см. "Правила предметной области" в
+# CLAUDE.md) — оператор бота может скрыть их полностью на проде через RESEARCH=false:
+# такие команды не регистрируются как обработчики (main.py) и не упоминаются в
+# /help. НЕ относится к /agent (сам агент), /agent_reset/agent_history (базовое
+# управление его историей) и /agent_checkpoint/agent_branch/agent_switch_branch
+# (управление ветками — часть функциональности самого агента, а не эксперимент).
+_TRUE_VALUES = {"true", "1", "yes", "on"}
+_FALSE_VALUES = {"false", "0", "no", "off"}
+_RESEARCH_RAW = os.getenv("RESEARCH", "true").strip().lower()
+RESEARCH_ENABLED = _RESEARCH_RAW in _TRUE_VALUES
+
 # Разумные лимиты, чтобы не улететь по токенам/времени на один запрос.
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2000"))
@@ -268,6 +281,14 @@ def _validate_config() -> None:
         logger.error(
             "Отсутствует обязательная переменная окружения TELEGRAM_BOT_TOKEN. "
             "Скопируйте .env.example в .env и заполните значение."
+        )
+        sys.exit(1)
+
+    if _RESEARCH_RAW not in _TRUE_VALUES | _FALSE_VALUES:
+        logger.error(
+            "Недопустимое значение RESEARCH=%r. Допустимые значения: true/false "
+            "(также принимаются 1/0, yes/no, on/off).",
+            _RESEARCH_RAW,
         )
         sys.exit(1)
 
