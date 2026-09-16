@@ -79,11 +79,12 @@ stateless-прокси без истории диалога и без админ
     `build_agent_context_handlers()`/`build_agent_checkpoint_handler()`/
     `build_agent_branch_handler()`/`build_agent_switch_branch_handlers()`.
   - `agents/active_mode.py` — общий в памяти процесса трекер `{chat_id: "agent" |
-    "compare"}`, используемый и `agent_command.py`, и `compare_command.py`, чтобы
-    `/agent` и `/agent_compare` были взаимоисключающими для одного чата (у каждого
-    свой независимый `ConversationHandler`, и без этой отметки ничто не мешало бы
-    быть "внутри" обоих сразу) — отдельный модуль, а не общее состояние в одном из
-    двух, чтобы не создавать цикл импорта.
+    "compare" | "smart_agent"}`, используемый `agent_command.py`, `compare_command.py`
+    и `smart_agent_command.py`, чтобы `/agent`, `/agent_compare` и `/smart_agent` были
+    попарно взаимоисключающими для одного чата (у каждого свой независимый
+    `ConversationHandler`, и без этой отметки ничто не мешало бы быть "внутри"
+    нескольких сразу) — отдельный модуль, а не общее состояние в одном из трёх, чтобы
+    не создавать цикл импорта.
   - `agents/compare_command.py` — команда `/agent_compare`: инструмент тестирования
     (ближе по духу к `research/*`, чем к `/agent`), параллельно сравнивающий три
     ФИКСИРОВАННЫЕ стратегии управления контекстом (Sliding Window, Sticky Facts,
@@ -108,12 +109,29 @@ stateless-прокси без истории диалога и без админ
     историю всех трёх сразу, работает независимо от активного режима (как
     `/agent_reset`). Три сборщика — `build_agent_compare_conversation_handler()`/
     `build_agent_compare_report_handler()`/`build_agent_compare_reset_handler()`.
+  - `agents/smart_agent.py` — класс `SmartAgent`: НЕЗАВИСИМЫЙ от `Agent` LLM-агент с
+    явно разделённой моделью памяти (три слоя вместо 4 переключаемых стратегий одной
+    истории) — см. «Управление памятью smart-агента» в разделе «Архитектура». Тоже
+    использует `main_client`/`MAIN_MODEL`, тоже хранит состояние в JSON-файле на
+    chat_id, но в отдельном каталоге (`AGENT_MEMORY_DIR`, не `AGENT_HISTORY_DIR`) и в
+    своём формате — файлы `/agent` и `/smart_agent` одного чата не пересекаются.
+  - `agents/smart_agent_command.py` — команда `/smart_agent` (`ConversationHandler`,
+    диалог «вопрос за вопросом» до `/cancel` или кнопки выхода, по образцу `/agent`) и
+    команды управления тремя слоями памяти: `/smart_agent_remember`/`/smart_agent_forget`/
+    `/smart_agent_long_show` (долговременная), `/smart_agent_task_start`/
+    `/smart_agent_task_set`/`/smart_agent_task_show`/`/smart_agent_task_done`
+    (рабочая), `/smart_agent_show` (все три слоя как есть + последний собранный
+    контекст LLM) и `/smart_agent_toggle` (включить/выключить слой в контексте без
+    удаления данных) и `/smart_agent_reset` (очистить все три слоя разом). Строятся
+    через `build_smart_agent_conversation_handler()` и по одному
+    `build_smart_agent_*_handler()` на каждую из остальных десяти команд.
 - `main.py` — обычный прокси-поток (`/start`, `/help`, `handle_message`) и точка входа
   приложения; подключает четыре режима исследования через `build_constraints_conversation_handler()`,
   `build_reasoning_conversation_handler()`, `build_temperature_conversation_handler()`,
   `build_models_conversation_handler()`, агента через все восемь `build_agent_*` из
-  `agents/agent_command.py`, а также сравнение стратегий через три `build_agent_compare_*`
-  из `agents/compare_command.py`.
+  `agents/agent_command.py`, сравнение стратегий через три `build_agent_compare_*`
+  из `agents/compare_command.py`, а также smart-агента через все одиннадцать
+  `build_smart_agent_*` из `agents/smart_agent_command.py`.
 
 ## Команды
 
@@ -135,7 +153,7 @@ ruff format src/
 Проверка синтаксиса без запуска:
 
 ```bash
-python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/agents/agent.py src/agents/agent_command.py src/agents/context_strategies.py src/agents/active_mode.py src/agents/compare_command.py src/main.py
+python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/agents/agent.py src/agents/agent_command.py src/agents/context_strategies.py src/agents/active_mode.py src/agents/compare_command.py src/agents/smart_agent.py src/agents/smart_agent_command.py src/main.py
 ```
 
 Тестов пока нет — `tests/` это пустая директория-заглушка.
@@ -256,6 +274,18 @@ stop-последовательность) и `/research_temperature` (знач�
 метрики сравнения стратегий. Не инвестиционный совет, дисклеймеры из
 `SYSTEM_PROMPT` не нужны — по тому же принципу, что и у `AGENT_SUMMARY_SYSTEM_PROMPT`/
 `AGENT_FACTS_SYSTEM_PROMPT`.
+
+`AGENT_MEMORY_DIR` (`config.py`, по умолчанию `data/smart_agent_memory`) — каталог,
+где `agents/smart_agent.py` хранит по одному JSON-файлу памяти на chat_id; каталог не
+коммитится (см. `.gitignore`), тем же принципом, что и `AGENT_HISTORY_DIR`, но
+отдельно от него — файлы `/agent` и `/smart_agent` одного чата не должны путаться.
+`AGENT_MEMORY_SHORT_TERM_PAIRS` (по умолчанию 10) — сколько последних пар
+вопрос-ответ краткосрочного слоя уходит в контекст LLM (аналог
+`AGENT_CONTEXT_RECENT_PAIRS` для `/agent`, но не общий с ним — у каждого агента своя
+переменная, т.к. они независимы). `AGENT_MEMORY_LONG_TERM_MAX_FACTS` (по умолчанию
+20) — максимум фактов в долговременной памяти smart-агента; при превышении
+вытесняется самый старый факт (см. «Управление памятью smart-агента» ниже про то,
+почему это простой лимит по количеству, а не по токенам, как у `/agent`).
 
 ## Архитектура
 
@@ -545,6 +575,70 @@ per-branch (см. выше) — ТОЖЕ их не сбрасывает: пос�
 `summary`/`facts` остаются прежними, а попытка обновить их повторяется при
 одном из следующих вопросов.
 
+### Управление памятью smart-агента
+
+`agents/smart_agent.py` (класс `SmartAgent`) — НЕЗАВИСИМЫЙ от `Agent` агент: вместо
+одной истории диалога с переключаемой стратегией управления контекстом (см.
+«Управление контекстом агента» выше) хранит память в трёх явно разделённых слоях,
+каждый со своим смыслом, своим способом записи и своим местом в JSON-файле
+(`AGENT_MEMORY_DIR/<chat_id>.json`):
+
+- **`short_term`** (краткосрочная, текущий диалог) — список сырых сообщений
+  (`{"role", "content"}`), пишется АВТОМАТИЧЕСКИ на каждый вызов `SmartAgent.ask()` —
+  единственный слой без явной команды на запись, т.к. это и есть сам диалог. Хранится
+  на диске без ограничения (как история `/agent`), но в контекст LLM уходит не вся
+  история, а только последние `AGENT_MEMORY_SHORT_TERM_PAIRS` пар
+  (`SmartAgent._recent_short_term()`).
+- **`working`** (рабочая, данные текущей задачи) — одна активная задача на чат
+  (`{"goal", "status", "data", "created_at"}` или `None`), пишется ТОЛЬКО явно:
+  `/smart_agent_task_start <цель>` (`SmartAgent.start_task`, заменяет предыдущую
+  задачу, а не копит несколько параллельно), `/smart_agent_task_set <ключ>
+  <значение>` (`SmartAgent.set_task_data`, требует уже начатую задачу),
+  `/smart_agent_task_done` (`SmartAgent.finish_task`, очищает).
+- **`long_term`** (долговременная, факты) — список текстовых фактов, пишется ТОЛЬКО
+  явно командой `/smart_agent_remember <текст>` (`SmartAgent.remember`) ДОСЛОВНО, без
+  какой-либо LLM-классификации того, что стоит сохранить — при добавлении новой
+  функциональности не подставляй сюда автоматическое решение модели о том, что
+  запомнить: весь смысл слоя в том, что пользователь сам явно решает. Удаляется по
+  номеру `/smart_agent_forget <номер>` (`SmartAgent.forget`, номера — как в
+  `/smart_agent_long_show`). При превышении `AGENT_MEMORY_LONG_TERM_MAX_FACTS`
+  вытесняется САМЫЙ СТАРЫЙ факт — простой лимит по количеству, а не по токенам, как
+  `AGENT_FACTS_MAX_TOKENS` у стратегии Sticky Facts `/agent`: там лимит защищает от
+  обрезки JSON-ответа LLM при сворачивании, здесь LLM в записи не участвует вообще.
+
+Как и `working`/`long_term` у `Agent` (`AGENT_FACTS_SYSTEM_PROMPT`, правило 5), эти
+два explicit-слоя SmartAgent — прямой путь пользователя положить туда чувствительные
+финансовые/личные данные, раз ничего не фильтрует ввод: при доработке текстов команд
+(`/smart_agent_remember`, `/smart_agent_task_set`) сохраняй предупреждение не делать
+этого — то же ограничение из «Правил предметной области» ниже, применённое к обоим
+explicit-слоям, а не только к `long_term`.
+
+`enabled_layers` (`{"short_term": bool, "working": bool, "long_term": bool}`, все три
+`True` по умолчанию) — какие слои участвуют в СБОРКЕ контекста конкретного вызова
+(`SmartAgent._build_context_messages()`), переключается `/smart_agent_toggle
+<short|working|long>` (`SmartAgent.set_layer_enabled`) БЕЗ удаления данных слоя — это
+инструмент проверки влияния слоя на ответ (задать один вопрос с разными комбинациями
+включённых слоёв и сравнить ответы), а не способ очистки. `SmartAgent.reset_all()`
+(`/smart_agent_reset`) очищает данные всех трёх слоёв, но НЕ трогает `enabled_layers`
+— тот же принцип, что `Agent.reset()` не трогает выбранную стратегию, это настройка
+режима работы, а не часть очищаемых данных.
+
+Порядок слоёв в собранном контексте — долговременная память -> рабочая задача ->
+краткосрочный диалог (от самого общего/стабильного контекста к самому свежему), каждый
+отдельным системным сообщением. `SmartAgent.get_last_context_messages()` возвращает
+ровно те системные сообщения, что реально ушли в LLM на последний `ask()` — на этом
+построена наблюдаемость: команда `/smart_agent_show` печатает все три слоя как есть
+(`get_short_term`/`get_working`/`get_long_term_facts`), их статус
+включено/выключено и последний собранный контекст — так видно и что попало в каждый
+слой, и что из этого реально дошло до модели.
+
+Как и `Agent`, `SmartAgent` использует `main_client`/`MAIN_MODEL`/`SYSTEM_PROMPT` (см.
+«Ограничения безопасности» про то, почему слои памяти не нарушают запрет на
+runtime-переключение модели/провайдера/промпта — они влияют только на сборку
+контекста для уже выбранного провайдера) и не перехватывает исключения OpenAI SDK в
+`ask()` — перевод в сообщение на русском делает `agents/smart_agent_command.py`, тем
+же паттерном, что `agent_command.py`/`handle_message`.
+
 ## Правила предметной области: инвестиционные рекомендации
 
 Это не универсальный чат-бот, а сервис, отвечающий на вопросы о деньгах и инвестициях —
@@ -586,7 +680,9 @@ per-branch (см. выше) — ТОЖЕ их не сбрасывает: пос�
   стратегий управления контекстом `/agent`, см. «Управление контекстом агента») и к
   `/agent_checkpoint`/`/agent_branch`/`/agent_switch_branch` — все они меняют, как
   собирается контекст для уже выбранного `MAIN_CLIENT`/`MAIN_MODEL`/`SYSTEM_PROMPT`,
-  а не сам провайдер/модель/системный промпт.
+  а не сам провайдер/модель/системный промпт. Не относится и к `/smart_agent_toggle`
+  (включение/выключение слоя памяти в сборке контекста, см. «Управление памятью
+  smart-агента») — по тому же принципу.
 - История сообщений не сохраняется и не передаётся между запросами — не добавляй
   функциональность памяти/истории без явного запроса пользователя (см. также раздел выше про
   инвестиционные данные — здесь это не только архитектурное, но и доменное ограничение).
@@ -603,5 +699,19 @@ per-branch (см. выше) — ТОЖЕ их не сбрасывает: пос�
   трижды: по явному запросу пользователя (вход в `/agent_compare`) три
   дополнительных файла истории на чат, по одному на сравниваемую стратегию;
   очищаются разом командой `/agent_compare_reset`, отдельно от `/agent_reset`.
+  `/smart_agent` (`agents/smart_agent.py`, `agents/smart_agent_command.py`) — то же
+  исключение, но НЕЗАВИСИМОЕ от `/agent`/`/agent_compare` (свой класс, свой файл
+  памяти в `AGENT_MEMORY_DIR`, см. «Управление памятью smart-агента»): по явному
+  запросу пользователя хранит память тремя явно разделёнными слоями, причём для
+  двух из них (`working`/`long_term`) даже САМА ЗАПИСЬ возможна только явной
+  командой пользователя (`/smart_agent_task_*`/`/smart_agent_remember`), а не только
+  чтение и очистка, как у `/agent` — это более строгий вариант того же принципа
+  «память — только там, видимая и явно управляемая пользователем». При дальнейшей
+  доработке сохраняй это: никакая эвристика не должна сама решать, что положить в
+  `working`/`long_term`, и оба слоя, как и любое другое место в проекте, не должны
+  использоваться для чувствительных финансовых/личных данных (см. «Правила
+  предметной области» выше) — команды `/smart_agent_remember`/`/smart_agent_task_set`
+  ничего не фильтруют на вход, ответственность на пользователе, а тексты команд
+  должны об этом явно предупреждать.
 - Групповые чаты исключены через фильтр обработчика; сохраняй этот фильтр при добавлении
   новых обработчиков текстовых сообщений.

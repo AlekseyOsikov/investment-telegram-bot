@@ -20,7 +20,11 @@ temperature (/research_temperature) — в research/temperature.py, режим �
 agents/agent.py и agents/agent_command.py; в отличие от остального бота, он хранит
 историю переписки в JSON на диске (осознанное исключение по явному запросу, см.
 «Ограничения безопасности» в CLAUDE.md), которую можно посмотреть командой
-/agent_history и очистить командой /agent_reset.
+/agent_history и очистить командой /agent_reset. Команда /smart_agent — независимый
+от /agent LLM-агент с явно разделённой моделью памяти (краткосрочная/рабочая/
+долговременная, каждая хранится отдельно и пишется только по явной команде
+пользователя) — в agents/smart_agent.py и agents/smart_agent_command.py, см.
+«Управление памятью smart-агента» в CLAUDE.md.
 
 Исследовательские/технические команды (/research_*, /agent_compare*, /agent_mode,
 /agent_context) регистрируются здесь и упоминаются в /help, только если включена
@@ -64,6 +68,19 @@ from agents.compare_command import (
     build_agent_compare_report_handler,
     build_agent_compare_reset_handler,
 )
+from agents.smart_agent_command import (
+    build_smart_agent_conversation_handler,
+    build_smart_agent_forget_handler,
+    build_smart_agent_long_show_handler,
+    build_smart_agent_remember_handler,
+    build_smart_agent_reset_handler,
+    build_smart_agent_show_handler,
+    build_smart_agent_task_done_handler,
+    build_smart_agent_task_set_handler,
+    build_smart_agent_task_show_handler,
+    build_smart_agent_task_start_handler,
+    build_smart_agent_toggle_handler,
+)
 from config import (
     MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
@@ -100,10 +117,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "не индивидуальная инвестиционная рекомендация. Перед принятием решений "
         "проконсультируйся с лицензированным финансовым консультантом.\n\n"
         "🔒 Обычные сообщения я не запоминаю: каждое обрабатывается независимо от "
-        "предыдущих. Исключение — режим /agent: там я сохраняю историю диалога на "
-        "диске, чтобы отвечать с учётом предыдущих вопросов, даже после моего "
-        "перезапуска; очистить её можно командой /agent_reset. В любом режиме не "
-        "присылай, пожалуйста, номера счетов, карт и другие чувствительные данные.\n\n"
+        "предыдущих. Исключения — режим /agent (история диалога на диске, очистить — "
+        "/agent_reset) и режим /smart_agent (память разделена на краткосрочную, "
+        "рабочую и долговременную — ты сам решаешь, что и куда сохранять; очистить "
+        "всё — /smart_agent_reset). В любом режиме не присылай, пожалуйста, номера "
+        "счетов, карт и другие чувствительные данные.\n\n"
         "Используй /help, чтобы посмотреть список команд."
     )
     await update.message.reply_text(welcome_text)
@@ -159,6 +177,21 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "режиме /agent_compare)",
             "/agent_compare_reset — очистить историю всех трёх сразу",
         ]
+    command_lines += [
+        "/smart_agent — независимый LLM-агент с явно разделённой памятью "
+        "(краткосрочная/рабочая/долговременная): задавай вопросы один за другим, "
+        "пока не отправишь /cancel",
+        "/smart_agent_remember &lt;текст&gt; — сохранить факт в долговременную память",
+        "/smart_agent_forget &lt;номер&gt; — удалить факт из долговременной памяти",
+        "/smart_agent_long_show — показать все факты долговременной памяти",
+        "/smart_agent_task_start &lt;цель&gt; — начать рабочую задачу",
+        "/smart_agent_task_set &lt;ключ&gt; &lt;значение&gt; — сохранить данные текущей задачи",
+        "/smart_agent_task_show — показать текущую рабочую задачу",
+        "/smart_agent_task_done — завершить и очистить текущую рабочую задачу",
+        "/smart_agent_show — показать все три слоя памяти и что из них ушло в LLM",
+        "/smart_agent_toggle &lt;short|working|long&gt; — включить/выключить слой в контексте",
+        "/smart_agent_reset — очистить всю память smart-агента (все три слоя)",
+    ]
 
     help_text = (
         "ℹ️ <b>Как пользоваться ботом</b>\n\n"
@@ -170,7 +203,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "<b>Ограничения:</b>\n"
         f"— максимальная длина запроса: {MAX_INPUT_CHARS} символов\n"
         "— бот не хранит историю обычных сообщений (каждый вопрос — новый контекст); "
-        "в режиме /agent история сохраняется до команды /agent_reset\n"
+        "в режиме /agent история сохраняется до команды /agent_reset, в режиме "
+        "/smart_agent — до команды /smart_agent_reset\n"
         "— бот работает только с текстом (без файлов, фото и голосовых)\n\n"
         "<b>⚠️ Дисклеймер:</b>\n"
         "Бот не является лицензированным финансовым советником, а его ответы не являются "
@@ -304,6 +338,20 @@ def main() -> None:
         application.add_handler(build_agent_compare_conversation_handler())
         application.add_handler(build_agent_compare_report_handler())
         application.add_handler(build_agent_compare_reset_handler())
+    # /smart_agent — независимый от /agent LLM-агент с явно разделённой моделью
+    # памяти (см. agents/smart_agent.py) — не исследовательский режим, всегда доступен,
+    # как и /agent (не под RESEARCH_ENABLED).
+    application.add_handler(build_smart_agent_conversation_handler())
+    application.add_handler(build_smart_agent_remember_handler())
+    application.add_handler(build_smart_agent_forget_handler())
+    application.add_handler(build_smart_agent_long_show_handler())
+    application.add_handler(build_smart_agent_task_start_handler())
+    application.add_handler(build_smart_agent_task_set_handler())
+    application.add_handler(build_smart_agent_task_show_handler())
+    application.add_handler(build_smart_agent_task_done_handler())
+    application.add_handler(build_smart_agent_show_handler())
+    application.add_handler(build_smart_agent_toggle_handler())
+    application.add_handler(build_smart_agent_reset_handler())
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)

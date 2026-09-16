@@ -96,6 +96,7 @@ from config import (
 from .active_mode import (
     AGENT_MODE,
     COMPARE_MODE,
+    SMART_AGENT_MODE,
     clear_active_mode,
     get_active_mode,
     set_active_mode,
@@ -172,14 +173,21 @@ async def _exit_agent_mode(update: Update) -> int:
 async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Точка входа в режим агента (/agent).
 
-    Взаимоисключается с /agent_compare (agents/compare_command.py, см. active_mode.py
-    про то, почему) — если чат уже в режиме сравнения, вход отклоняется с подсказкой
-    сначала выйти оттуда.
+    Взаимоисключается с /agent_compare (agents/compare_command.py) и /smart_agent
+    (agents/smart_agent_command.py, см. active_mode.py про то, почему) — если чат уже
+    в одном из этих режимов, вход отклоняется с подсказкой сначала выйти оттуда.
     """
     chat_id = update.effective_chat.id
-    if get_active_mode(chat_id) == COMPARE_MODE:
+    active_mode = get_active_mode(chat_id)
+    if active_mode == COMPARE_MODE:
         await update.message.reply_text(
             "⚠️ Сейчас активен режим сравнения стратегий (/agent_compare). "
+            "Сначала выйди из него (кнопка выхода или /cancel), потом заходи в /agent."
+        )
+        return ConversationHandler.END
+    if active_mode == SMART_AGENT_MODE:
+        await update.message.reply_text(
+            "⚠️ Сейчас активен режим smart-агента (/smart_agent). "
             "Сначала выйди из него (кнопка выхода или /cancel), потом заходи в /agent."
         )
         return ConversationHandler.END
