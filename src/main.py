@@ -72,6 +72,10 @@ from agents.smart_agent_command import (
     build_smart_agent_conversation_handler,
     build_smart_agent_forget_handler,
     build_smart_agent_long_show_handler,
+    build_smart_agent_profile_conversation_handler,
+    build_smart_agent_profile_delete_handler,
+    build_smart_agent_profile_set_handler,
+    build_smart_agent_profile_show_handler,
     build_smart_agent_remember_handler,
     build_smart_agent_reset_handler,
     build_smart_agent_show_handler,
@@ -119,9 +123,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "🔒 Обычные сообщения я не запоминаю: каждое обрабатывается независимо от "
         "предыдущих. Исключения — режим /agent (история диалога на диске, очистить — "
         "/agent_reset) и режим /smart_agent (память разделена на краткосрочную, "
-        "рабочую и долговременную — ты сам решаешь, что и куда сохранять; очистить "
-        "всё — /smart_agent_reset). В любом режиме не присылай, пожалуйста, номера "
-        "счетов, карт и другие чувствительные данные.\n\n"
+        "рабочую и долговременную и хранится в разрезе профиля — ты сам решаешь, что "
+        "и куда сохранять и какой профиль сейчас активен, /smart_agent_profile; "
+        "очистить память профиля — /smart_agent_reset). В любом режиме не присылай, "
+        "пожалуйста, номера счетов, карт и другие чувствительные данные.\n\n"
         "Используй /help, чтобы посмотреть список команд."
     )
     await update.message.reply_text(welcome_text)
@@ -179,8 +184,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         ]
     command_lines += [
         "/smart_agent — независимый LLM-агент с явно разделённой памятью "
-        "(краткосрочная/рабочая/долговременная): задавай вопросы один за другим, "
-        "пока не отправишь /cancel",
+        "(краткосрочная/рабочая/долговременная), хранящейся в разрезе профиля: "
+        "задавай вопросы один за другим, пока не отправишь /cancel",
+        "/smart_agent_profile — выбрать другой профиль или создать новый (влияет на "
+        "стиль/формат ответов)",
+        "/smart_agent_profile_set &lt;ключ&gt; &lt;значение&gt; — точечно поправить одно поле "
+        "профиля",
+        "/smart_agent_profile_show — показать все профили и поля активного",
+        "/smart_agent_profile_delete &lt;имя&gt; — удалить профиль целиком вместе со всей "
+        "его памятью",
         "/smart_agent_remember &lt;текст&gt; — сохранить факт в долговременную память",
         "/smart_agent_forget &lt;номер&gt; — удалить факт из долговременной памяти",
         "/smart_agent_long_show — показать все факты долговременной памяти",
@@ -188,9 +200,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/smart_agent_task_set &lt;ключ&gt; &lt;значение&gt; — сохранить данные текущей задачи",
         "/smart_agent_task_show — показать текущую рабочую задачу",
         "/smart_agent_task_done — завершить и очистить текущую рабочую задачу",
-        "/smart_agent_show — показать все три слоя памяти и что из них ушло в LLM",
-        "/smart_agent_toggle &lt;short|working|long&gt; — включить/выключить слой в контексте",
-        "/smart_agent_reset — очистить всю память smart-агента (все три слоя)",
+        "/smart_agent_show — показать профиль, все три слоя памяти и что из них ушло в LLM",
+        "/smart_agent_toggle &lt;profile|short|working|long&gt; — включить/выключить слой в "
+        "контексте",
+        "/smart_agent_reset — очистить память активного профиля (все три слоя)",
     ]
 
     help_text = (
@@ -341,6 +354,16 @@ def main() -> None:
     # /smart_agent — независимый от /agent LLM-агент с явно разделённой моделью
     # памяти (см. agents/smart_agent.py) — не исследовательский режим, всегда доступен,
     # как и /agent (не под RESEARCH_ENABLED).
+    # build_smart_agent_profile_conversation_handler() ЗАРЕГИСТРИРОВАН ПЕРВЫМ —
+    # пока анкета создания профиля (/smart_agent_profile) активна для чата, именно
+    # она должна первой перехватывать обычный текст (ответы на её вопросы), а не
+    # WAITING_QUESTION основного ConversationHandler-а /smart_agent (см. докстринг
+    # agents/smart_agent_command.py про порядок и почему это два разных
+    # ConversationHandler-а).
+    application.add_handler(build_smart_agent_profile_conversation_handler())
+    application.add_handler(build_smart_agent_profile_set_handler())
+    application.add_handler(build_smart_agent_profile_show_handler())
+    application.add_handler(build_smart_agent_profile_delete_handler())
     application.add_handler(build_smart_agent_conversation_handler())
     application.add_handler(build_smart_agent_remember_handler())
     application.add_handler(build_smart_agent_forget_handler())
