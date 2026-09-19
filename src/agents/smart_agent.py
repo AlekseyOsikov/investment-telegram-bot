@@ -7,15 +7,25 @@
 Три слоя памяти, каждый хранится отдельно и пишется по-разному:
 - short_term (краткосрочная, текущий диалог) — сырые сообщения, пишутся
   АВТОМАТИЧЕСКИ на каждый вызов ask(), как обычная история чата.
-- working (рабочая, данные текущей задачи) — одна активная задача на профиль
-  ({"goal", "status", "data", "created_at"} или None), пишется ТОЛЬКО явно
-  (start_task/set_task_data/finish_task), никогда автоматически.
-- long_term (долговременная, факты) — список текстовых фактов, пишется ТОЛЬКО явно
-  (remember/forget), дословно, без LLM-классификации: ответственность за то, чтобы не
-  сохранять туда чувствительные данные (номера счетов/карт, паспортные данные и т.п.,
-  см. «Правила предметной области» в CLAUDE.md), остаётся на пользователе, как и для
-  working — эта же осторожность применима к обоим explicit-слоям, не только к
-  long_term.
+- working (рабочая, текущая задача) — одна активная задача на профиль, оформленная
+  как КОНЕЧНЫЙ АВТОМАТ (этап/шаг/ожидаемое действие/пауза, см. agents/task_state.py).
+  Пишется и вручную (start_task/set_task_data/finish_task/pause_task/set_task_stage),
+  и АВТОМАТИЧЕСКИ — отдельным техническим вызовом LLM после каждого ответа агента
+  (update_task_state), который двигает этап и заполняет данные задачи. Это осознанное
+  исключение из прежнего принципа «в рабочую и долговременную память пишет только
+  пользователь явной командой», сделанное по явному запросу пользователя проекта —
+  см. «Управление памятью smart-агента» в CLAUDE.md.
+- long_term (долговременная, факты) — список фактов {"text", "source", "created_at"},
+  где source различает сохранённые пользователем дословно (/smart_agent_remember) и
+  извлечённые автоматически тем же техническим вызовом. При переполнении лимита
+  вытесняются СНАЧАЛА автоматические факты — иначе автоизвлечение постепенно вымыло
+  бы из памяти то, что пользователь сохранил руками.
+
+Ни один слой не фильтрует содержимое на вход, поэтому ответственность за то, чтобы
+не сохранять туда чувствительные данные (номера счетов/карт, паспортные данные,
+денежные суммы, см. «Правила предметной области» в CLAUDE.md), остаётся на
+пользователе — а в системных промптах технического вызова прямо прописан запрет
+извлекать такие данные из диалога.
 
 Поверх этих трёх слоёв — ПРОФИЛИ ПОЛЬЗОВАТЕЛЯ (персонализация): на чат может быть
 заведено несколько именованных профилей (например, «Консервативный»/«Агрессивный»),
@@ -58,6 +68,7 @@ short_term/working/long_term невозможно — методы этих сл
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 from dataclasses import dataclass
@@ -68,12 +79,18 @@ from config import (
     AGENT_MEMORY_DIR,
     AGENT_MEMORY_LONG_TERM_MAX_FACTS,
     AGENT_MEMORY_SHORT_TERM_PAIRS,
+    AGENT_TASK_START_MAX_TOKENS,
+    AGENT_TASK_START_SYSTEM_PROMPT,
+    AGENT_TASK_STATE_MAX_TOKENS,
+    AGENT_TASK_STATE_SYSTEM_PROMPT,
     MAIN_MODEL,
     MAX_OUTPUT_TOKENS,
     REQUEST_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
 )
 from providers.main_client import main_client
+
+from . import task_state
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +137,29 @@ PROFILE_FIELD_LABELS = {
 # на пустом месте после обновления бота.
 _MIGRATED_PROFILE_NAME = "Профиль по умолчанию"
 
+# Происхождение факта долговременной памяти: сохранён пользователем дословно или
+# извлечён техническим вызовом из диалога. От этого зависит порядок вытеснения при
+# переполнении лимита (см. _append_fact) и пометка в /smart_agent_long_show.
+FACT_SOURCE_USER = "user"
+FACT_SOURCE_AUTO = "auto"
+
+# Потолок на автоматическое пополнение долговременной памяти за один ход — см.
+# SmartAgent._extracted_facts.
+_MAX_AUTO_FACTS_PER_TURN = 3
+_MAX_AUTO_FACT_CHARS = 300
+
+
+@dataclass
+class TaskStateUpdate:
+    """Что изменилось в задаче после технического вызова — командный слой
+    превращает это в сообщение пользователю (см. update_task_state). Сама строка
+    состояния сюда не входит: она печатается КАЖДЫЙ ход, в том числе когда
+    ничего не изменилось, и берётся отдельно через get_task_state_line()."""
+
+    started: bool = False
+    transition: str | None = None
+    archived: bool = False
+
 
 @dataclass
 class SmartAgentAnswer:
@@ -161,6 +201,8 @@ class SmartAgent:
         memory_dir: str = AGENT_MEMORY_DIR,
         short_term_pairs: int = AGENT_MEMORY_SHORT_TERM_PAIRS,
         long_term_max_facts: int = AGENT_MEMORY_LONG_TERM_MAX_FACTS,
+        task_state_max_tokens: int = AGENT_TASK_STATE_MAX_TOKENS,
+        task_start_max_tokens: int = AGENT_TASK_START_MAX_TOKENS,
     ) -> None:
         self._client = client
         self._model = model
@@ -170,6 +212,8 @@ class SmartAgent:
         self._memory_path = Path(memory_dir) / f"{chat_id}.json"
         self._short_term_pairs = short_term_pairs
         self._long_term_max_facts = long_term_max_facts
+        self._task_state_max_tokens = task_state_max_tokens
+        self._task_start_max_tokens = task_start_max_tokens
         (
             self._profiles,
             self._active_profile,
@@ -229,20 +273,10 @@ class SmartAgent:
         # было накоплено, в один профиль и делаем его сразу активным, чтобы уже
         # работающие чаты не прерывались выбором профиля на пустом месте (см.
         # докстринг модуля и _MIGRATED_PROFILE_NAME выше).
-        legacy_short_term = data.get("short_term")
-        legacy_short_term = legacy_short_term if isinstance(legacy_short_term, list) else []
-        legacy_working = data.get("working")
-        legacy_working = legacy_working if isinstance(legacy_working, dict) else None
-        legacy_long_term = data.get("long_term")
-        legacy_long_term = legacy_long_term if isinstance(legacy_long_term, list) else []
-
-        if not (legacy_short_term or legacy_working or legacy_long_term):
+        if not (data.get("short_term") or data.get("working") or data.get("long_term")):
             return {}, None, enabled_layers
 
-        migrated = _empty_profile()
-        migrated["short_term"] = legacy_short_term
-        migrated["working"] = legacy_working
-        migrated["long_term"] = legacy_long_term
+        migrated = self._sanitize_profile(data)
         return {_MIGRATED_PROFILE_NAME: migrated}, _MIGRATED_PROFILE_NAME, enabled_layers
 
     @staticmethod
@@ -254,17 +288,48 @@ class SmartAgent:
         short_term = entry.get("short_term")
         short_term = short_term if isinstance(short_term, list) else []
 
-        working = entry.get("working")
-        working = working if isinstance(working, dict) else None
+        # Задача старого формата ({"goal", "status", "data", ...}, до появления
+        # автомата) не выбрасывается, а мигрирует в сценарий по умолчанию на
+        # первый этап — см. task_state.sanitize_task.
+        working = task_state.sanitize_task(entry.get("working"))
 
-        long_term = entry.get("long_term")
-        long_term = long_term if isinstance(long_term, list) else []
+        raw_long_term = entry.get("long_term")
+        raw_long_term = raw_long_term if isinstance(raw_long_term, list) else []
+        long_term = [
+            fact
+            for fact in (SmartAgent._sanitize_fact(item) for item in raw_long_term)
+            if fact is not None
+        ]
 
         return {
             "meta": meta,
             "short_term": short_term,
             "working": working,
             "long_term": long_term,
+        }
+
+    @staticmethod
+    def _sanitize_fact(item) -> dict | None:
+        """Факт долговременной памяти. Строка — это старый формат (до появления
+        автоматического извлечения), и она мигрирует в факт с source="user": до
+        этой версии в long_term вообще ничего не попадало без явной команды
+        пользователя, так что такая пометка исторически верна."""
+        if isinstance(item, str):
+            text = item.strip()
+            return {"text": text, "source": FACT_SOURCE_USER, "created_at": ""} if text else None
+        if not isinstance(item, dict):
+            return None
+        text = str(item.get("text", "")).strip()
+        if not text:
+            return None
+        source = item.get("source")
+        if source not in (FACT_SOURCE_USER, FACT_SOURCE_AUTO):
+            source = FACT_SOURCE_USER
+        created_at = item.get("created_at")
+        return {
+            "text": text,
+            "source": source,
+            "created_at": created_at if isinstance(created_at, str) else "",
         }
 
     def _save_state(self) -> None:
@@ -347,12 +412,22 @@ class SmartAgent:
         if self._active_profile is None:
             return None
         working = self._profiles[self._active_profile]["working"]
-        return dict(working) if working is not None else None
+        return copy.deepcopy(working) if working is not None else None
 
-    def get_long_term_facts(self) -> list[str]:
+    def get_task_state_line(self) -> str | None:
+        """Короткая строка о состоянии автомата для чата (или None, если активной
+        задачи нет — тогда служебной строки быть не должно вовсе, чтобы обычные
+        разовые вопросы ею не обрастали)."""
+        task = self.get_working()
+        return task_state.state_line(task) if task is not None else None
+
+    def get_long_term_facts(self) -> list[dict[str, str]]:
+        """Факты активного профиля как есть — каждый со своим source (см.
+        FACT_SOURCE_*), чтобы /smart_agent_long_show мог показать, что пришло из
+        диалога, а что сохранено пользователем."""
         if self._active_profile is None:
             return []
-        return list(self._profiles[self._active_profile]["long_term"])
+        return [dict(fact) for fact in self._profiles[self._active_profile]["long_term"]]
 
     def get_enabled_layers(self) -> dict[str, bool]:
         return dict(self._enabled_layers)
@@ -373,20 +448,43 @@ class SmartAgent:
     # --- Долговременная память активного профиля: только явная запись, дословно --- #
 
     def remember(self, fact: str) -> bool:
-        """Добавляет факт в долговременную память АКТИВНОГО ПРОФИЛЯ дословно, без
-        LLM-классификации (см. докстринг класса). Возвращает False, если активного
-        профиля нет. Если список превышает long_term_max_facts, вытесняется САМЫЙ
-        СТАРЫЙ факт — простой лимит по количеству, а не по токенам (в отличие от
-        AGENT_FACTS_MAX_TOKENS у Agent): здесь нет вызова LLM, который нужно было бы
-        защищать от обрезки ответа."""
+        """Добавляет факт в долговременную память АКТИВНОГО ПРОФИЛЯ дословно, как
+        сохранённый пользователем (/smart_agent_remember). Возвращает False, если
+        активного профиля нет."""
         if self._active_profile is None:
             return False
-        long_term = self._profiles[self._active_profile]["long_term"]
-        long_term.append(fact)
-        if len(long_term) > self._long_term_max_facts:
-            del long_term[: len(long_term) - self._long_term_max_facts]
+        self._append_fact(fact, FACT_SOURCE_USER)
         self._save_state()
         return True
+
+    def _append_fact(self, text: str, source: str) -> None:
+        """Общая запись факта для обоих источников (см. FACT_SOURCE_*). Требует уже
+        проверенного активного профиля и НЕ сохраняет состояние на диск — это делает
+        вызывающий код, чтобы пачка автоматических фактов не переписывала файл по
+        разу на каждый факт.
+
+        При переполнении лимита вытесняется самый старый АВТОМАТИЧЕСКИЙ факт, и
+        только если автоматических больше нет — самый старый вообще. Так
+        автоизвлечение не вымывает из памяти то, что пользователь сохранил руками,
+        но и не ломает прежнее поведение FIFO, когда все факты пользовательские.
+        Только что добавленный факт из кандидатов на вытеснение исключён — иначе
+        при полной памяти он бы тут же и удалялся.
+        """
+        long_term = self._profiles[self._active_profile]["long_term"]
+        long_term.append(
+            {
+                "text": text,
+                "source": source,
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+            }
+        )
+        while len(long_term) > self._long_term_max_facts:
+            candidates = range(len(long_term) - 1)
+            victim = next(
+                (i for i in candidates if long_term[i].get("source") == FACT_SOURCE_AUTO),
+                0,
+            )
+            del long_term[victim]
 
     def forget(self, index: int) -> bool:
         """Удаляет факт по 1-based номеру (как показывает /smart_agent_long_show) из
@@ -404,18 +502,70 @@ class SmartAgent:
 
     # --- Рабочая память активного профиля: только явная запись, одна задача за раз --- #
 
-    def start_task(self, goal: str) -> bool:
+    def start_task(self, task_type: str, goal: str) -> bool:
         """Начинает новую рабочую задачу в АКТИВНОМ ПРОФИЛЕ — ЗАМЕНЯЕТ предыдущую
         задачу этого профиля (одна активная задача на профиль, см. докстринг класса),
-        а не копит несколько параллельно. Возвращает False, если активного профиля нет."""
+        а не копит несколько параллельно. Возвращает False, если активного профиля
+        нет или сценарий неизвестен.
+
+        Это явный путь пользователя (/smart_agent_task_start). Автоматический старт
+        задачи по намерению в диалоге идёт через update_task_state() и срабатывает
+        только тогда, когда активной задачи НЕТ — молча подменять незавершённую
+        задачу автомат не должен (см. _maybe_start_task).
+        """
+        if self._active_profile is None or task_type not in task_state.SCENARIOS:
+            return False
+        profile = self._profiles[self._active_profile]
+        # Уже накопленный диалог считаем учтённым: задача начинается «с этого
+        # места», и разбирать ради неё всю предыдущую переписку не нужно (при
+        # автоматическом старте правило другое, см. _maybe_start_task).
+        profile["working"] = task_state.new_task(
+            task_type, goal, processed_pairs=len(profile["short_term"]) // 2
+        )
+        self._save_state()
+        return True
+
+    def pause_task(self) -> bool:
+        """Ставит задачу на паузу на ЛЮБОМ этапе (флаг, ортогональный этапу). Пока
+        задача на паузе, технический вызов не трогает её состояние, а основная
+        модель получает указание не продолжать задачу — пользователь может в это
+        время спрашивать о чём угодно другом. Возвращает False, если задачи нет или
+        она уже на паузе."""
         if self._active_profile is None:
             return False
-        self._profiles[self._active_profile]["working"] = {
-            "goal": goal,
-            "status": "active",
-            "data": {},
-            "created_at": datetime.now().isoformat(timespec="seconds"),
-        }
+        task = self._profiles[self._active_profile]["working"]
+        if task is None or task.get("paused"):
+            return False
+        task["paused"] = True
+        task["paused_at"] = datetime.now().isoformat(timespec="seconds")
+        self._save_state()
+        return True
+
+    def resume_task(self) -> bool:
+        """Снимает паузу. Сводку «где остановились» вызывающий код строит из уже
+        сохранённого состояния (task_state.describe_state) — без обращения к LLM и
+        без переспрашивания пользователя."""
+        if self._active_profile is None:
+            return False
+        task = self._profiles[self._active_profile]["working"]
+        if task is None or not task.get("paused"):
+            return False
+        task["paused"] = False
+        task["paused_at"] = None
+        self._save_state()
+        return True
+
+    def set_task_stage(self, stage: str) -> bool:
+        """Ручной перевод задачи на другой этап — предохранитель на случай, когда
+        автомат ошибся или застрял. В отличие от автоматического перехода, здесь
+        НЕ проверяется заполненность обязательных ключей (иначе застрявшую задачу
+        нельзя было бы сдвинуть вручную), но граф переходов соблюдается: перевести
+        можно только на этап, допустимый из текущего."""
+        if self._active_profile is None:
+            return False
+        task = self._profiles[self._active_profile]["working"]
+        if task is None or not task_state.manual_transition(task, stage):
+            return False
         self._save_state()
         return True
 
@@ -505,30 +655,26 @@ class SmartAgent:
                 messages.append(meta_message)
 
         if self._enabled_layers[LAYER_LONG_TERM] and profile["long_term"]:
-            facts_text = "\n".join(f"- {fact}" for fact in profile["long_term"])
+            facts_text = "\n".join(f"- {fact['text']}" for fact in profile["long_term"])
             messages.append(
                 {
                     "role": "system",
                     "content": (
-                        "Долговременная память о пользователе (сохранена им явно "
-                        f"командой /smart_agent_remember):\n{facts_text}"
+                        "Долговременная память о пользователе (часть сохранена им "
+                        "явно командой /smart_agent_remember, часть извлечена из "
+                        f"диалога):\n{facts_text}"
                     ),
                 }
             )
 
         if self._enabled_layers[LAYER_WORKING] and profile["working"] is not None:
-            working = profile["working"]
-            data_text = (
-                "\n".join(f"- {key}: {value}" for key, value in working["data"].items())
-                or "(пока нет дополнительных данных)"
-            )
+            # Весь текст про этап/шаг/ожидание/недостающие пункты собирает сам
+            # автомат (agents/task_state.py) — там же, где определены условия
+            # перехода, чтобы модель и код не расходились в том, чего не хватает.
             messages.append(
                 {
                     "role": "system",
-                    "content": (
-                        f"Текущая рабочая задача пользователя: {working['goal']}.\n"
-                        f"Данные задачи:\n{data_text}"
-                    ),
+                    "content": task_state.build_context_message(profile["working"]),
                 }
             )
 
@@ -601,3 +747,180 @@ class SmartAgent:
             context_tokens=context_tokens,
             response_tokens=response_tokens,
         )
+
+    # --- Конечный автомат задачи: отдельный технический вызов после ответа --- #
+
+    def _call_json_api(self, system_prompt: str, user_content: str, max_tokens: int) -> dict | None:
+        """Один служебный вызов LLM, ожидающий строго JSON-объект
+        (response_format={"type": "json_object"}, как Agent._call_facts_api и
+        сценарий 2 в research/constraints.py — формат проверен на DeepSeek, для
+        Kimi отдельно не проверялся). Возвращает разобранный объект, None если API
+        вернул пустой content или не объект. Может выбросить json.JSONDecodeError
+        (в т.ч. из-за обрезки по max_tokens) или исключение OpenAI SDK — оба
+        перехватывает _call_json_with_retry."""
+        response = self._client.chat.completions.create(
+            model=self._model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_content},
+            ],
+            max_tokens=max_tokens,
+            timeout=self._timeout,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
+        if not content:
+            return None
+        parsed = json.loads(content)
+        return parsed if isinstance(parsed, dict) else None
+
+    def _call_json_with_retry(
+        self, system_prompt: str, user_content: str, max_tokens: int, what: str
+    ) -> dict | None:
+        """Обёртка с одним повтором на удвоенном лимите при обрезанном JSON — тот
+        же приём, что в Agent._update_facts(). Любая ошибка гасится здесь и
+        возвращает None: ответ пользователю уже отправлен, и служебный вызов не
+        имеет права его испортить. Состояние при этом не меняется и не двигается
+        счётчик processed_pairs, поэтому пропущенные пары разберёт следующая
+        попытка (см. update_task_state)."""
+        try:
+            return self._call_json_api(system_prompt, user_content, max_tokens)
+        except json.JSONDecodeError:
+            logger.info(
+                "Служебный ответ (%s, память %s) не разобрался как JSON (похоже на "
+                "обрезку по max_tokens=%d) — повторяю с удвоенным лимитом.",
+                what,
+                self._memory_path,
+                max_tokens,
+            )
+            try:
+                return self._call_json_api(system_prompt, user_content, max_tokens * 2)
+            except Exception:  # noqa: BLE001 — не должно ронять уже отправленный ответ
+                logger.warning(
+                    "Не удалось обновить %s даже после повтора (память %s).",
+                    what,
+                    self._memory_path,
+                    exc_info=True,
+                )
+                return None
+        except Exception:  # noqa: BLE001 — не должно ронять уже отправленный ответ
+            logger.warning(
+                "Не удалось обновить %s (память %s) — попробую после следующего вопроса.",
+                what,
+                self._memory_path,
+                exc_info=True,
+            )
+            return None
+
+    def update_task_state(self) -> TaskStateUpdate | None:
+        """Двигает конечный автомат задачи по итогам последних ходов диалога.
+
+        Вызывается командным слоем ПОСЛЕ того, как ответ агента уже отправлен
+        пользователю (agents/smart_agent_command.py) — иначе пользователь ждал бы
+        два последовательных вызова API, прежде чем увидеть хоть что-то.
+
+        Если активной задачи нет — это укороченный вызов-детектор: не начинает ли
+        пользователь новую задачу (см. _maybe_start_task). Если задача на паузе —
+        не делается ничего вообще. Слой working выключен (/smart_agent_toggle
+        working) — тоже ничего: выключенный слой не участвует ни в контексте, ни в
+        записи.
+
+        Возвращает TaskStateUpdate только если произошло СОБЫТИЕ (старт, переход,
+        архивирование); обычная строка состояния печатается каждый ход и берётся
+        отдельно через get_task_state_line().
+        """
+        if self._active_profile is None or not self._enabled_layers[LAYER_WORKING]:
+            return None
+
+        profile = self._profiles[self._active_profile]
+        task = profile["working"]
+        if task is None or task_state.is_done(task):
+            # Завершённая задача остаётся в слоте до /smart_agent_task_done, но не
+            # должна мешать начать следующую: её итог уже перенесён в
+            # долговременную память, поэтому новая задача просто заменяет её.
+            return self._maybe_start_task(profile)
+        if task.get("paused"):
+            return None
+
+        short_term = profile["short_term"]
+        unprocessed = short_term[2 * task.get("processed_pairs", 0) :]
+        if not unprocessed:
+            return None
+
+        parsed = self._call_json_with_retry(
+            AGENT_TASK_STATE_SYSTEM_PROMPT,
+            task_state.build_state_user_content(task, unprocessed),
+            self._task_state_max_tokens,
+            "состояние задачи",
+        )
+        if parsed is None:
+            return None
+
+        was_done = task_state.is_done(task)
+        updated, transition = task_state.apply_state_response(task, parsed)
+        updated["processed_pairs"] = len(short_term) // 2
+        profile["working"] = updated
+
+        archived = False
+        if self._enabled_layers[LAYER_LONG_TERM]:
+            if task_state.is_done(updated) and not was_done:
+                # Перенос завершённой задачи в долговременную память — ОДНИМ
+                # компактным фактом (см. task_state.archive_fact про то, почему не
+                # по факту на каждый ключ данных).
+                self._append_fact(task_state.archive_fact(updated), FACT_SOURCE_AUTO)
+                archived = True
+            for fact in self._extracted_facts(parsed):
+                self._append_fact(fact, FACT_SOURCE_AUTO)
+
+        self._save_state()
+        return TaskStateUpdate(transition=transition, archived=archived)
+
+    def _maybe_start_task(self, profile: dict) -> TaskStateUpdate | None:
+        """Укороченный вызов на случай «активной задачи нет»: решает только, начал
+        ли пользователь одну из задач реестра. Отдельный дешёвый промпт и лимит
+        токенов нужны потому, что этот вызов случается после КАЖДОГО обычного
+        вопроса, в том числе разового («что такое ETF»).
+
+        Автоматический старт возможен только при отсутствии активной задачи —
+        подменять незавершённую задачу новой автомат не должен, для смены сценария
+        есть явная команда /smart_agent_task_start.
+        """
+        short_term = profile["short_term"]
+        if len(short_term) < 2:
+            return None
+
+        parsed = self._call_json_with_retry(
+            AGENT_TASK_START_SYSTEM_PROMPT,
+            task_state.build_start_user_content(short_term[-2:]),
+            self._task_start_max_tokens,
+            "старт задачи",
+        )
+        if parsed is None:
+            return None
+
+        started = task_state.parse_start_response(parsed)
+        if started is None:
+            return None
+
+        task_type, goal = started
+        profile["working"] = task_state.new_task(
+            task_type, goal, processed_pairs=max(0, len(short_term) // 2 - 1)
+        )
+        self._save_state()
+        return TaskStateUpdate(started=True)
+
+    @staticmethod
+    def _extracted_facts(parsed: dict) -> list[str]:
+        """Факты, предложенные техническим вызовом. Ограничены и по количеству за
+        ход, и по длине: долговременная память мала (AGENT_MEMORY_LONG_TERM_MAX_FACTS),
+        и без потолка одна разговорчивая итерация вытеснила бы из неё всё
+        остальное."""
+        raw = parsed.get("new_facts")
+        if not isinstance(raw, list):
+            return []
+        facts = []
+        for item in raw[:_MAX_AUTO_FACTS_PER_TURN]:
+            text = str(item).strip()
+            if text:
+                facts.append(text[:_MAX_AUTO_FACT_CHARS])
+        return facts

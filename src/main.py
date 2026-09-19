@@ -80,8 +80,11 @@ from agents.smart_agent_command import (
     build_smart_agent_reset_handler,
     build_smart_agent_show_handler,
     build_smart_agent_task_done_handler,
+    build_smart_agent_task_pause_handler,
+    build_smart_agent_task_resume_handler,
     build_smart_agent_task_set_handler,
     build_smart_agent_task_show_handler,
+    build_smart_agent_task_stage_handler,
     build_smart_agent_task_start_handler,
     build_smart_agent_toggle_handler,
 )
@@ -123,10 +126,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "🔒 Обычные сообщения я не запоминаю: каждое обрабатывается независимо от "
         "предыдущих. Исключения — режим /agent (история диалога на диске, очистить — "
         "/agent_reset) и режим /smart_agent (память разделена на краткосрочную, "
-        "рабочую и долговременную и хранится в разрезе профиля — ты сам решаешь, что "
-        "и куда сохранять и какой профиль сейчас активен, /smart_agent_profile; "
-        "очистить память профиля — /smart_agent_reset). В любом режиме не присылай, "
-        "пожалуйста, номера счетов, карт и другие чувствительные данные.\n\n"
+        "рабочую и долговременную и хранится в разрезе профиля; рабочую задачу и "
+        "факты я дополняю сам по ходу диалога, но всё сохранённое видно через "
+        "/smart_agent_show и правится вручную, а очистить память профиля можно "
+        "командой /smart_agent_reset). В любом режиме не присылай, пожалуйста, "
+        "номера счетов, карт и другие чувствительные данные.\n\n"
         "Используй /help, чтобы посмотреть список команд."
     )
     await update.message.reply_text(welcome_text)
@@ -196,9 +200,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/smart_agent_remember &lt;текст&gt; — сохранить факт в долговременную память",
         "/smart_agent_forget &lt;номер&gt; — удалить факт из долговременной памяти",
         "/smart_agent_long_show — показать все факты долговременной памяти",
-        "/smart_agent_task_start &lt;цель&gt; — начать рабочую задачу",
+        "/smart_agent_task_start &lt;сценарий&gt; &lt;цель&gt; — начать рабочую задачу "
+        "(portfolio — составление портфеля, asset — разбор актива, review — ревизия "
+        "портфеля)",
         "/smart_agent_task_set &lt;ключ&gt; &lt;значение&gt; — сохранить данные текущей задачи",
-        "/smart_agent_task_show — показать текущую рабочую задачу",
+        "/smart_agent_task_show — показать состояние задачи: этап, шаг и чего не хватает",
+        "/smart_agent_task_pause — поставить задачу на паузу на любом этапе",
+        "/smart_agent_task_resume — продолжить задачу с того места, где остановились",
+        "/smart_agent_task_stage &lt;этап&gt; — перевести задачу на другой этап вручную",
         "/smart_agent_task_done — завершить и очистить текущую рабочую задачу",
         "/smart_agent_show — показать профиль, все три слоя памяти и что из них ушло в LLM",
         "/smart_agent_toggle &lt;profile|short|working|long&gt; — включить/выключить слой в "
@@ -372,6 +381,9 @@ def main() -> None:
     application.add_handler(build_smart_agent_task_set_handler())
     application.add_handler(build_smart_agent_task_show_handler())
     application.add_handler(build_smart_agent_task_done_handler())
+    application.add_handler(build_smart_agent_task_pause_handler())
+    application.add_handler(build_smart_agent_task_resume_handler())
+    application.add_handler(build_smart_agent_task_stage_handler())
     application.add_handler(build_smart_agent_show_handler())
     application.add_handler(build_smart_agent_toggle_handler())
     application.add_handler(build_smart_agent_reset_handler())

@@ -39,9 +39,7 @@ ConversationHandler-а. Обработчик кнопок "manage" зареги�
 point своего ConversationHandler-а — это позволяет ему подхватывать нажатия и на
 пикер, отправленный ВНЕ какого-либо диалога (после /smart_agent_profile_delete).
 
-Все данные, кроме meta профиля (создание — анкета/entry-callback, правка — только
-/smart_agent_profile_set), продолжают писаться теми же принципами, что и раньше —
-просто теперь в разрезе активного профиля, а не общими на весь чат:
+Команды слоёв памяти в разрезе активного профиля:
 - /smart_agent — вход в диалог «вопрос за вопросом» (как /agent), до /cancel или
   кнопки выхода; если нет активного профиля — сначала выбор/создание профиля.
 - /smart_agent_profile — выбрать другой профиль или создать новый (работает в любой
@@ -56,11 +54,26 @@ point своего ConversationHandler-а — это позволяет ему �
 - /smart_agent_forget <номер> — удаляет факт по номеру (см. /smart_agent_long_show).
 - /smart_agent_long_show — показывает все факты долговременной памяти активного
   профиля с номерами.
-- /smart_agent_task_start <цель> — начинает рабочую задачу активного профиля
-  (заменяет предыдущую).
+- /smart_agent_task_start <сценарий> <цель> — начинает рабочую задачу активного
+  профиля (заменяет предыдущую). Сценариев несколько, см. task_state.SCENARIOS.
 - /smart_agent_task_set <ключ> <значение> — кладёт данные в текущую рабочую задачу.
-- /smart_agent_task_show — показывает текущую рабочую задачу.
+- /smart_agent_task_show — показывает состояние задачи: этап, шаг, ожидаемое
+  действие, собранные пункты и чего не хватает до следующего этапа.
+- /smart_agent_task_pause — ставит задачу на паузу на любом этапе.
+- /smart_agent_task_resume — снимает паузу и печатает сводку «где остановились»,
+  собранную из сохранённого состояния БЕЗ обращения к LLM.
+- /smart_agent_task_stage <этап> — ручной перевод этапа (предохранитель, если
+  автомат ошибся или застрял).
 - /smart_agent_task_done — завершает и очищает текущую рабочую задачу.
+
+РАБОЧАЯ ЗАДАЧА КАК КОНЕЧНЫЙ АВТОМАТ: этап/шаг/ожидаемое действие ведёт отдельный
+технический вызов LLM после КАЖДОГО ответа агента (SmartAgent.update_task_state,
+правила автомата — в agents/task_state.py). Здесь важен порядок: сначала ответ
+уходит пользователю, и только потом делается этот второй вызов
+(_task_service_lines) — иначе пользователь ждал бы два запроса к API подряд,
+прежде чем увидеть хоть что-то. После каждого ответа печатается строка состояния,
+а строки о событиях (старт задачи, смена этапа, архивирование итога в
+долговременную память) — только когда событие действительно произошло.
 - /smart_agent_show — показывает профиль и все три слоя памяти активного профиля как
   есть, их статус включено/выключено и системные сообщения, реально ушедшие в LLM на
   последний вопрос (см. SmartAgent.get_last_context_messages) — способ проверить, что
@@ -111,6 +124,7 @@ from telegram.ext import (
 
 from config import MAIN_API_KEY_ENV_VAR, MAIN_CLIENT_LABEL, MAX_INPUT_CHARS, TELEGRAM_MESSAGE_LIMIT
 
+from . import task_state
 from .active_mode import (
     AGENT_MODE,
     COMPARE_MODE,
@@ -119,7 +133,13 @@ from .active_mode import (
     get_active_mode,
     set_active_mode,
 )
-from .smart_agent import PROFILE_FIELD_LABELS, PROFILE_FIELDS, SmartAgent, SmartAgentAnswer
+from .smart_agent import (
+    FACT_SOURCE_AUTO,
+    PROFILE_FIELD_LABELS,
+    PROFILE_FIELDS,
+    SmartAgent,
+    SmartAgentAnswer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -156,12 +176,16 @@ SMART_AGENT_KEYBOARD = ReplyKeyboardMarkup(
 
 SMART_AGENT_INTRO_TEXT = (
     "🧠 Режим smart-агента.\n\n"
-    "Память разделена на три слоя: краткосрочная (этот диалог), рабочая (данные "
-    "текущей задачи, /smart_agent_task_start) и долговременная (факты, "
-    "/smart_agent_remember) — и хранится в разрезе твоего текущего профиля "
-    "(/smart_agent_profile покажет и позволит переключить). Что попадает в каждый "
-    "слой — решаешь только ты, никакой автоматики. /smart_agent_show покажет "
-    "содержимое всех слоёв и что из них ушло в последний ответ.\n\n"
+    "Память разделена на три слоя: краткосрочная (этот диалог), рабочая (текущая "
+    "задача) и долговременная (факты) — и хранится в разрезе твоего текущего "
+    "профиля (/smart_agent_profile покажет и позволит переключить).\n\n"
+    "Рабочая задача ведётся по этапам (планирование → работа → проверка → "
+    "завершено): я сам отмечаю, на каком мы этапе и чего не хватает, и не перехожу "
+    "дальше, пока не собраны все пункты. Задачу можно начать явно "
+    "(/smart_agent_task_start), поставить на паузу на любом этапе "
+    "(/smart_agent_task_pause) и продолжить позже без повторных объяснений "
+    "(/smart_agent_task_resume). /smart_agent_show покажет содержимое всех слоёв и "
+    "что из них ушло в последний ответ.\n\n"
     "👉 Введи вопрос. Чтобы выйти, нажми кнопку внизу (или отправь /cancel)."
 )
 
@@ -210,6 +234,50 @@ def _format_token_stats(result: SmartAgentAnswer) -> str:
         f"📈 Токены: запрос ≈{result.request_tokens_approx} (по символам), "
         f"контекст={context_tokens}, ответ={response}"
     )
+
+
+def _task_service_lines(agent: SmartAgent) -> list[str]:
+    """Двигает конечный автомат задачи и собирает служебные строки для чата.
+
+    Вызывается ПОСЛЕ отправки ответа пользователю: технический вызов — это второй
+    запрос к API, и если делать его до ответа, пользователь ждал бы оба подряд.
+    Строка состояния печатается каждый ход (пока задача есть), строки о событиях —
+    только когда событие действительно произошло.
+    """
+    lines: list[str] = []
+    update = agent.update_task_state()
+    if update is not None:
+        if update.started:
+            lines.append(
+                "🆕 Похоже, это рабочая задача — дальше веду её по этапам. "
+                "Подробности — /smart_agent_task_show."
+            )
+        if update.transition:
+            lines.append(f"✅ Этап: {update.transition}")
+        if update.archived:
+            lines.append(
+                "🧠 Итог задачи сохранён в долговременную память (/smart_agent_long_show)."
+            )
+
+    state_line = agent.get_task_state_line()
+    if state_line:
+        lines.append(state_line)
+    return lines
+
+
+def _require_active_task(agent: SmartAgent) -> tuple[dict | None, str | None]:
+    """Активная задача или текст ошибки — общая проверка для команд управления
+    автоматом (пауза/возобновление/ручной перевод этапа)."""
+    error = _require_active_profile(agent)
+    if error:
+        return None, error
+    task = agent.get_working()
+    if task is None:
+        return None, (
+            "📭 Сейчас нет активной рабочей задачи. Начать — "
+            "/smart_agent_task_start <сценарий> <цель>."
+        )
+    return task, None
 
 
 def _require_active_profile(agent: SmartAgent) -> str | None:
@@ -511,7 +579,11 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
     for chunk in chunks:
         await update.message.reply_text(chunk, reply_markup=SMART_AGENT_KEYBOARD)
 
-    await update.message.reply_text(_format_token_stats(result), reply_markup=SMART_AGENT_KEYBOARD)
+    # Состояние задачи обновляется уже после отправки ответа (см. _task_service_lines),
+    # а служебная информация уходит одним сообщением, а не двумя.
+    service_lines = _task_service_lines(agent)
+    service_lines.append(_format_token_stats(result))
+    await update.message.reply_text("\n".join(service_lines), reply_markup=SMART_AGENT_KEYBOARD)
 
     return WAITING_QUESTION
 
@@ -738,7 +810,15 @@ async def smart_agent_long_show_command(update: Update, context: ContextTypes.DE
         return
 
     lines = ["🧠 Долговременная память:"]
-    lines.extend(f"{i}. {fact}" for i, fact in enumerate(facts, start=1))
+    lines.extend(
+        f"{i}. {fact['text']}"
+        + (" — извлечено из диалога" if fact["source"] == FACT_SOURCE_AUTO else "")
+        for i, fact in enumerate(facts, start=1)
+    )
+    lines.append(
+        "\nФакты без пометки сохранены тобой явно. При нехватке места первыми "
+        "вытесняются извлечённые из диалога."
+    )
     await update.message.reply_text("\n".join(lines))
 
 
@@ -748,23 +828,122 @@ async def smart_agent_long_show_command(update: Update, context: ContextTypes.DE
 
 
 async def smart_agent_task_start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /smart_agent_task_start <цель> — начинает рабочую задачу активного
-    профиля, заменяя предыдущую, если она была (см. SmartAgent.start_task)."""
+    """Команда /smart_agent_task_start <сценарий> <цель> — явно начинает рабочую
+    задачу активного профиля, заменяя предыдущую, если она была.
+
+    Сценарий указывается явно, потому что их несколько (см. task_state.SCENARIOS) и
+    у каждого свой набор собираемых пунктов. Автоматический старт по намерению в
+    диалоге тоже есть (SmartAgent.update_task_state), но он срабатывает только
+    когда активной задачи нет — смена сценария на ходу остаётся за пользователем.
+    """
     agent = _get_smart_agent(update.effective_chat.id)
     error = _require_active_profile(agent)
     if error:
         await update.message.reply_text(error)
         return
 
-    if not context.args:
-        await update.message.reply_text("👉 Формат: /smart_agent_task_start <цель задачи>")
+    if len(context.args) < 2 or context.args[0] not in task_state.SCENARIOS:
+        scenarios = "\n".join(
+            f"- {key} — {label}" for key, label in task_state.SCENARIO_LABELS.items()
+        )
+        await update.message.reply_text(
+            "👉 Формат: /smart_agent_task_start <сценарий> <цель>\n"
+            f"Доступные сценарии:\n{scenarios}\n"
+            "⚠️ Не указывай денежные суммы, номера счетов/карт и другие "
+            "чувствительные данные — состав портфеля описывается только долями."
+        )
         return
 
-    goal = " ".join(context.args)
+    task_type, goal = context.args[0], " ".join(context.args[1:])
     had_previous_task = agent.get_working() is not None
-    agent.start_task(goal)
+    agent.start_task(task_type, goal)
     note = " Предыдущая рабочая задача заменена." if had_previous_task else ""
-    await update.message.reply_text(f"📋 Рабочая задача начата: «{goal}».{note}")
+    await update.message.reply_text(
+        f"📋 Задача «{task_state.SCENARIO_LABELS[task_type]}» начата: «{goal}».{note}\n"
+        + (agent.get_task_state_line() or "")
+    )
+
+
+async def smart_agent_task_pause_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /smart_agent_task_pause — ставит задачу на паузу на любом этапе:
+    автомат перестаёт двигаться, агент не продолжает задачу, но на другие вопросы
+    отвечает как обычно (см. SmartAgent.pause_task)."""
+    agent = _get_smart_agent(update.effective_chat.id)
+    task, error = _require_active_task(agent)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    if not agent.pause_task():
+        await update.message.reply_text(
+            "⏸ Задача уже на паузе. Продолжить — /smart_agent_task_resume."
+        )
+        return
+
+    await update.message.reply_text(
+        "⏸ Задача на паузе. Состояние сохранено — продолжить можно в любой момент "
+        "командой /smart_agent_task_resume.\n\n" + task_state.describe_state(agent.get_working())
+    )
+
+
+async def smart_agent_task_resume_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /smart_agent_task_resume — снимает паузу и печатает сводку «где
+    остановились».
+
+    Сводка строится ЦЕЛИКОМ из сохранённого состояния задачи, без обращения к LLM
+    (task_state.describe_state) — именно это и означает «продолжение без повторных
+    объяснений»: пользователю не нужно пересказывать контекст, а боту — заново
+    спрашивать уже собранные пункты.
+    """
+    agent = _get_smart_agent(update.effective_chat.id)
+    task, error = _require_active_task(agent)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    if not agent.resume_task():
+        await update.message.reply_text(
+            "▶️ Задача и так не на паузе.\n\n" + task_state.describe_state(task)
+        )
+        return
+
+    await update.message.reply_text(
+        "▶️ Продолжаем с того места, где остановились:\n\n"
+        + task_state.describe_state(agent.get_working())
+    )
+
+
+async def smart_agent_task_stage_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /smart_agent_task_stage <этап> — ручной перевод задачи на другой
+    этап. Предохранитель на случай, когда автомат ошибся или застрял: граф
+    переходов соблюдается, но заполненность обязательных пунктов не проверяется
+    (см. SmartAgent.set_task_stage)."""
+    agent = _get_smart_agent(update.effective_chat.id)
+    task, error = _require_active_task(agent)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    options = task_state.manual_stage_options(task)
+    if not options:
+        await update.message.reply_text(
+            "✅ Задача уже на финальном этапе — переводить её некуда. "
+            "Завершить и очистить — /smart_agent_task_done."
+        )
+        return
+
+    if not context.args or context.args[0] not in dict(options):
+        allowed = "\n".join(f"- {name} — {label}" for name, label in options)
+        await update.message.reply_text(
+            "👉 Формат: /smart_agent_task_stage <этап>\n"
+            f"Сейчас доступны:\n{allowed}"
+        )
+        return
+
+    agent.set_task_stage(context.args[0])
+    await update.message.reply_text(
+        "🔀 Этап переключён вручную.\n\n" + task_state.describe_state(agent.get_working())
+    )
 
 
 async def smart_agent_task_set_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -788,7 +967,8 @@ async def smart_agent_task_set_command(update: Update, context: ContextTypes.DEF
     key, value = context.args[0], " ".join(context.args[1:])
     if not agent.set_task_data(key, value):
         await update.message.reply_text(
-            "⚠️ Сейчас нет активной рабочей задачи. Начни её — /smart_agent_task_start <цель>."
+            "⚠️ Сейчас нет активной рабочей задачи. Начни её — "
+            "/smart_agent_task_start <сценарий> <цель>."
         )
         return
     await update.message.reply_text(f"📋 В рабочую задачу сохранено: {key} = {value}.")
@@ -806,20 +986,17 @@ async def smart_agent_task_show_command(update: Update, context: ContextTypes.DE
     working = agent.get_working()
     if working is None:
         await update.message.reply_text(
-            "📭 Сейчас нет активной рабочей задачи. Начать — /smart_agent_task_start <цель>."
+            "📭 Сейчас нет активной рабочей задачи. Начать — "
+            "/smart_agent_task_start <сценарий> <цель>."
         )
         return
 
-    lines = [
-        f"📋 Рабочая задача: {working['goal']}",
-        f"Статус: {working['status']}. Начата: {working['created_at']}.",
-    ]
-    if working["data"]:
-        lines.append("Данные:")
-        lines.extend(f"- {key}: {value}" for key, value in working["data"].items())
-    else:
-        lines.append("Данных пока нет — добавить: /smart_agent_task_set <ключ> <значение>.")
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text(
+        task_state.describe_state(working)
+        + f"\nНачата: {working.get('created_at') or '—'}.\n\n"
+        "Пауза — /smart_agent_task_pause, продолжить — /smart_agent_task_resume, "
+        "переключить этап вручную — /smart_agent_task_stage."
+    )
 
 
 async def smart_agent_task_done_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -879,10 +1056,7 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
     if working is None:
         lines.append(f"2️⃣ Рабочая ({status('working')}): активной задачи нет.")
     else:
-        lines.append(
-            f"2️⃣ Рабочая ({status('working')}): «{working['goal']}», "
-            f"данных: {len(working['data'])}."
-        )
+        lines.append(f"2️⃣ Рабочая ({status('working')}): {task_state.short_summary(working)}.")
 
     facts = agent.get_long_term_facts()
     lines.append(f"3️⃣ Долговременная ({status('long_term')}), фактов: {len(facts)}.")
@@ -1031,6 +1205,18 @@ def build_smart_agent_task_show_handler() -> CommandHandler:
 
 def build_smart_agent_task_done_handler() -> CommandHandler:
     return CommandHandler("smart_agent_task_done", smart_agent_task_done_command)
+
+
+def build_smart_agent_task_pause_handler() -> CommandHandler:
+    return CommandHandler("smart_agent_task_pause", smart_agent_task_pause_command)
+
+
+def build_smart_agent_task_resume_handler() -> CommandHandler:
+    return CommandHandler("smart_agent_task_resume", smart_agent_task_resume_command)
+
+
+def build_smart_agent_task_stage_handler() -> CommandHandler:
+    return CommandHandler("smart_agent_task_stage", smart_agent_task_stage_command)
 
 
 def build_smart_agent_show_handler() -> CommandHandler:
