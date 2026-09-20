@@ -1,8 +1,9 @@
-"""SmartAgent — LLM-агент с явно разделённой моделью памяти (три независимых слоя),
-в отличие от Agent (agents/agent.py), который переключает ОДНУ стратегию управления
-контекстом поверх единой истории диалога. Отдельная, независимая от /agent сущность
-(см. «Управление памятью smart-агента» в CLAUDE.md про то, почему это новый агент, а
-не 5-я стратегия Agent) — свой класс, свой файл истории, свои команды /smart_agent_*.
+"""SmartAgent — LLM-агент с явно разделённой моделью памяти (три независимых слоя
+плюс слой инвариантов), в отличие от Agent (agents/agent.py), который переключает
+ОДНУ стратегию управления контекстом поверх единой истории диалога. Отдельная,
+независимая от /agent сущность (см. «Управление памятью smart-агента» в CLAUDE.md про
+то, почему это новый агент, а не 5-я стратегия Agent) — свой класс, свой файл истории,
+свои команды /smart_agent_*.
 
 Три слоя памяти, каждый хранится отдельно и пишется по-разному:
 - short_term (краткосрочная, текущий диалог) — сырые сообщения, пишутся
@@ -20,6 +21,17 @@
   извлечённые автоматически тем же техническим вызовом. При переполнении лимита
   вытесняются СНАЧАЛА автоматические факты — иначе автоизвлечение постепенно вымыло
   бы из памяти то, что пользователь сохранил руками.
+
+Отдельно от этих трёх слоёв ПАМЯТИ у профиля есть слой ОГРАНИЧЕНИЙ — инварианты
+(agents/invariants.py): жёсткие правила пользователя («без криптовалют», «доля акций
+не выше 40%»), которые агент не имеет права нарушать. Они пишутся ТОЛЬКО явными
+командами (/smart_agent_invariant_add, /smart_agent_invariant_remove) — никакой
+автоматической записи, в отличие от working/long_term, — уходят в контекст ПЕРВЫМ
+системным сообщением, с приоритетом над профилем персонализации, и дополнительно
+проверяются кодом: результат рабочей задачи прогоняется через отдельный
+вызов-ревизор (_check_invariants), и при нарушении задача откатывается на доработку
+(task_state.apply_invariant_violations). Лимит слоя — с вытеснением НЕ работает: при
+переполнении добавление отклоняется, см. add_invariant.
 
 Ни один слой не фильтрует содержимое на вход, поэтому ответственность за то, чтобы
 не сохранять туда чувствительные данные (номера счетов/карт, паспортные данные,
@@ -49,12 +61,14 @@ short_term/working/long_term невозможно — методы этих сл
 (get_active_profile_name() is None). ask() в этой ситуации не вызывается: сам вход в
 диалог /smart_agent сначала проводит через выбор/создание профиля.
 
-Каждый слой (включая профиль-как-контекст) можно независимо включать/выключать в
-СБОРКЕ контекста (enabled_layers, переключается /smart_agent_toggle) без удаления
-самих данных — это и есть проверка "что попадает в каждый слой и как это влияет на
-ответы", см. get_last_context_messages(). enabled_layers — общая настройка на ВЕСЬ
-ЧАТ (не per-profile) — она про то, как вообще собирается контекст, а не про то, чьи
-данные в нём участвуют (это решает активный профиль).
+Каждый слой (включая профиль-как-контекст и инварианты) можно независимо
+включать/выключать в СБОРКЕ контекста (enabled_layers, переключается
+/smart_agent_toggle) без удаления самих данных — для инвариантов выключение
+отключает и вызов-ревизор, см. _check_invariants. Это и есть проверка "что попадает
+в каждый слой и как это влияет на ответы", см. get_last_context_messages().
+enabled_layers — общая настройка на ВЕСЬ ЧАТ (не per-profile) — она про то, как
+вообще собирается контекст, а не про то, чьи данные в нём участвуют (это решает
+активный профиль).
 
 Использует main_client/MAIN_MODEL — того же провайдера и модель, что и основной поток
 бота, по тому же принципу, что и Agent (см. докстринг agents/agent.py про то, почему
@@ -71,13 +85,16 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
 from config import (
+    AGENT_INVARIANTS_MAX_TOKENS,
+    AGENT_INVARIANTS_SYSTEM_PROMPT,
     AGENT_MEMORY_DIR,
     AGENT_MEMORY_LONG_TERM_MAX_FACTS,
+    AGENT_MEMORY_MAX_INVARIANTS,
     AGENT_MEMORY_SHORT_TERM_PAIRS,
     AGENT_TASK_START_MAX_TOKENS,
     AGENT_TASK_START_SYSTEM_PROMPT,
@@ -90,15 +107,24 @@ from config import (
 )
 from providers.main_client import main_client
 
-from . import task_state
+from . import invariants, task_state
 
 logger = logging.getLogger(__name__)
 
 LAYER_PROFILE = "profile"
+LAYER_INVARIANTS = "invariants"
 LAYER_SHORT_TERM = "short_term"
 LAYER_WORKING = "working"
 LAYER_LONG_TERM = "long_term"
-ALL_LAYERS = (LAYER_PROFILE, LAYER_SHORT_TERM, LAYER_WORKING, LAYER_LONG_TERM)
+# Порядок — тот же, в котором слои уходят в контекст (см. _build_context_messages):
+# от самого жёсткого и стабильного к самому свежему.
+ALL_LAYERS = (
+    LAYER_PROFILE,
+    LAYER_INVARIANTS,
+    LAYER_SHORT_TERM,
+    LAYER_WORKING,
+    LAYER_LONG_TERM,
+)
 
 # Поля профиля персонализации (анкета при создании, /smart_agent_profile_set для
 # точечной правки, /smart_agent_profile_show для просмотра) — только качественные
@@ -159,6 +185,10 @@ class TaskStateUpdate:
     started: bool = False
     transition: str | None = None
     archived: bool = False
+    # Нарушения инвариантов, из-за которых задача уехала назад на доработку
+    # (см. _check_invariants). Непустой список означает, что transition — это откат,
+    # а не движение вперёд, и командный слой печатает его иначе.
+    violations: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -176,7 +206,8 @@ class SmartAgentAnswer:
 
 def _empty_profile() -> dict:
     return {
-        "meta": {field: "" for field in PROFILE_FIELDS},
+        "meta": {name: "" for name in PROFILE_FIELDS},
+        "invariants": [],
         "short_term": [],
         "working": None,
         "long_term": [],
@@ -201,8 +232,10 @@ class SmartAgent:
         memory_dir: str = AGENT_MEMORY_DIR,
         short_term_pairs: int = AGENT_MEMORY_SHORT_TERM_PAIRS,
         long_term_max_facts: int = AGENT_MEMORY_LONG_TERM_MAX_FACTS,
+        max_invariants: int = AGENT_MEMORY_MAX_INVARIANTS,
         task_state_max_tokens: int = AGENT_TASK_STATE_MAX_TOKENS,
         task_start_max_tokens: int = AGENT_TASK_START_MAX_TOKENS,
+        invariants_max_tokens: int = AGENT_INVARIANTS_MAX_TOKENS,
     ) -> None:
         self._client = client
         self._model = model
@@ -212,8 +245,10 @@ class SmartAgent:
         self._memory_path = Path(memory_dir) / f"{chat_id}.json"
         self._short_term_pairs = short_term_pairs
         self._long_term_max_facts = long_term_max_facts
+        self._max_invariants = max_invariants
         self._task_state_max_tokens = task_state_max_tokens
         self._task_start_max_tokens = task_start_max_tokens
+        self._invariants_max_tokens = invariants_max_tokens
         (
             self._profiles,
             self._active_profile,
@@ -283,7 +318,11 @@ class SmartAgent:
     def _sanitize_profile(entry: dict) -> dict:
         raw_meta = entry.get("meta")
         raw_meta = raw_meta if isinstance(raw_meta, dict) else {}
-        meta = {field: str(raw_meta.get(field, "") or "") for field in PROFILE_FIELDS}
+        meta = {name: str(raw_meta.get(name, "") or "") for name in PROFILE_FIELDS}
+
+        # Профили, сохранённые ДО появления слоя инвариантов, ключа не содержат —
+        # получают пустой список, отдельной миграции не требуется.
+        invariant_items = invariants.sanitize_list(entry.get("invariants"))
 
         short_term = entry.get("short_term")
         short_term = short_term if isinstance(short_term, list) else []
@@ -303,6 +342,7 @@ class SmartAgent:
 
         return {
             "meta": meta,
+            "invariants": invariant_items,
             "short_term": short_term,
             "working": working,
             "long_term": long_term,
@@ -365,7 +405,7 @@ class SmartAgent:
         Agent стартует без facts/summary ветки-источника) и сразу делает его
         активным."""
         profile = _empty_profile()
-        profile["meta"] = {field: meta.get(field, "") for field in PROFILE_FIELDS}
+        profile["meta"] = {name: meta.get(name, "") for name in PROFILE_FIELDS}
         self._profiles[name] = profile
         self._active_profile = name
         self._save_state()
@@ -500,6 +540,45 @@ class SmartAgent:
         self._save_state()
         return True
 
+    # --- Инварианты активного профиля: только явная запись, без вытеснения --- #
+
+    def get_invariants(self) -> list[dict[str, str]]:
+        if self._active_profile is None:
+            return []
+        return [dict(item) for item in self._profiles[self._active_profile]["invariants"]]
+
+    def add_invariant(self, text: str, category: str) -> str:
+        """Добавляет инвариант в АКТИВНЫЙ ПРОФИЛЬ. Возвращает код результата
+        (invariants.ADD_*) — текст пользователю собирает командный слой, как и у
+        остальных методов.
+
+        При переполнении лимита НИЧЕГО не вытесняется (в отличие от долговременной
+        памяти, см. _append_fact), а добавление отклоняется: молча выбросить запрет,
+        который пользователь задал явно, — значит незаметно для него перестать его
+        соблюдать.
+        """
+        if self._active_profile is None:
+            return invariants.ADD_NO_PROFILE
+        items = self._profiles[self._active_profile]["invariants"]
+        if len(items) >= self._max_invariants:
+            return invariants.ADD_LIMIT
+        items.append(invariants.new_invariant(text, category))
+        self._save_state()
+        return invariants.ADD_OK
+
+    def remove_invariant(self, index: int) -> dict[str, str] | None:
+        """Удаляет инвариант по 1-based номеру (как показывает
+        /smart_agent_invariant_show) и возвращает удалённый. Это единственный способ
+        снять ограничение — ни агент, ни технический вызов инварианты не трогают."""
+        if self._active_profile is None:
+            return None
+        items = self._profiles[self._active_profile]["invariants"]
+        if index < 1 or index > len(items):
+            return None
+        removed = items.pop(index - 1)
+        self._save_state()
+        return removed
+
     # --- Рабочая память активного профиля: только явная запись, одна задача за раз --- #
 
     def start_task(self, task_type: str, goal: str) -> bool:
@@ -599,7 +678,14 @@ class SmartAgent:
     # команда, delete_profile) --- #
 
     def reset_all(self) -> bool:
-        """Возвращает False, если нет активного профиля — вызывающий код подсказывает
+        """Очищает три слоя памяти активного профиля (диалог, задачу, факты).
+
+        Инварианты и meta профиля НЕ трогает — это заданный пользователем режим
+        работы, а не накопленные данные диалога, по тому же принципу, по которому
+        Agent.reset() не сбрасывает выбранную стратегию контекста. Снять инвариант
+        можно только точечно (/smart_agent_invariant_remove).
+
+        Возвращает False, если нет активного профиля — вызывающий код подсказывает
         /smart_agent_profile."""
         if self._active_profile is None:
             return False
@@ -619,9 +705,9 @@ class SmartAgent:
         (см. докстринг класса и «Правила предметной области» в CLAUDE.md). Возвращает
         None, если ни одно поле профиля не заполнено — пустое сообщение не нужно."""
         lines = [
-            f"- {PROFILE_FIELD_LABELS[field]}: {meta[field]}"
-            for field in PROFILE_FIELDS
-            if meta.get(field)
+            f"- {PROFILE_FIELD_LABELS[name]}: {meta[name]}"
+            for name in PROFILE_FIELDS
+            if meta.get(name)
         ]
         if not lines:
             return None
@@ -640,14 +726,20 @@ class SmartAgent:
         активного профиля — в отличие от Agent, здесь нет автоматического выбора
         одной стратегии: пользователь сам решает и что сохранять (см. remember/
         start_task), и какие слои участвуют в конкретном запросе (см.
-        set_layer_enabled). Порядок слоёв в сообщении — от самого общего/стабильного
-        контекста к самому свежему: профиль -> долговременная память -> рабочая
-        задача -> краткосрочный диалог.
+        set_layer_enabled). Порядок слоёв в сообщении — от самого жёсткого и
+        стабильного к самому свежему: инварианты -> профиль -> долговременная
+        память -> рабочая задача -> краткосрочный диалог.
         """
         messages = [{"role": "system", "content": self._system_prompt}]
         if self._active_profile is None:
             return messages
         profile = self._profiles[self._active_profile]
+
+        # Инварианты идут ПЕРВЫМИ, до профиля персонализации: это ограничения, а
+        # профиль — предпочтения подачи, и приоритет между ними проговорён прямо в
+        # тексте сообщения (см. invariants.build_context_message).
+        if self._enabled_layers[LAYER_INVARIANTS] and profile["invariants"]:
+            messages.append(invariants.build_context_message(profile["invariants"]))
 
         if self._enabled_layers[LAYER_PROFILE]:
             meta_message = self._profile_meta_message(profile["meta"])
@@ -859,6 +951,19 @@ class SmartAgent:
         was_done = task_state.is_done(task)
         updated, transition = task_state.apply_state_response(task, parsed)
         updated["processed_pairs"] = len(short_term) // 2
+
+        # Ревизор инвариантов — ровно в тот момент, когда автомат принял результат
+        # рабочего этапа и ушёл на проверку: раньше проверять нечего, позже
+        # пользователь успеет согласиться с вариантом, нарушающим его же
+        # ограничения.
+        violations: list[dict] = []
+        if transition and task_state.is_validation(updated):
+            violations = self._check_invariants(profile, updated)
+            if violations:
+                updated, transition = task_state.apply_invariant_violations(
+                    updated, violations
+                )
+
         profile["working"] = updated
 
         archived = False
@@ -873,7 +978,45 @@ class SmartAgent:
                 self._append_fact(fact, FACT_SOURCE_AUTO)
 
         self._save_state()
-        return TaskStateUpdate(transition=transition, archived=archived)
+        return TaskStateUpdate(transition=transition, archived=archived, violations=violations)
+
+    def _check_invariants(self, profile: dict, task: dict) -> list[dict]:
+        """Вызов-ревизор: проверяет ГОТОВЫЙ результат задачи на инварианты профиля.
+
+        Отдельный вызов, а не ещё одно поле в техническом вызове выше: тот занят
+        разбором состояния и делается после каждого хода, а проверка нужна один раз
+        — когда результат появился. Диалог ревизору не передаётся, только артефакт
+        (см. invariants.build_review_user_content).
+
+        Выключенный слой инвариантов (/smart_agent_toggle invariants) отключает и
+        проверку: иначе бот возвращал бы задачу на доработку, ссылаясь на
+        ограничения, которых в его контексте в этот момент нет.
+
+        Ошибка вызова или неразобранный JSON гасятся в _call_json_with_retry и
+        означают «нарушений не найдено»: ответ пользователю уже отправлен, и
+        служебная проверка не имеет права ни уронить его, ни застопорить задачу на
+        пустом месте — инварианты при этом всё равно лежат в контексте основного
+        ответа.
+        """
+        items = profile["invariants"]
+        if not items or not self._enabled_layers[LAYER_INVARIANTS]:
+            return []
+
+        result = task_state.result_payload(task)
+        if not result:
+            return []
+
+        parsed = self._call_json_with_retry(
+            AGENT_INVARIANTS_SYSTEM_PROMPT,
+            invariants.build_review_user_content(
+                items, task_state.scenario_of(task).label, task.get("goal", ""), result
+            ),
+            self._invariants_max_tokens,
+            "проверку инвариантов",
+        )
+        if parsed is None:
+            return []
+        return invariants.parse_review_response(parsed, items)
 
     def _maybe_start_task(self, profile: dict) -> TaskStateUpdate | None:
         """Укороченный вызов на случай «активной задачи нет»: решает только, начал

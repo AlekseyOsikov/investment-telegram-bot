@@ -30,6 +30,13 @@ agents/context_strategies.py отделён от agents/agent.py: здесь ж�
 Денежные суммы не собираются ни на одном этапе ни в одном сценарии: состав и
 структура портфеля описываются только долями в процентах (см. «Правила
 предметной области» в CLAUDE.md про запрет на хранение сумм и реквизитов).
+
+Инварианты (agents/invariants.py) входят в автомат одной точкой: результат
+рабочего этапа проверяется на них отдельным вызовом-ревизором, и при нарушении
+задача откатывается назад тем же _roll_back, что и по просьбе пользователя
+(см. apply_invariant_violations). Сам список инвариантов автомату не
+принадлежит — он живёт в слое памяти SmartAgent, здесь хранятся только
+претензии ревизора к текущему результату (INVARIANT_VIOLATIONS_KEY).
 """
 
 from __future__ import annotations
@@ -39,6 +46,8 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+
+from . import invariants
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +69,12 @@ MODE_TERMINAL = "terminal"
 VERDICT_KEY = "verdict"
 VERDICT_ACCEPTED = "accepted"
 VERDICT_CHANGES_REQUESTED = "changes_requested"
+
+# Претензии ревизора инвариантов к результату задачи (agents/invariants.py) —
+# список [{"index", "text", "why"}]. Живёт в задаче ОТДЕЛЬНО от data: data
+# фильтруется по словарю сценария (normalize_data_updates), а это поле заполняет не
+# модель, а код по ответу ревизора (см. apply_invariant_violations).
+INVARIANT_VIOLATIONS_KEY = "invariant_violations"
 
 # Человекочитаемые подписи ключей data — для «не хватает: горизонт инвестирования,
 # ограничения» в чате и в /smart_agent_task_show. Единственное место с этими
@@ -305,6 +320,7 @@ def new_task(task_type: str, goal: str, processed_pairs: int = 0) -> dict:
         "paused": False,
         "paused_at": None,
         "awaiting_correction": False,
+        INVARIANT_VIOLATIONS_KEY: [],
         "data": {},
         "processed_pairs": max(0, processed_pairs),
         "created_at": datetime.now().isoformat(timespec="seconds"),
@@ -354,10 +370,35 @@ def sanitize_task(raw) -> dict | None:
         "paused": bool(raw.get("paused", False)),
         "paused_at": raw.get("paused_at") if isinstance(raw.get("paused_at"), str) else None,
         "awaiting_correction": bool(raw.get("awaiting_correction", False)),
+        INVARIANT_VIOLATIONS_KEY: _sanitize_violations(raw.get(INVARIANT_VIOLATIONS_KEY)),
         "data": data,
         "processed_pairs": processed_pairs,
         "created_at": _as_text(raw.get("created_at", "")),
     }
+
+
+def _sanitize_violations(raw) -> list[dict]:
+    """Претензии ревизора из файла памяти. Задачи, сохранённые ДО появления
+    инвариантов, поля не содержат — получается пустой список, отдельной миграции не
+    нужно (тот же приём, что invariants.sanitize_list)."""
+    if not isinstance(raw, list):
+        return []
+    violations = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        try:
+            index = int(item.get("index"))
+        except (TypeError, ValueError):
+            continue
+        violations.append(
+            {
+                "index": index,
+                "text": _as_text(item.get("text", "")),
+                "why": _as_text(item.get("why", "")),
+            }
+        )
+    return violations
 
 
 def _as_text(value) -> str:
@@ -397,6 +438,30 @@ def missing_keys(task: dict) -> list[str]:
 
 def is_done(task: dict) -> bool:
     return task.get("stage") == STAGE_DONE
+
+
+def is_validation(task: dict) -> bool:
+    return task.get("stage") == STAGE_VALIDATION
+
+
+def invariant_violations(task: dict) -> list[dict]:
+    raw = task.get(INVARIANT_VIOLATIONS_KEY)
+    return list(raw) if isinstance(raw, list) else []
+
+
+def result_payload(task: dict) -> dict[str, str]:
+    """Готовый результат задачи — то, что заполнили автоматические этапы (структура
+    портфеля, разбор, предлагаемые изменения). Именно он, а не весь диалог, уходит
+    ревизору инвариантов: какие ключи считаются результатом, знает реестр сценариев,
+    а не SmartAgent (см. build_review_user_content в agents/invariants.py)."""
+    data = task.get("data", {})
+    return {
+        key_label(key): data[key]
+        for stage in scenario_of(task).stages
+        if stage.mode == MODE_AUTO
+        for key in stage.required_keys
+        if data.get(key)
+    }
 
 
 def key_label(key: str) -> str:
@@ -541,6 +606,50 @@ def _roll_back(scenario: TaskScenario, task: dict, target: str) -> None:
     task["awaiting_correction"] = True
 
 
+def _last_auto_stage(scenario: TaskScenario, before: str) -> str | None:
+    """Последний РАБОЧИЙ (MODE_AUTO) этап до указанного — туда возвращается задача,
+    результат которой не прошёл проверку на инварианты. Считается по реестру, а не
+    хардкодом STAGE_EXECUTION, чтобы сценарий с несколькими рабочими этапами не
+    пришлось чинить отдельно."""
+    index = scenario.stage_index(before)
+    if index < 0:
+        return None
+    auto = [stage.name for stage in scenario.stages[:index] if stage.mode == MODE_AUTO]
+    return auto[-1] if auto else None
+
+
+def apply_invariant_violations(task: dict, violations: list[dict]) -> tuple[dict, str | None]:
+    """Возвращает задачу на доработку, потому что её результат нарушил инварианты.
+
+    Решение принимает КОД по ответу ревизора (agents/invariants.py), а не модель в
+    свободном тексте — в этом и смысл проверки: состояние автомата реально уезжает
+    назад, а не просто сопровождается укоризненной фразой в чате.
+
+    Механика — тот же _roll_back, что и у «пользователь просит правки»: ключ с
+    результатом СОХРАНЯЕТСЯ (агент правит прежний вариант, а не сочиняет с нуля), а
+    флаг awaiting_correction блокирует движение вперёд до тех пор, пока не будет
+    записан новый результат. Без флага автоматический переход вперёд отменил бы
+    откат в тот же миг, ведь обязательный ключ этапа уже заполнен.
+    """
+    updated = copy.deepcopy(task)
+    if not violations:
+        return updated, None
+
+    scenario = scenario_of(updated)
+    stage_before = current_stage(updated)
+    target = _last_auto_stage(scenario, stage_before.name)
+    if target is None:
+        # Нарушение на этапе, до которого рабочего этапа не было (в текущих сценариях
+        # не случается) — состояние не трогаем, но претензии сохраняем: они уйдут в
+        # контекст следующего ответа.
+        updated[INVARIANT_VIOLATIONS_KEY] = list(violations)
+        return updated, None
+
+    _roll_back(scenario, updated, target)
+    updated[INVARIANT_VIOLATIONS_KEY] = list(violations)
+    return updated, f"{stage_before.label} → {current_stage(updated).label}"
+
+
 def apply_state_response(task: dict, parsed: dict) -> tuple[dict, str | None]:
     """Применяет разобранный JSON технического вызова к задаче.
 
@@ -573,11 +682,13 @@ def apply_state_response(task: dict, parsed: dict) -> tuple[dict, str | None]:
     if backward is not None:
         _roll_back(scenario, updated, backward)
     else:
-        # Правка после отката пришла — можно снова двигаться вперёд.
-        if updated.get("awaiting_correction") and any(
-            key in current_stage(updated).required_keys for key in updates
-        ):
+        # Правка после отката пришла — можно снова двигаться вперёд. Заодно
+        # снимаются претензии ревизора инвариантов: они относились к ПРЕЖНЕМУ
+        # результату, а ключ этапа только что переписан (см.
+        # apply_invariant_violations).
+        if any(key in current_stage(updated).required_keys for key in updates):
             updated["awaiting_correction"] = False
+            updated[INVARIANT_VIOLATIONS_KEY] = []
 
         if not updated.get("awaiting_correction"):
             # Вперёд — столько шагов, сколько позволяют собранные данные: обычно
@@ -660,6 +771,17 @@ def build_context_message(task: dict) -> str:
     if collected:
         lines.append("Уже собрано:\n" + "\n".join(collected))
 
+    violations = invariant_violations(task)
+    if violations:
+        # Ровно тот же текст, что ушёл пользователю строкой об откате — модель и
+        # пользователь должны видеть одну и ту же претензию.
+        lines.append(
+            "ПРЕДЫДУЩИЙ РЕЗУЛЬТАТ НАРУШИЛ ИНВАРИАНТЫ ПОЛЬЗОВАТЕЛЯ:\n"
+            + invariants.render_violations(violations)
+            + "\nПредложи новый вариант, который не нарушает ни одного инварианта, и "
+            "объясни, что именно изменилось. Прежний вариант не повторяй."
+        )
+
     missing = missing_keys(task)
     if missing:
         lines.append(
@@ -670,6 +792,11 @@ def build_context_message(task: dict) -> str:
             "Не переходи к следующему этапу, пока эти пункты не собраны. Если "
             "пользователь просит перейти дальше — вежливо объясни, каких именно "
             "пунктов не хватает, и продолжи текущий этап."
+        )
+    elif violations:
+        lines.append(
+            "Этап не сменится, пока не появится новый результат, не нарушающий "
+            "инварианты."
         )
     elif task.get("awaiting_correction"):
         lines.append(
@@ -737,9 +864,13 @@ def state_line(task: dict) -> str:
     if task.get("paused"):
         return f"⏸ {scenario.label} · {stage.label} · задача на паузе"
 
+    violations = invariant_violations(task)
     missing = missing_keys(task)
     if stage.name == STAGE_DONE:
         tail = "задача завершена, очистить — /smart_agent_task_done"
+    elif violations:
+        numbers = ", ".join(f"№{item['index']}" for item in violations)
+        tail = f"нарушены инварианты {numbers} — нужен новый вариант"
     elif missing:
         tail = "ждём: " + ", ".join(key_label(key) for key in missing)
     elif task.get("awaiting_correction"):
@@ -775,12 +906,21 @@ def describe_state(task: dict) -> str:
     ]
     lines.append("Собрано:\n" + ("\n".join(collected) if collected else "— пока ничего"))
 
+    violations = invariant_violations(task)
+    if violations:
+        lines.append(
+            "⛔ Результат вернулся на доработку — нарушены инварианты:\n"
+            + invariants.render_violations(violations)
+        )
+
     missing = missing_keys(task)
     if missing:
         lines.append(
             "Не хватает до следующего этапа:\n"
             + "\n".join(f"- {key_label(key)}" for key in missing)
         )
+    elif violations:
+        lines.append("Ждём новый вариант результата, не нарушающий инварианты.")
     elif task.get("awaiting_correction"):
         lines.append(
             "Ждём правку: задача вернулась на этот этап и останется здесь, пока не "

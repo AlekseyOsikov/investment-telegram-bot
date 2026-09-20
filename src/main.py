@@ -22,9 +22,9 @@ agents/agent.py и agents/agent_command.py; в отличие от осталь�
 «Ограничения безопасности» в CLAUDE.md), которую можно посмотреть командой
 /agent_history и очистить командой /agent_reset. Команда /smart_agent — независимый
 от /agent LLM-агент с явно разделённой моделью памяти (краткосрочная/рабочая/
-долговременная, каждая хранится отдельно и пишется только по явной команде
-пользователя) — в agents/smart_agent.py и agents/smart_agent_command.py, см.
-«Управление памятью smart-агента» в CLAUDE.md.
+долговременная) и слоем ИНВАРИАНТОВ — жёстких ограничений пользователя, которые
+агент не имеет права нарушать (agents/invariants.py), — в agents/smart_agent.py и
+agents/smart_agent_command.py, см. «Управление памятью smart-агента» в CLAUDE.md.
 
 Исследовательские/технические команды (/research_*, /agent_compare*, /agent_mode,
 /agent_context) регистрируются здесь и упоминаются в /help, только если включена
@@ -71,6 +71,9 @@ from agents.compare_command import (
 from agents.smart_agent_command import (
     build_smart_agent_conversation_handler,
     build_smart_agent_forget_handler,
+    build_smart_agent_invariant_add_handler,
+    build_smart_agent_invariant_remove_handler,
+    build_smart_agent_invariant_show_handler,
     build_smart_agent_long_show_handler,
     build_smart_agent_profile_conversation_handler,
     build_smart_agent_profile_delete_handler,
@@ -129,7 +132,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "рабочую и долговременную и хранится в разрезе профиля; рабочую задачу и "
         "факты я дополняю сам по ходу диалога, но всё сохранённое видно через "
         "/smart_agent_show и правится вручную, а очистить память профиля можно "
-        "командой /smart_agent_reset). В любом режиме не присылай, пожалуйста, "
+        "командой /smart_agent_reset). В режиме /smart_agent можно задать инварианты "
+        "— жёсткие ограничения, которые я не нарушаю "
+        "(/smart_agent_invariant_add). В любом режиме не присылай, пожалуйста, "
         "номера счетов, карт и другие чувствительные данные.\n\n"
         "Используй /help, чтобы посмотреть список команд."
     )
@@ -200,6 +205,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/smart_agent_remember &lt;текст&gt; — сохранить факт в долговременную память",
         "/smart_agent_forget &lt;номер&gt; — удалить факт из долговременной памяти",
         "/smart_agent_long_show — показать все факты долговременной памяти",
+        "/smart_agent_invariant_add [категория:] &lt;формулировка&gt; — задать инвариант: "
+        "жёсткое ограничение, которое я не нарушаю (например «без криптовалют»)",
+        "/smart_agent_invariant_show — показать инварианты с номерами",
+        "/smart_agent_invariant_remove &lt;номер&gt; — снять ограничение",
         "/smart_agent_task_start &lt;сценарий&gt; &lt;цель&gt; — начать рабочую задачу "
         "(portfolio — составление портфеля, asset — разбор актива, review — ревизия "
         "портфеля)",
@@ -209,9 +218,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/smart_agent_task_resume — продолжить задачу с того места, где остановились",
         "/smart_agent_task_stage &lt;этап&gt; — перевести задачу на другой этап вручную",
         "/smart_agent_task_done — завершить и очистить текущую рабочую задачу",
-        "/smart_agent_show — показать профиль, все три слоя памяти и что из них ушло в LLM",
-        "/smart_agent_toggle &lt;profile|short|working|long&gt; — включить/выключить слой в "
-        "контексте",
+        "/smart_agent_show — показать профиль, инварианты, все три слоя памяти и что "
+        "из них ушло в LLM",
+        "/smart_agent_toggle &lt;profile|invariants|short|working|long&gt; — включить/"
+        "выключить слой в контексте",
         "/smart_agent_reset — очистить память активного профиля (все три слоя)",
     ]
 
@@ -377,6 +387,9 @@ def main() -> None:
     application.add_handler(build_smart_agent_remember_handler())
     application.add_handler(build_smart_agent_forget_handler())
     application.add_handler(build_smart_agent_long_show_handler())
+    application.add_handler(build_smart_agent_invariant_add_handler())
+    application.add_handler(build_smart_agent_invariant_show_handler())
+    application.add_handler(build_smart_agent_invariant_remove_handler())
     application.add_handler(build_smart_agent_task_start_handler())
     application.add_handler(build_smart_agent_task_set_handler())
     application.add_handler(build_smart_agent_task_show_handler())

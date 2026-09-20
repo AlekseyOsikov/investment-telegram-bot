@@ -54,6 +54,15 @@ point своего ConversationHandler-а — это позволяет ему �
 - /smart_agent_forget <номер> — удаляет факт по номеру (см. /smart_agent_long_show).
 - /smart_agent_long_show — показывает все факты долговременной памяти активного
   профиля с номерами.
+- /smart_agent_invariant_add [категория:] <формулировка> — добавляет ИНВАРИАНТ:
+  жёсткое ограничение активного профиля, которое агент не имеет права нарушать
+  (agents/invariants.py). Единственный способ завести ограничение — автоматической
+  записи в этот слой нет.
+- /smart_agent_invariant_show — показывает инварианты с номерами (на эти же номера
+  агент ссылается, когда отказывается нарушить ограничение).
+- /smart_agent_invariant_remove <номер> — снимает ограничение. Именно сюда агент
+  отправляет пользователя, который настаивает на решении, нарушающем инвариант:
+  уговорами в диалоге инвариант не снимается.
 - /smart_agent_task_start <сценарий> <цель> — начинает рабочую задачу активного
   профиля (заменяет предыдущую). Сценариев несколько, см. task_state.SCENARIOS.
 - /smart_agent_task_set <ключ> <значение> — кладёт данные в текущую рабочую задачу.
@@ -74,16 +83,24 @@ point своего ConversationHandler-а — это позволяет ему �
 прежде чем увидеть хоть что-то. После каждого ответа печатается строка состояния,
 а строки о событиях (старт задачи, смена этапа, архивирование итога в
 долговременную память) — только когда событие действительно произошло.
-- /smart_agent_show — показывает профиль и все три слоя памяти активного профиля как
-  есть, их статус включено/выключено и системные сообщения, реально ушедшие в LLM на
-  последний вопрос (см. SmartAgent.get_last_context_messages) — способ проверить, что
-  попадает в каждый слой и как это влияет на ответ.
-- /smart_agent_toggle <profile|short|working|long> — включает/выключает слой в
-  СБОРКЕ контекста без удаления данных (общая настройка на чат, не per-profile) — так
-  можно сравнить ответ на один и тот же вопрос с разными слоями включёнными/
-  выключенными.
+- /smart_agent_show — показывает профиль, инварианты и все три слоя памяти
+  активного профиля как есть, их статус включено/выключено и системные сообщения,
+  реально ушедшие в LLM на последний вопрос (см.
+  SmartAgent.get_last_context_messages) — способ проверить, что попадает в каждый
+  слой и как это влияет на ответ.
+- /smart_agent_toggle <profile|invariants|short|working|long> — включает/выключает
+  слой в СБОРКЕ контекста без удаления данных (общая настройка на чат, не
+  per-profile) — так можно сравнить ответ на один и тот же вопрос с разными слоями
+  включёнными/выключенными. Для инвариантов выключение снимает и проверку результата
+  задачи, поэтому, пока слой выключен, об этом напоминает служебная строка после
+  каждого ответа.
 - /smart_agent_reset — очищает три слоя памяти АКТИВНОГО ПРОФИЛЯ (не трогает сам
-  профиль, его meta, другие профили и enabled_layers).
+  профиль, его meta, его инварианты, другие профили и enabled_layers).
+
+ИНВАРИАНТЫ И ЗАДАЧА: результат рабочего этапа дополнительно проверяется отдельным
+вызовом-ревизором (SmartAgent._check_invariants), и при нарушении задача
+откатывается на доработку кодом, а не уговором модели — в чат об этом уходит
+строка «⛔ Результат нарушает инварианты…» вместо обычной строки о смене этапа.
 
 Команды без активного профиля (кроме /smart_agent и /smart_agent_profile*) отклоняются
 с подсказкой выбрать/создать профиль — см. _require_active_profile().
@@ -122,9 +139,16 @@ from telegram.ext import (
     filters,
 )
 
-from config import MAIN_API_KEY_ENV_VAR, MAIN_CLIENT_LABEL, MAX_INPUT_CHARS, TELEGRAM_MESSAGE_LIMIT
+from config import (
+    AGENT_INVARIANT_MAX_CHARS,
+    AGENT_MEMORY_MAX_INVARIANTS,
+    MAIN_API_KEY_ENV_VAR,
+    MAIN_CLIENT_LABEL,
+    MAX_INPUT_CHARS,
+    TELEGRAM_MESSAGE_LIMIT,
+)
 
-from . import task_state
+from . import invariants, task_state
 from .active_mode import (
     AGENT_MODE,
     COMPARE_MODE,
@@ -135,6 +159,7 @@ from .active_mode import (
 )
 from .smart_agent import (
     FACT_SOURCE_AUTO,
+    LAYER_INVARIANTS,
     PROFILE_FIELD_LABELS,
     PROFILE_FIELDS,
     SmartAgent,
@@ -157,6 +182,7 @@ MANAGE_WAITING_FIELD = 2
 
 LAYER_LABELS = {
     "profile": "Профиль (предпочтения персонализации)",
+    "invariants": "Инварианты (жёсткие ограничения)",
     "short_term": "Краткосрочная (текущий диалог)",
     "working": "Рабочая (данные текущей задачи)",
     "long_term": "Долговременная (факты)",
@@ -164,10 +190,30 @@ LAYER_LABELS = {
 # Короткие алиасы для /smart_agent_toggle — вводить "long_term" в Telegram неудобно.
 LAYER_ALIASES = {
     "profile": "profile",
+    "invariants": "invariants",
+    "inv": "invariants",
     "short": "short_term",
     "working": "working",
     "long": "long_term",
 }
+LAYER_TOGGLE_HINT = "<profile|invariants|short|working|long>"
+
+# Подсказка к /smart_agent_invariant_add: категория необязательна, поэтому в тексте
+# команды она показана как пример, а не как требование (см. invariants.parse_input).
+_INVARIANT_CATEGORIES_HINT = ", ".join(
+    f"{invariants.CATEGORY_LABELS[key]} ({hint})"
+    for key, hint in invariants.CATEGORY_HINTS.items()
+)
+_INVARIANT_ADD_USAGE = (
+    "👉 Формат: /smart_agent_invariant_add [категория:] <формулировка>\n"
+    "Например: /smart_agent_invariant_add риск: доля акций не выше 40%\n\n"
+    "Инвариант — жёсткое ограничение, а не пожелание: я не предлагаю решений, "
+    "которые его нарушают, а результат рабочей задачи дополнительно проверяется на "
+    "соответствие инвариантам отдельной проверкой.\n\n"
+    f"Категории (необязательны): {_INVARIANT_CATEGORIES_HINT}.\n"
+    "⚠️ Не указывай здесь номера счетов/карт, суммы и другие чувствительные данные — "
+    "команда ничего не фильтрует."
+)
 
 EXIT_BUTTON_TEXT = "🚪 Выйти из режима smart-агента"
 SMART_AGENT_KEYBOARD = ReplyKeyboardMarkup(
@@ -179,6 +225,9 @@ SMART_AGENT_INTRO_TEXT = (
     "Память разделена на три слоя: краткосрочная (этот диалог), рабочая (текущая "
     "задача) и долговременная (факты) — и хранится в разрезе твоего текущего "
     "профиля (/smart_agent_profile покажет и позволит переключить).\n\n"
+    "Отдельно от памяти есть инварианты — жёсткие ограничения, которые я не "
+    "нарушаю (/smart_agent_invariant_add, /smart_agent_invariant_show). Если просьба "
+    "им противоречит, я откажусь и объясню, какой именно пункт мешает.\n\n"
     "Рабочая задача ведётся по этапам (планирование → работа → проверка → "
     "завершено): я сам отмечаю, на каком мы этапе и чего не хватает, и не перехожу "
     "дальше, пока не собраны все пункты. Задачу можно начать явно "
@@ -252,7 +301,16 @@ def _task_service_lines(agent: SmartAgent) -> list[str]:
                 "🆕 Похоже, это рабочая задача — дальше веду её по этапам. "
                 "Подробности — /smart_agent_task_show."
             )
-        if update.transition:
+        if update.violations:
+            # Откат по инвариантам печатается вместо обычной строки о переходе:
+            # transition в этом случае — движение НАЗАД, и «✅ Этап: …» ввело бы
+            # в заблуждение (см. SmartAgent._check_invariants).
+            lines.append(
+                "⛔ Результат нарушает инварианты — вернул задачу на доработку:\n"
+                + invariants.render_violations(update.violations)
+                + "\nНапиши «переделай», чтобы получить вариант с учётом ограничений."
+            )
+        elif update.transition:
             lines.append(f"✅ Этап: {update.transition}")
         if update.archived:
             lines.append(
@@ -262,6 +320,15 @@ def _task_service_lines(agent: SmartAgent) -> list[str]:
     state_line = agent.get_task_state_line()
     if state_line:
         lines.append(state_line)
+
+    # Выключенный слой инвариантов — не молчаливое состояние: ограничения перестают
+    # действовать и в контексте, и в проверке результата, поэтому напоминаем об этом
+    # каждый ход, пока они заданы (см. /smart_agent_toggle).
+    if agent.get_invariants() and not agent.get_enabled_layers()[LAYER_INVARIANTS]:
+        lines.append(
+            "⚠️ Слой инвариантов выключен — ограничения сейчас не действуют "
+            "(/smart_agent_toggle invariants)."
+        )
     return lines
 
 
@@ -823,6 +890,130 @@ async def smart_agent_long_show_command(update: Update, context: ContextTypes.DE
 
 
 # --------------------------------------------------------------------------- #
+# Инварианты (жёсткие ограничения активного профиля)
+# --------------------------------------------------------------------------- #
+
+
+async def smart_agent_invariant_add_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Команда /smart_agent_invariant_add [категория:] <формулировка> — добавляет
+    жёсткое ограничение в активный профиль (см. SmartAgent.add_invariant). Это
+    ЕДИНСТВЕННЫЙ способ завести инвариант: ни агент, ни технический вызов их не
+    пишут (см. докстринг agents/invariants.py)."""
+    agent = _get_smart_agent(update.effective_chat.id)
+    error = _require_active_profile(agent)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    category, text = invariants.parse_input(" ".join(context.args)) if context.args else ("", "")
+    if not text:
+        await update.message.reply_text(_INVARIANT_ADD_USAGE)
+        return
+
+    if len(text) > AGENT_INVARIANT_MAX_CHARS:
+        await update.message.reply_text(
+            f"⚠️ Слишком длинная формулировка ({len(text)} символов, максимум — "
+            f"{AGENT_INVARIANT_MAX_CHARS}). Инвариант должен быть проверяемым "
+            "правилом в одну фразу, иначе его нечем проверить."
+        )
+        return
+
+    status = agent.add_invariant(text, category)
+    if status == invariants.ADD_LIMIT:
+        await update.message.reply_text(
+            f"⚠️ Уже задан максимум инвариантов ({AGENT_MEMORY_MAX_INVARIANTS}). "
+            "Старые не вытесняются автоматически — иначе ограничение перестало бы "
+            "действовать незаметно для тебя. Сначала сними лишний "
+            "(/smart_agent_invariant_remove <номер>), потом добавляй новый."
+        )
+        return
+
+    number = len(agent.get_invariants())
+    await update.message.reply_text(
+        f"⛔ Инвариант №{number} [{invariants.CATEGORY_LABELS[category]}] добавлен: "
+        f"«{text}».\n"
+        "Я не буду предлагать решения, которые его нарушают, а результат рабочей "
+        "задачи дополнительно проверяется на соответствие ему. Снять — "
+        f"/smart_agent_invariant_remove {number}."
+    )
+
+
+async def smart_agent_invariant_show_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Команда /smart_agent_invariant_show — печатает инварианты активного профиля с
+    номерами (эти же номера использует /smart_agent_invariant_remove, и на них же
+    ссылается агент, когда отказывается нарушить ограничение)."""
+    agent = _get_smart_agent(update.effective_chat.id)
+    error = _require_active_profile(agent)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    items = agent.get_invariants()
+    if not items:
+        await update.message.reply_text(
+            "📭 Инвариантов пока нет — я ничем не ограничен, кроме общих правил.\n"
+            "Добавить — /smart_agent_invariant_add <формулировка>, например: "
+            "«не предлагать криптовалюту»."
+        )
+        return
+
+    lines = ["⛔ Инварианты — жёсткие ограничения, которые я не нарушаю:"]
+    lines.append(invariants.render_numbered(items))
+    if not agent.get_enabled_layers()[LAYER_INVARIANTS]:
+        lines.append(
+            "\n⚠️ Слой инвариантов сейчас ВЫКЛЮЧЕН (/smart_agent_toggle invariants): "
+            "они не уходят в контекст и не проверяются в задаче."
+        )
+    lines.append(
+        f"\nВсего {len(items)} из {AGENT_MEMORY_MAX_INVARIANTS}. Снять ограничение — "
+        "/smart_agent_invariant_remove <номер>."
+    )
+
+    text = "\n".join(lines)
+    for i in range(0, len(text), TELEGRAM_MESSAGE_LIMIT):
+        await update.message.reply_text(text[i : i + TELEGRAM_MESSAGE_LIMIT])
+
+
+async def smart_agent_invariant_remove_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Команда /smart_agent_invariant_remove <номер> — снимает ограничение по номеру
+    из /smart_agent_invariant_show. Именно на эту команду ссылается агент, когда
+    пользователь настаивает на решении, нарушающем инвариант: снять ограничение можно
+    только здесь, а не уговорами в диалоге."""
+    agent = _get_smart_agent(update.effective_chat.id)
+    error = _require_active_profile(agent)
+    if error:
+        await update.message.reply_text(error)
+        return
+
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        await update.message.reply_text(
+            "👉 Формат: /smart_agent_invariant_remove <номер>\n"
+            "Номера — в /smart_agent_invariant_show."
+        )
+        return
+
+    index = int(context.args[0])
+    removed = agent.remove_invariant(index)
+    if removed is None:
+        await update.message.reply_text(
+            f"⚠️ Инварианта с номером {index} нет — актуальные номера в "
+            "/smart_agent_invariant_show."
+        )
+        return
+
+    await update.message.reply_text(
+        f"🗑 Инвариант №{index} снят: «{removed['text']}». Больше он мои ответы не "
+        "ограничивает. Номера остальных сдвинулись — /smart_agent_invariant_show."
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Рабочая память (текущая задача активного профиля)
 # --------------------------------------------------------------------------- #
 
@@ -1020,8 +1211,8 @@ async def smart_agent_task_done_command(update: Update, context: ContextTypes.DE
 
 
 async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /smart_agent_show — показывает профиль и три слоя памяти АКТИВНОГО
-    ПРОФИЛЯ раздельно как есть, их статус включено/выключено (/smart_agent_toggle) и
+    """Команда /smart_agent_show — показывает профиль, инварианты и три слоя памяти
+    АКТИВНОГО ПРОФИЛЯ раздельно как есть, их статус включено/выключено (/smart_agent_toggle) и
     системные сообщения, реально ушедшие в LLM на последний вопрос
     (SmartAgent.get_last_context_messages) — так видно, что именно попало в каждый
     слой и что из этого реально повлияло на ответ.
@@ -1038,7 +1229,18 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
         return "включена" if enabled_layers[layer] else "выключена"
 
     current = agent.get_active_profile_name()
-    lines = [f"🧠 Профиль «{current}» — слои памяти:\n"]
+    lines = [f"🧠 Профиль «{current}» — ограничения и слои памяти:\n"]
+
+    # Инварианты — первыми, в том же порядке, в каком слои уходят в контекст.
+    invariant_items = agent.get_invariants()
+    lines.append(
+        f"⛔ Инварианты ({status(LAYER_INVARIANTS)}), всего: {len(invariant_items)}"
+        + (
+            "\n" + invariants.render_numbered(invariant_items)
+            if invariant_items
+            else " — не заданы"
+        )
+    )
 
     meta = agent.get_profile_meta(current) or {}
     filled_meta = [f"- {PROFILE_FIELD_LABELS[f]}: {meta[f]}" for f in PROFILE_FIELDS if meta.get(f)]
@@ -1071,9 +1273,9 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
         lines.append("\n📨 Ещё не было ни одного вопроса — контекст последнего вызова пуст.")
 
     lines.append(
-        "\nПодробности: /smart_agent_profile_show, /smart_agent_long_show, "
-        "/smart_agent_task_show. Переключить слой — "
-        "/smart_agent_toggle <profile|short|working|long>."
+        "\nПодробности: /smart_agent_profile_show, /smart_agent_invariant_show, "
+        "/smart_agent_long_show, /smart_agent_task_show. Переключить слой — "
+        f"/smart_agent_toggle {LAYER_TOGGLE_HINT}."
     )
 
     text = "\n".join(lines)
@@ -1082,15 +1284,17 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
 
 
 async def smart_agent_toggle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /smart_agent_toggle <profile|short|working|long> — включает/выключает
-    слой в СБОРКЕ контекста без удаления данных (см. SmartAgent.set_layer_enabled) —
-    так можно сравнить ответ на один и тот же вопрос с разным набором включённых
-    слоёв. Общая настройка на весь чат, не per-profile — не требует активного
-    профиля."""
+    """Команда /smart_agent_toggle <profile|invariants|short|working|long> —
+    включает/выключает слой в СБОРКЕ контекста без удаления данных (см.
+    SmartAgent.set_layer_enabled) — так можно сравнить ответ на один и тот же вопрос
+    с разным набором включённых слоёв. Общая настройка на весь чат, не per-profile —
+    не требует активного профиля.
+
+    Для инвариантов выключение отключает ещё и проверку результата задачи
+    (SmartAgent._check_invariants), поэтому ответ команды про этот слой говорит
+    прямо, что ограничения перестали действовать."""
     if len(context.args) != 1 or context.args[0] not in LAYER_ALIASES:
-        await update.message.reply_text(
-            "👉 Формат: /smart_agent_toggle <profile|short|working|long>"
-        )
+        await update.message.reply_text(f"👉 Формат: /smart_agent_toggle {LAYER_TOGGLE_HINT}")
         return
 
     layer = LAYER_ALIASES[context.args[0]]
@@ -1098,13 +1302,22 @@ async def smart_agent_toggle_command(update: Update, context: ContextTypes.DEFAU
     new_value = not agent.get_enabled_layers()[layer]
     agent.set_layer_enabled(layer, new_value)
     state = "включена" if new_value else "выключена"
-    await update.message.reply_text(f"✅ Слой «{LAYER_LABELS[layer]}» теперь {state} в контексте.")
+    text = f"✅ Слой «{LAYER_LABELS[layer]}» теперь {state} в контексте."
+    if layer == LAYER_INVARIANTS:
+        text += (
+            "\n⚠️ Ограничения больше не действуют: они не уходят в контекст и не "
+            "проверяются в задаче."
+            if not new_value
+            else "\nОграничения снова действуют — и в контексте, и при проверке "
+            "результата задачи."
+        )
+    await update.message.reply_text(text)
 
 
 async def smart_agent_reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /smart_agent_reset — очищает три слоя памяти АКТИВНОГО ПРОФИЛЯ разом.
-    Не трогает сам профиль, его meta, другие профили и enabled_layers (настройка
-    режима, а не данные, см. SmartAgent.reset_all) — для удаления профиля целиком
+    Не трогает сам профиль, его meta, его инварианты, другие профили и enabled_layers
+    (настройка режима, а не данные, см. SmartAgent.reset_all) — для удаления профиля целиком
     есть отдельная команда /smart_agent_profile_delete."""
     agent = _get_smart_agent(update.effective_chat.id)
     error = _require_active_profile(agent)
@@ -1114,7 +1327,9 @@ async def smart_agent_reset_command(update: Update, context: ContextTypes.DEFAUL
 
     agent.reset_all()
     await update.message.reply_text(
-        f"🗑 Память профиля «{agent.get_active_profile_name()}» (все три слоя) очищена."
+        f"🗑 Память профиля «{agent.get_active_profile_name()}» (все три слоя) очищена.\n"
+        "Инварианты и поля профиля не тронуты — это заданный тобой режим работы, а не "
+        "накопленные данные. Снять ограничение — /smart_agent_invariant_remove <номер>."
     )
 
 
@@ -1189,6 +1404,18 @@ def build_smart_agent_forget_handler() -> CommandHandler:
 
 def build_smart_agent_long_show_handler() -> CommandHandler:
     return CommandHandler("smart_agent_long_show", smart_agent_long_show_command)
+
+
+def build_smart_agent_invariant_add_handler() -> CommandHandler:
+    return CommandHandler("smart_agent_invariant_add", smart_agent_invariant_add_command)
+
+
+def build_smart_agent_invariant_show_handler() -> CommandHandler:
+    return CommandHandler("smart_agent_invariant_show", smart_agent_invariant_show_command)
+
+
+def build_smart_agent_invariant_remove_handler() -> CommandHandler:
+    return CommandHandler("smart_agent_invariant_remove", smart_agent_invariant_remove_command)
 
 
 def build_smart_agent_task_start_handler() -> CommandHandler:
