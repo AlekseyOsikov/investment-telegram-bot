@@ -189,6 +189,13 @@ class TaskStateUpdate:
     # (см. _check_invariants). Непустой список означает, что transition — это откат,
     # а не движение вперёд, и командный слой печатает его иначе.
     violations: list[dict] = field(default_factory=list)
+    # Причины, по которым автомат не сделал того, что предложила модель (переход не
+    # разрешён, ключ не этого этапа, значение вне списка). Печатаются пользователю:
+    # иначе отклонённая попытка выглядит как проигнорированная просьба.
+    rejected: list[str] = field(default_factory=list)
+    # Гейт этапа сняли отказом (сводку вводных не подтвердили) — этап тот же, но
+    # работа на нём начинается заново, и командный слой сообщает об этом отдельно.
+    gate_reset: bool = False
 
 
 @dataclass
@@ -636,17 +643,23 @@ class SmartAgent:
 
     def set_task_stage(self, stage: str) -> bool:
         """Ручной перевод задачи на другой этап — предохранитель на случай, когда
-        автомат ошибся или застрял. В отличие от автоматического перехода, здесь
-        НЕ проверяется заполненность обязательных ключей (иначе застрявшую задачу
-        нельзя было бы сдвинуть вручную), но граф переходов соблюдается: перевести
-        можно только на этап, допустимый из текущего."""
+        автомат ошибся или застрял. В отличие от автоматического перехода, здесь НЕ
+        проверяется заполненность обычных обязательных ключей (иначе застрявшую
+        задачу нельзя было бы сдвинуть вручную), но соблюдаются граф переходов и
+        ГЕЙТ текущего этапа — решение человека предохранитель не заменяет (см.
+        task_state.manual_transition_block; причину отказа командный слой берёт
+        оттуда же)."""
         if self._active_profile is None:
             return False
         task = self._profiles[self._active_profile]["working"]
-        if task is None or not task_state.manual_transition(task, stage):
+        if task is None:
             return False
+        moved = task_state.manual_transition(task, stage)
+        # Сохраняем и при отказе: manual_transition записала отклонённую попытку в
+        # историю задачи, и терять её только потому, что переход не состоялся,
+        # неправильно — она и нужна как раз для разбора таких случаев.
         self._save_state()
-        return True
+        return moved
 
     def set_task_data(self, key: str, value: str) -> bool:
         """Явно кладёт пару ключ-значение в данные текущей задачи активного профиля.
@@ -949,15 +962,22 @@ class SmartAgent:
             return None
 
         was_done = task_state.is_done(task)
-        updated, transition = task_state.apply_state_response(task, parsed)
+        change = task_state.apply_state_response(task, parsed)
+        updated, transition = change.task, change.transition
         updated["processed_pairs"] = len(short_term) // 2
 
-        # Ревизор инвариантов — ровно в тот момент, когда автомат принял результат
-        # рабочего этапа и ушёл на проверку: раньше проверять нечего, позже
-        # пользователь успеет согласиться с вариантом, нарушающим его же
-        # ограничения.
+        # Ревизор инвариантов — как только на этапе проверки появился ещё не
+        # проверенный результат: раньше проверять нечего, позже пользователь успеет
+        # согласиться с вариантом, нарушающим его же ограничения. Привязка к самому
+        # результату, а не к факту перехода, закрывает обход через ручной
+        # /smart_agent_task_stage validation (см. task_state.needs_invariant_check).
         violations: list[dict] = []
-        if transition and task_state.is_validation(updated):
+        if task_state.needs_invariant_check(updated):
+            # Отметка ставится ДО вызова: ошибка ревизора означает «нарушений нет»
+            # (см. _check_invariants) и повторной проверки того же результата не
+            # будет — служебная проверка не имеет права стопорить задачу, а
+            # инварианты всё равно лежат в контексте основного ответа.
+            task_state.mark_invariants_checked(updated)
             violations = self._check_invariants(profile, updated)
             if violations:
                 updated, transition = task_state.apply_invariant_violations(
@@ -978,7 +998,13 @@ class SmartAgent:
                 self._append_fact(fact, FACT_SOURCE_AUTO)
 
         self._save_state()
-        return TaskStateUpdate(transition=transition, archived=archived, violations=violations)
+        return TaskStateUpdate(
+            transition=transition,
+            archived=archived,
+            violations=violations,
+            rejected=change.rejected,
+            gate_reset=change.gate_reset,
+        )
 
     def _check_invariants(self, profile: dict, task: dict) -> list[dict]:
         """Вызов-ревизор: проверяет ГОТОВЫЙ результат задачи на инварианты профиля.

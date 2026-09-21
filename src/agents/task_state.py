@@ -9,23 +9,59 @@ agents/context_strategies.py отделён от agents/agent.py: здесь ж�
 
 Автомат один на все сценарии: planning -> execution -> validation -> done, с
 откатом validation -> execution, если пользователь просит правки. Сценарии
-(SCENARIOS) различаются только словарём ключей data и текстами инструкций, так
-что новый сценарий добавляется одной записью в реестр, без изменений в самом
-автомате.
+(SCENARIOS) различаются только словарём ключей data, наличием гейта и текстами
+инструкций, так что новый сценарий добавляется одной записью в реестр, без
+изменений в самом автомате.
+
+Имена этапов инженерные, но означают они шаги ИНВЕСТИЦИОННОГО процесса, и путать
+их с одноимёнными понятиями из других доменов нельзя:
+- planning — профилирование: сбор вводных пользователя (цель, горизонт,
+  отношение к риску, ограничения) и подтверждение сводки этих вводных;
+- execution — ФОРМИРОВАНИЕ ПРЕДЛОЖЕНИЯ (структуры портфеля, разбора, изменений
+  долей), а НЕ исполнение сделок: бот ничего не покупает и не продаёт (см.
+  «Правила предметной области» в CLAUDE.md). Пользователю этап и подписан по
+  смыслу — «формирование портфеля»/«разбор»/«предложение изменений»;
+- validation — ПРИЁМКА результата пользователем (устраивает или нужны правки), а
+  не машинная проверка. Машинная проверка в этом проекте есть, но живёт отдельно:
+  ревизор инвариантов (agents/invariants.py), см. ниже;
+- done — работа зафиксирована, итог перенесён в долговременную память.
 
 Ключевое отличие от «модель сама решает, когда двигаться дальше»: условие
-перехода — это СПИСОК ОБЯЗАТЕЛЬНЫХ КЛЮЧЕЙ data у текущего этапа, и его проверяет
-код (see missing_keys/_validated_transition), а не модель. Тот же список
-недостающих ключей уходит и в контекст основного ответа (build_context_message),
-поэтому вежливый отказ на преждевременный переход всегда совпадает с реальным
-состоянием автомата, а не расходится с ним.
+перехода — это СПИСОК ОБЯЗАТЕЛЬНЫХ КЛЮЧЕЙ data у текущего этапа (плюс, если у
+этапа есть гейт, конкретное значение ключа-гейта), и его проверяет код
+(см. missing_keys/_forward_target), а не модель. Тот же список недостающих
+пунктов уходит и в контекст основного ответа (build_context_message), поэтому
+вежливый отказ на преждевременный переход всегда совпадает с реальным состоянием
+автомата, а не расходится с ним.
 
-Словарь ключей фиксирован: из ответа модели принимаются только ключи своего
-сценария (см. normalize_data_updates), иначе модель на каждом ходу изобретала бы
-новое имя для того же параметра («горизонт»/«horizon»/«time_horizon»), условие
-перехода никогда бы не выполнилось и задача зависла бы навсегда. На РУЧНУЮ
-запись (/smart_agent_task_set) это ограничение не распространяется — там ключ
-задаёт человек, и произвольные ключи сохраняются как раньше.
+ГЕЙТ (TaskStage.gate) — пара «ключ, требуемое значение»: пока в data нет именно
+этого значения, вперёд с этапа не уйти, даже если все остальные ключи собраны.
+Гейтов два, и оба означают явное решение ЧЕЛОВЕКА, которое из данных не выводится:
+- на planning — подтверждение сводки вводных (brief_verdict == confirmed): агент
+  проговаривает, как он понял цель/горизонт/риск/ограничения, и не начинает
+  работу, пока пользователь это не подтвердил. Отсюда же и требование не давать
+  рекомендацию на недопонятых ответах;
+- на validation — приёмка результата (verdict == accepted).
+Гейт на planning есть НЕ у всех сценариев: в portfolio и review результат — это
+рекомендация по структуре, и подтверждение вводных там осмысленно, а asset —
+справочный разбор, где подтверждение трёх параметров было бы формальностью. Это
+решает реестр, а не логика переходов.
+
+Из ответа модели принимаются только ключи ТЕКУЩЕГО ЭТАПА (см.
+normalize_data_updates) — не всего сценария. Два разных повода, и оба важны:
+модель иначе изобретала бы новое имя для того же параметра
+(«горизонт»/«horizon»/«time_horizon»), и условие перехода не выполнилось бы
+никогда; а заполнив за один ход ключи сразу двух этапов, она проводила бы задачу
+через этап, которого фактически не было — например, записала бы приёмку
+(verdict) вместе с самим результатом и увела задачу в done, не задав
+пользователю вопроса и не дав сработать ревизору инвариантов. На РУЧНУЮ запись
+(/smart_agent_task_set) фильтр не распространяется — там ключ задаёт человек, и
+произвольные ключи сохраняются как раньше.
+
+Каждая смена этапа, как и каждая ОТКЛОНЁННАЯ попытка её добиться, пишется в
+короткую историю переходов внутри задачи (transitions, см. record_transition):
+иначе «автомат не пустил» выглядело бы для пользователя просто как то, что бот
+проигнорировал просьбу.
 
 Денежные суммы не собираются ни на одном этапе ни в одном сценарии: состав и
 структура портфеля описываются только долями в процентах (см. «Правила
@@ -44,7 +80,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from . import invariants
@@ -63,18 +99,71 @@ MODE_DIALOG = "dialog"
 MODE_AUTO = "auto"
 MODE_TERMINAL = "terminal"
 
-# Единственный ключ с закрытым списком значений — от него зависит, куда уходит
-# переход с этапа проверки (accepted -> done, changes_requested -> execution),
-# поэтому произвольный текст в нём не принимается (см. normalize_data_updates).
+# Ключи-ГЕЙТЫ: от них зависит направление перехода, поэтому произвольный текст в
+# них не принимается — только значения из CLOSED_VALUE_KEYS ниже (см.
+# normalize_data_updates).
+#
+# verdict — приёмка результата пользователем на этапе проверки
+# (accepted -> done, changes_requested -> назад к работе над результатом).
 VERDICT_KEY = "verdict"
 VERDICT_ACCEPTED = "accepted"
 VERDICT_CHANGES_REQUESTED = "changes_requested"
 
+# brief/brief_verdict — сводка вводных и её подтверждение на этапе профилирования
+# (confirmed -> к работе, corrected -> сводка сбрасывается, остаёмся на этапе и
+# уточняем параметры). Сводка — отдельный ключ, а не просто вопрос в чате, чтобы
+# после паузы её можно было показать заново из состояния, не обращаясь к LLM.
+BRIEF_KEY = "brief"
+BRIEF_VERDICT_KEY = "brief_verdict"
+BRIEF_CONFIRMED = "confirmed"
+BRIEF_CORRECTED = "corrected"
+
+# Ключи с закрытым списком значений. Всё, что не из списка, отбрасывается: на этих
+# ключах держатся переходы, и «пользователь вроде согласен» в них означало бы
+# трактовку на глаз (а при попытке модели записать своё значение — молчаливый
+# пропуск этапа).
+CLOSED_VALUE_KEYS: dict[str, tuple[str, ...]] = {
+    VERDICT_KEY: (VERDICT_ACCEPTED, VERDICT_CHANGES_REQUESTED),
+    BRIEF_VERDICT_KEY: (BRIEF_CONFIRMED, BRIEF_CORRECTED),
+}
+
+# Сколько последних записей истории переходов хранится в задаче. Ровно столько,
+# чтобы в /smart_agent_task_show было видно, как задача пришла в текущее
+# состояние: это диагностика, а не журнал аудита, и файл памяти чата от неё
+# заметно расти не должен. Не в .env: это механика автомата, а не настройка
+# оператора бота.
+TRANSITIONS_MAX = 10
+
+# Кто выполнил переход — для истории (см. record_transition). REJECTED — не
+# переход, а зафиксированная ПОПЫТКА, которую автомат не пропустил.
+BY_AUTO = "auto"
+BY_MANUAL = "manual"
+BY_ROLLBACK = "rollback"
+BY_INVARIANTS = "invariants"
+BY_GATE_REJECTED = "gate_rejected"
+BY_REJECTED = "rejected"
+
+_BY_LABELS = {
+    BY_AUTO: "автомат",
+    BY_MANUAL: "вручную",
+    BY_ROLLBACK: "откат",
+    BY_INVARIANTS: "инварианты",
+    BY_GATE_REJECTED: "сводка не подтверждена",
+    BY_REJECTED: "отклонено",
+}
+
 # Претензии ревизора инвариантов к результату задачи (agents/invariants.py) —
 # список [{"index", "text", "why"}]. Живёт в задаче ОТДЕЛЬНО от data: data
-# фильтруется по словарю сценария (normalize_data_updates), а это поле заполняет не
-# модель, а код по ответу ревизора (см. apply_invariant_violations).
+# фильтруется по ключам текущего этапа (normalize_data_updates), а это поле
+# заполняет не модель, а код по ответу ревизора (см. apply_invariant_violations).
 INVARIANT_VIOLATIONS_KEY = "invariant_violations"
+
+# Снимок результата, который ревизор инвариантов уже проверял. Нужен, чтобы
+# проверка была привязана к САМОМУ РЕЗУЛЬТАТУ, а не к факту перехода на этап
+# проверки: иначе задачу, переведённую на проверку вручную
+# (/smart_agent_task_stage validation), ревизор не увидел бы вовсе — перехода-то
+# не было, — и её результат ушёл бы в done без проверки (см. needs_invariant_check).
+INVARIANTS_CHECKED_KEY = "invariants_checked_result"
 
 # Человекочитаемые подписи ключей data — для «не хватает: горизонт инвестирования,
 # ограничения» в чате и в /smart_agent_task_show. Единственное место с этими
@@ -92,6 +181,8 @@ KEY_LABELS = {
     "current_allocation": "текущий состав портфеля в долях",
     "concern": "что беспокоит в портфеле",
     "proposed_changes": "предлагаемые изменения долей",
+    BRIEF_KEY: "сводка вводных",
+    BRIEF_VERDICT_KEY: "подтверждение вводных",
     VERDICT_KEY: "решение пользователя по результату",
 }
 
@@ -104,7 +195,21 @@ _NO_SUMS_RULE = (
 @dataclass(frozen=True)
 class TaskStage:
     """Один этап автомата. required_keys — и есть условие перехода дальше:
-    пока хотя бы один из них не заполнен в data, переход отклоняется кодом."""
+    пока хотя бы один из них не заполнен в data, переход отклоняется кодом.
+
+    gate — необязательная пара (ключ, требуемое значение): решение человека,
+    которое из данных не выводится (подтверждение сводки вводных, приёмка
+    результата). Пока в data нет именно этого значения, вперёд не уйти, даже если
+    все обязательные ключи заполнены. Этап без гейта двигается вперёд просто по
+    собранным данным.
+
+    sequential_keys — ключи, которые принимаются от модели только ПОСЛЕ того, как
+    заполнены все обязательные ключи, стоящие раньше них в required_keys. Нужны
+    ровно для гейта: сводку вводных нельзя проговорить до того, как вводные
+    собраны, а подтвердить её нельзя до того, как она проговорена — иначе модель
+    закрыла бы гейт первым же ходом, и он перестал бы что-либо гарантировать.
+    Порядок ключей в required_keys для таких этапов значим.
+    """
 
     name: str
     label: str
@@ -113,6 +218,21 @@ class TaskStage:
     optional_keys: tuple[str, ...]
     next_stages: tuple[str, ...]
     instruction: str
+    gate: tuple[str, str] | None = None
+    sequential_keys: tuple[str, ...] = ()
+
+    def gate_satisfied(self, data: dict) -> bool:
+        """Выполнено ли условие гейта. Этап без гейта — всегда да."""
+        if self.gate is None:
+            return True
+        key, expected = self.gate
+        return str(data.get(key, "")).strip().lower() == expected
+
+    def keys_before(self, key: str) -> tuple[str, ...]:
+        """Обязательные ключи этапа, стоящие в required_keys раньше указанного."""
+        if key not in self.required_keys:
+            return ()
+        return self.required_keys[: self.required_keys.index(key)]
 
 
 @dataclass(frozen=True)
@@ -133,13 +253,6 @@ class TaskScenario:
                 return index
         return -1
 
-    def known_keys(self) -> tuple[str, ...]:
-        keys: list[str] = []
-        for stage in self.stages:
-            keys.extend(stage.required_keys)
-            keys.extend(stage.optional_keys)
-        return tuple(keys)
-
 
 def _validation_stage(result_name: str) -> TaskStage:
     """Этап проверки одинаков во всех сценариях — отличается только тем, как
@@ -151,6 +264,8 @@ def _validation_stage(result_name: str) -> TaskStage:
         required_keys=(VERDICT_KEY,),
         optional_keys=(),
         next_stages=(STAGE_EXECUTION, STAGE_DONE),
+        # Приёмка результата — решение пользователя, а не вывод из данных.
+        gate=(VERDICT_KEY, VERDICT_ACCEPTED),
         instruction=(
             f"Спроси у пользователя, устраивает ли его {result_name}. Если он просит "
             "правки — уточни, какие именно, и учти их при пересчёте. Если он всем "
@@ -181,13 +296,26 @@ SCENARIOS: dict[str, TaskScenario] = {
                 name=STAGE_PLANNING,
                 label="планирование",
                 mode=MODE_DIALOG,
-                required_keys=("goal_type", "horizon", "risk", "constraints"),
+                required_keys=(
+                    "goal_type",
+                    "horizon",
+                    "risk",
+                    "constraints",
+                    BRIEF_KEY,
+                    BRIEF_VERDICT_KEY,
+                ),
                 optional_keys=("preferred_assets",),
                 next_stages=(STAGE_EXECUTION,),
+                gate=(BRIEF_VERDICT_KEY, BRIEF_CONFIRMED),
+                sequential_keys=(BRIEF_KEY, BRIEF_VERDICT_KEY),
                 instruction=(
                     "Собери недостающие пункты, задавая по одному уточняющему вопросу "
-                    "за раз. Не предлагай структуру портфеля, пока не собраны все "
-                    f"пункты. {_NO_SUMS_RULE}"
+                    "за раз. Когда все пункты собраны, НЕ предлагай структуру "
+                    "портфеля сразу: сначала проговори короткую сводку вводных (цель, "
+                    "горизонт, отношение к риску, ограничения) и спроси прямо, всё ли "
+                    "верно понято. Начинай работу только после подтверждения; если "
+                    "пользователь поправляет вводные — уточни их и проговори сводку "
+                    f"заново. {_NO_SUMS_RULE}"
                 ),
             ),
             TaskStage(
@@ -222,6 +350,10 @@ SCENARIOS: dict[str, TaskScenario] = {
                 required_keys=("asset", "horizon", "role_in_portfolio"),
                 optional_keys=("constraints",),
                 next_stages=(STAGE_EXECUTION,),
+                # Гейта подтверждения вводных здесь намеренно НЕТ (в отличие от
+                # portfolio/review): это справочный разбор, а не рекомендация по
+                # структуре, и подтверждение трёх параметров было бы формальностью
+                # ради автомата. См. докстринг модуля.
                 instruction=(
                     "Уточни, какой именно актив или идею разбираем, на каком горизонте "
                     "и какую роль он должен играть в портфеле — по одному вопросу за "
@@ -256,14 +388,24 @@ SCENARIOS: dict[str, TaskScenario] = {
                 name=STAGE_PLANNING,
                 label="планирование",
                 mode=MODE_DIALOG,
-                required_keys=("current_allocation", "concern", "constraints"),
+                required_keys=(
+                    "current_allocation",
+                    "concern",
+                    "constraints",
+                    BRIEF_KEY,
+                    BRIEF_VERDICT_KEY,
+                ),
                 optional_keys=("horizon",),
                 next_stages=(STAGE_EXECUTION,),
+                gate=(BRIEF_VERDICT_KEY, BRIEF_CONFIRMED),
+                sequential_keys=(BRIEF_KEY, BRIEF_VERDICT_KEY),
                 instruction=(
                     "Уточни текущий состав портфеля ТОЛЬКО в долях или процентах, что "
                     "именно беспокоит пользователя и какие есть ограничения — по "
                     "одному вопросу за раз. Если пользователь называет суммы, не "
-                    "сохраняй их и попроси перевести состав в проценты. "
+                    "сохраняй их и попроси перевести состав в проценты. Когда всё "
+                    "собрано, проговори короткую сводку вводных и спроси, верно ли "
+                    "понято, — предлагать изменения можно только после подтверждения. "
                     f"{_NO_SUMS_RULE}"
                 ),
             ),
@@ -321,7 +463,9 @@ def new_task(task_type: str, goal: str, processed_pairs: int = 0) -> dict:
         "paused_at": None,
         "awaiting_correction": False,
         INVARIANT_VIOLATIONS_KEY: [],
+        INVARIANTS_CHECKED_KEY: {},
         "data": {},
+        "transitions": [],
         "processed_pairs": max(0, processed_pairs),
         "created_at": datetime.now().isoformat(timespec="seconds"),
     }
@@ -361,7 +505,8 @@ def sanitize_task(raw) -> dict | None:
     if not isinstance(processed_pairs, int) or processed_pairs < 0:
         processed_pairs = 0
 
-    return {
+    checked = raw.get(INVARIANTS_CHECKED_KEY)
+    task = {
         "task_type": task_type,
         "goal": _as_text(raw.get("goal", "")),
         "stage": stage,
@@ -371,10 +516,62 @@ def sanitize_task(raw) -> dict | None:
         "paused_at": raw.get("paused_at") if isinstance(raw.get("paused_at"), str) else None,
         "awaiting_correction": bool(raw.get("awaiting_correction", False)),
         INVARIANT_VIOLATIONS_KEY: _sanitize_violations(raw.get(INVARIANT_VIOLATIONS_KEY)),
+        INVARIANTS_CHECKED_KEY: (
+            {str(key): _as_text(value) for key, value in checked.items()}
+            if isinstance(checked, dict)
+            else {}
+        ),
         "data": data,
+        "transitions": _sanitize_transitions(raw.get("transitions")),
         "processed_pairs": processed_pairs,
         "created_at": _as_text(raw.get("created_at", "")),
     }
+    _migrate_gate(task)
+    return task
+
+
+def _sanitize_transitions(raw) -> list[dict]:
+    """История переходов из файла памяти. У задач, сохранённых ДО её появления, поля
+    нет — получается пустой список, отдельной миграции не нужно (тот же приём, что
+    _sanitize_violations)."""
+    if not isinstance(raw, list):
+        return []
+    items = []
+    for entry in raw[-TRANSITIONS_MAX:]:
+        if not isinstance(entry, dict):
+            continue
+        items.append(
+            {
+                "at": _as_text(entry.get("at", "")),
+                "from": _as_text(entry.get("from", "")),
+                "to": _as_text(entry.get("to", "")),
+                "by": _as_text(entry.get("by", "")),
+                "note": _as_text(entry.get("note", "")),
+            }
+        )
+    return items
+
+
+def _migrate_gate(task: dict) -> None:
+    """Задачи, сохранённые ДО появления гейта подтверждения вводных, но уже ушедшие
+    с этапа профилирования: гейт считается пройденным задним числом.
+
+    Иначе пользователь, у которого работа уже на проверке, при откате назад к
+    параметрам внезапно обнаружил бы, что от него требуют подтвердить сводку,
+    которой ему никогда не показывали. Задачи, оставшиеся на профилировании,
+    ничего не получают — они доберут сводку штатным путём.
+    """
+    scenario = SCENARIOS[task["task_type"]]
+    planning = scenario.stage(STAGE_PLANNING)
+    if planning is None or planning.gate is None:
+        return
+    if scenario.stage_index(task["stage"]) <= scenario.stage_index(STAGE_PLANNING):
+        return
+    data = task["data"]
+    if not data.get(BRIEF_KEY):
+        data[BRIEF_KEY] = "(вводные собраны до появления явного подтверждения сводки)"
+    if not data.get(BRIEF_VERDICT_KEY):
+        data[BRIEF_VERDICT_KEY] = BRIEF_CONFIRMED
 
 
 def _sanitize_violations(raw) -> list[dict]:
@@ -468,23 +665,118 @@ def key_label(key: str) -> str:
     return KEY_LABELS.get(key, key)
 
 
+def stage_label(scenario: TaskScenario, name: str) -> str:
+    stage = scenario.stage(name)
+    return stage.label if stage is not None else name
+
+
+def record_transition(task: dict, source: str, target: str, by: str, note: str = "") -> None:
+    """Пишет в историю задачи и состоявшийся переход, и ОТКЛОНЁННУЮ попытку
+    (by=BY_REJECTED, source == target).
+
+    Отклонённые попытки здесь не для полноты картины: без них «автомат не пустил»
+    выглядит для пользователя так, будто бот проигнорировал просьбу, и проверить
+    поведение автомата можно только по логам. Длина списка ограничена
+    TRANSITIONS_MAX — это диагностика, а не журнал аудита.
+    """
+    history = task.setdefault("transitions", [])
+    history.append(
+        {
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "from": source,
+            "to": target,
+            "by": by,
+            "note": note,
+        }
+    )
+    del history[:-TRANSITIONS_MAX]
+
+
+def transitions(task: dict) -> list[dict]:
+    raw = task.get("transitions")
+    return list(raw) if isinstance(raw, list) else []
+
+
+def needs_invariant_check(task: dict) -> bool:
+    """Нужно ли показать результат задачи ревизору инвариантов.
+
+    Привязано к САМОМУ РЕЗУЛЬТАТУ, а не к факту перехода на этап проверки: иначе
+    задача, переведённая на проверку вручную (/smart_agent_task_stage validation),
+    ревизора не проходила бы вовсе, и её результат ушёл бы в done без проверки.
+    Повторно один и тот же результат не проверяется — это лишний вызов API на
+    каждом ходу диалога о приёмке.
+    """
+    if not is_validation(task):
+        return False
+    result = result_payload(task)
+    if not result:
+        return False
+    return result != task.get(INVARIANTS_CHECKED_KEY)
+
+
+def mark_invariants_checked(task: dict) -> None:
+    task[INVARIANTS_CHECKED_KEY] = result_payload(task)
+
+
+def manual_transition_block(task: dict, target: str) -> str | None:
+    """Почему ручной перевод на target невозможен — фразой на русском, или None,
+    если возможен. Вынесено из manual_transition отдельно, чтобы командный слой мог
+    объяснить пользователю причину теми же словами, которыми её проверяет код."""
+    scenario = scenario_of(task)
+    stage = current_stage(task)
+    if target not in allowed_manual_stages(task):
+        return (
+            f"переход «{stage.label} → {stage_label(scenario, target)}» не разрешён "
+            "из текущего этапа"
+        )
+    if not is_forward_stage(task, target):
+        return None
+    if stage.gate is not None and not stage.gate_satisfied(task.get("data", {})):
+        key, expected = stage.gate
+        return (
+            f"на этапе «{stage.label}» нет решения пользователя: {key_label(key)}. "
+            "Ручной перевод его не заменяет — ответь в диалоге или задай явно: "
+            f"/smart_agent_task_set {key} {expected}"
+        )
+    return None
+
+
 def manual_transition(task: dict, target: str) -> bool:
     """Ручной перевод этапа (/smart_agent_task_stage) прямо в переданной задаче.
 
-    Проверяет только граф переходов, но НЕ заполненность обязательных ключей —
-    это предохранитель на случай, когда автомат ошибся, и требовать от него
-    выполненных условий бессмысленно. Откат назад идёт через тот же _roll_back,
-    что и автоматический, иначе переход вперёд по уже собранным данным тут же
-    отменил бы ручное решение.
+    Проверяет граф переходов и ГЕЙТ текущего этапа, но НЕ заполненность обычных
+    обязательных ключей: это предохранитель на случай, когда автомат ошибся или
+    застрял на данных, и требовать от него выполненных условий бессмысленно.
+
+    Гейт — исключение именно потому, что он не «условие по данным», а решение
+    человека (подтверждение вводных, приёмка результата): предохранитель сдвигает
+    застрявшую задачу, но не решает за пользователя. Закрыть гейт можно только
+    назвав его явно — ответом в диалоге или /smart_agent_task_set, где ключ
+    указывает сам человек (см. manual_transition_block).
+
+    Откат назад идёт через тот же _roll_back, что и автоматический, иначе переход
+    вперёд по уже собранным данным тут же отменил бы ручное решение.
     """
     scenario = scenario_of(task)
-    if target not in allowed_manual_stages(task):
+    block = manual_transition_block(task, target)
+    if block is not None:
+        record_transition(task, task["stage"], target, BY_REJECTED, f"ручной перевод: {block}")
         return False
-    if scenario.stage_index(target) < scenario.stage_index(task["stage"]):
-        _roll_back(scenario, task, target)
+    source = task["stage"]
+    if scenario.stage_index(target) < scenario.stage_index(source):
+        _roll_back(scenario, task, target, BY_MANUAL)
     else:
         task["stage"] = target
+        record_transition(task, source, target, BY_MANUAL)
     return True
+
+
+def is_forward_stage(task: dict, target: str) -> bool:
+    """Идёт ли переход на target ВПЕРЁД по графу — нужно вызывающему коду ручной
+    команды, чтобы предупредить, что обязательные пункты текущего этапа при этом
+    остались несобранными."""
+    scenario = scenario_of(task)
+    return scenario.stage_index(target) > scenario.stage_index(task.get("stage", ""))
 
 
 def manual_stage_options(task: dict) -> list[tuple[str, str]]:
@@ -508,10 +800,10 @@ def short_summary(task: dict) -> str:
 
 
 def allowed_manual_stages(task: dict) -> tuple[str, ...]:
-    """Этапы, на которые можно перевести задачу вручную (/smart_agent_task_stage).
-    Это предохранитель на случай, когда автомат ошибся или застрял, поэтому здесь
-    проверяется только сам граф переходов, но НЕ заполненность обязательных
-    ключей — иначе застрявшую задачу нельзя было бы сдвинуть вручную."""
+    """Этапы, на которые в принципе ведёт граф из текущего (/smart_agent_task_stage).
+    Заполненность обязательных ключей здесь НЕ проверяется — иначе застрявшую задачу
+    нельзя было бы сдвинуть вручную. Отдельно от графа проверяется только гейт, см.
+    manual_transition_block."""
     return current_stage(task).next_stages
 
 
@@ -520,28 +812,80 @@ def allowed_manual_stages(task: dict) -> tuple[str, ...]:
 # --------------------------------------------------------------------------- #
 
 
-def normalize_data_updates(scenario: TaskScenario, updates: dict) -> dict[str, str]:
-    """Оставляет только ключи из словаря сценария (см. докстринг модуля про то,
-    почему это критично) и приводит значения к строкам. verdict дополнительно
-    ограничен двумя допустимыми значениями: от него зависит направление перехода
-    с этапа проверки, и произвольный текст вида «пользователь вроде согласен»
-    сделал бы переход неоднозначным."""
-    known = set(scenario.known_keys())
+def normalize_data_updates(
+    stage: TaskStage, data: dict, updates: dict
+) -> tuple[dict[str, str], list[str]]:
+    """Оставляет только ключи ТЕКУЩЕГО ЭТАПА и приводит значения к строкам.
+    Возвращает (принятые обновления, причины отказов на русском).
+
+    Три вида отказа, и каждый закрывает свою дыру (см. докстринг модуля):
+    - ключ не этого этапа — иначе модель заполнила бы ключи сразу двух этапов и
+      провела задачу через этап, которого фактически не было;
+    - значение вне закрытого списка (CLOSED_VALUE_KEYS) — от таких ключей зависит
+      направление перехода, трактовать их на глаз нельзя;
+    - последовательный ключ раньше времени (sequential_keys) — сводку вводных
+      нельзя проговорить до сбора вводных, а подтвердить её нельзя до того, как она
+      проговорена, иначе гейт закрывался бы первым же ходом.
+
+    Причины отказов не глотаются: вызывающий код показывает их пользователем
+    строкой в чате и пишет в историю задачи.
+    """
+    allowed = (*stage.required_keys, *stage.optional_keys)
     normalized: dict[str, str] = {}
-    for key, value in updates.items():
-        key = str(key)
-        if key not in known:
-            logger.debug("Ключ %r не входит в словарь сценария %s — пропускаю.", key, scenario.key)
+    rejected: list[str] = []
+    merged = dict(data)
+
+    # Порядок обхода — как в реестре этапа, а не как в ответе модели: предпосылки
+    # последовательных ключей должны считаться с учётом значений, принятых в этом
+    # же ответе (вводные и сводка могут прийти одним ходом).
+    for key in allowed:
+        if key not in updates:
             continue
-        text = _as_text(value).strip()
+        text = _as_text(updates[key]).strip()
         if not text:
             continue
-        if key == VERDICT_KEY:
+        choices = CLOSED_VALUE_KEYS.get(key)
+        if choices is not None:
             text = text.lower()
-            if text not in (VERDICT_ACCEPTED, VERDICT_CHANGES_REQUESTED):
+            if text not in choices:
+                rejected.append(
+                    f"{key_label(key)}: значение «{_as_text(updates[key]).strip()}» "
+                    f"не из списка ({', '.join(choices)})"
+                )
+                continue
+        if key in stage.sequential_keys:
+            unfilled = [
+                earlier
+                for earlier in stage.keys_before(key)
+                if not str(merged.get(earlier, "")).strip()
+            ]
+            if unfilled:
+                rejected.append(
+                    f"{key_label(key)} — рано: сначала нужно собрать "
+                    + ", ".join(key_label(item) for item in unfilled)
+                )
                 continue
         normalized[key] = text
-    return normalized
+        merged[key] = text
+
+    for key in updates:
+        if str(key) not in allowed:
+            rejected.append(f"«{key}» — не пункт этапа «{stage.label}»")
+
+    for reason in rejected:
+        logger.debug("Обновление задачи отклонено: %s.", reason)
+    return normalized, rejected
+
+
+def next_forward_stage(scenario: TaskScenario, stage: TaskStage) -> TaskStage | None:
+    """Этап, следующий за указанным ВПЕРЁД по графу (или None у финального). Нужен и
+    условию перехода, и контексту основного ответа: модель должна знать, что будет
+    дальше, иначе она сочиняет пользователю собственные названия этапов."""
+    index = scenario.stage_index(stage.name)
+    for name in stage.next_stages:
+        if scenario.stage_index(name) > index:
+            return scenario.stage(name)
+    return None
 
 
 def _forward_target(scenario: TaskScenario, task: dict) -> str | None:
@@ -557,35 +901,97 @@ def _forward_target(scenario: TaskScenario, task: dict) -> str | None:
     stage = current_stage(task)
     if missing_keys(task):
         return None
-    index = scenario.stage_index(stage.name)
-    forward = [name for name in stage.next_stages if scenario.stage_index(name) > index]
-    if not forward:
+    # Гейт — единственное, что не выводится из «все ключи заполнены»: нужно именно
+    # то значение, которое означает решение человека (сводка подтверждена, результат
+    # принят). Другое значение ключа-гейта — это отказ, то есть движение назад или
+    # сброс гейта, см. _backward_target/_reset_gate.
+    if not stage.gate_satisfied(task.get("data", {})):
         return None
-    # С проверки вперёд (в done) уходим только при согласии пользователя; просьба
-    # о правках — это откат назад, см. _backward_target.
-    if stage.name == STAGE_VALIDATION and task.get("data", {}).get(VERDICT_KEY) != VERDICT_ACCEPTED:
-        return None
-    return forward[0]
+    forward = next_forward_stage(scenario, stage)
+    return forward.name if forward is not None else None
+
+
+def _gate_rejected(stage: TaskStage, data: dict) -> bool:
+    """Ключ-гейт заполнен, но НЕ тем значением, которое пропускает вперёд, — то есть
+    человек сказал «нет»: сводка понята неверно, результат не устраивает."""
+    if stage.gate is None:
+        return False
+    key, expected = stage.gate
+    value = str(data.get(key, "")).strip().lower()
+    return bool(value) and value != expected
+
+
+def _reset_gate(stage: TaskStage, task: dict) -> None:
+    """Отказ на гейте, откатывать который некуда (сводку вводных не подтвердили на
+    первом же этапе): этап не меняется, но гейт и то, что он подтверждал, снимаются
+    — агент уточняет параметры и проговаривает сводку заново.
+
+    Флаг awaiting_correction здесь по той же причине, что и в _roll_back: без него
+    задача формально ничего не ждёт, и следующий же ход мог бы снова закрыть гейт,
+    не изменив ни одного параметра.
+    """
+    if stage.gate is None:
+        return
+    for key in (*stage.sequential_keys, stage.gate[0]):
+        task["data"].pop(key, None)
+    task["awaiting_correction"] = True
+    record_transition(
+        task,
+        stage.name,
+        stage.name,
+        BY_GATE_REJECTED,
+        f"{key_label(stage.gate[0])} — отказ, собираем заново",
+    )
+
+
+def _rejected_stage_request(
+    scenario: TaskScenario, stage_before: TaskStage, task: dict, requested
+) -> list[str]:
+    """Причина, по которой запрошенный моделью этап не состоялся — на русском и в
+    тех же формулировках, что уходят пользователю. Пустой список, если модель ничего
+    не просила или её просьба и так исполнена."""
+    if not isinstance(requested, str):
+        return []
+    requested = requested.strip()
+    if not requested or requested in (stage_before.name, task["stage"]):
+        return []
+    if scenario.stage(requested) is None:
+        return [f"этап «{requested}» в сценарии «{scenario.label}» не существует"]
+
+    label = stage_label(scenario, requested)
+    direction = f"переход «{stage_before.label} → {label}»"
+    if requested not in stage_before.next_stages:
+        return [f"{direction} не разрешён из текущего этапа"]
+    missing = missing_keys(task)
+    if missing:
+        return [
+            f"{direction} — не хватает: " + ", ".join(key_label(key) for key in missing)
+        ]
+    return [f"{direction} — вперёд автомат двигается сам, по собранным данным"]
 
 
 def _backward_target(scenario: TaskScenario, task: dict, requested) -> str | None:
     """Откат назад — единственный вид перехода, который НЕ выводится из данных
-    автоматически: «вернуться и переделать» может решить только пользователь. С
-    этапа проверки направление задаёт вердикт (правки -> назад к работе), с
-    остальных этапов — поле "stage" из ответа модели, если она указала более
-    ранний допустимый этап."""
+    автоматически: «вернуться и переделать» может решить только пользователь.
+    Направление задаёт либо отказ на гейте этапа (результат не принят -> назад к
+    работе над ним), либо поле "stage" из ответа модели, если она указала более
+    ранний допустимый этап.
+
+    Возвращает None, если отказ на гейте некуда откатывать (например, сводку
+    вводных не подтвердили на первом же этапе) — такой отказ обрабатывается сбросом
+    гейта на месте, см. _reset_gate."""
     stage = current_stage(task)
-    if stage.name == STAGE_VALIDATION:
-        if task.get("data", {}).get(VERDICT_KEY) == VERDICT_CHANGES_REQUESTED:
-            return STAGE_EXECUTION
-        return None
+    if _gate_rejected(stage, task.get("data", {})):
+        return _last_auto_stage(scenario, stage.name)
     if not isinstance(requested, str) or requested not in stage.next_stages:
         return None
     index = scenario.stage_index(stage.name)
     return requested if 0 <= scenario.stage_index(requested) < index else None
 
 
-def _roll_back(scenario: TaskScenario, task: dict, target: str) -> None:
+def _roll_back(
+    scenario: TaskScenario, task: dict, target: str, by: str, note: str = ""
+) -> None:
     """Выполняет откат назад: снимает обязательные ключи этапов ПОСЛЕ целевого и
     ставит флаг ожидания правки.
 
@@ -599,11 +1005,22 @@ def _roll_back(scenario: TaskScenario, task: dict, target: str) -> None:
     start = scenario.stage_index(target)
     if start < 0:
         return
+    source = task["stage"]
     for stage in scenario.stages[start + 1 :]:
         for key in stage.required_keys:
             task["data"].pop(key, None)
+    # Гейт целевого этапа снимается, хотя остальные его ключи сохраняются: если
+    # пользователь вернулся править вводные, прежнее подтверждение сводки больше
+    # ничего не значит — сводку нужно проговорить и подтвердить заново, иначе
+    # задача уехала бы вперёд по устаревшему согласию.
+    target_stage = scenario.stages[start]
+    if target_stage.gate is not None:
+        for key in (*target_stage.sequential_keys, target_stage.gate[0]):
+            task["data"].pop(key, None)
     task["stage"] = target
     task["awaiting_correction"] = True
+    if target != source:
+        record_transition(task, source, target, by, note)
 
 
 def _last_auto_stage(scenario: TaskScenario, before: str) -> str | None:
@@ -645,61 +1062,110 @@ def apply_invariant_violations(task: dict, violations: list[dict]) -> tuple[dict
         updated[INVARIANT_VIOLATIONS_KEY] = list(violations)
         return updated, None
 
-    _roll_back(scenario, updated, target)
+    _roll_back(
+        scenario,
+        updated,
+        target,
+        BY_INVARIANTS,
+        "нарушены инварианты " + ", ".join(f"№{item['index']}" for item in violations),
+    )
     updated[INVARIANT_VIOLATIONS_KEY] = list(violations)
     return updated, f"{stage_before.label} → {current_stage(updated).label}"
 
 
-def apply_state_response(task: dict, parsed: dict) -> tuple[dict, str | None]:
+@dataclass
+class StateChange:
+    """Итог технического вызова по одной задаче.
+
+    transition — подпись состоявшегося перехода для чата («планирование →
+    формирование портфеля») или None, если этап не сменился. rejected — причины, по
+    которым автомат НЕ сделал того, что предложила модель; командный слой печатает
+    их пользователю, а не глотает (см. record_transition про то, почему
+    отклонённая попытка не должна выглядеть как проигнорированная просьба).
+    gate_reset — гейт этапа сняли отказом (сводку вводных не подтвердили): этап тот
+    же, но работа на нём начинается заново, и молча этого делать нельзя.
+    """
+
+    task: dict
+    transition: str | None = None
+    rejected: list[str] = field(default_factory=list)
+    gate_reset: bool = False
+
+
+def apply_state_response(task: dict, parsed: dict) -> StateChange:
     """Применяет разобранный JSON технического вызова к задаче.
 
     Порядок: сначала данные и шаг, потом переходы. ВПЕРЁД задача двигается сама,
-    как только собраны обязательные ключи этапа (_forward_target) — поле "stage"
-    из ответа модели на это не влияет, иначе задача зависает на этапе, условия
-    которого уже выполнены. НАЗАД — только по явному сигналу (вердикт «нужны
-    правки» или более ранний этап в "stage"), и такой откат ждёт правку, прежде
-    чем снова разрешить движение вперёд (см. _roll_back).
+    как только собраны обязательные ключи этапа и выполнен его гейт
+    (_forward_target) — поле "stage" из ответа модели на это не влияет, иначе
+    задача зависает на этапе, условия которого уже выполнены. НАЗАД — только по
+    явному сигналу (отказ на гейте или более ранний допустимый этап в "stage"), и
+    такой откат ждёт правку, прежде чем снова разрешить движение вперёд (см.
+    _roll_back).
 
-    Возвращает новую задачу и, если этап сменился, короткую подпись перехода для
-    чата («планирование → формирование портфеля»).
+    Обновления данных фильтруются по ключам ТЕКУЩЕГО этапа, поэтому «перепрыгнуть»
+    этап, заполнив ключи следующего, нельзя: цикл движения вперёд остаётся, но
+    данных на второй шаг в одном ходу взяться уже неоткуда (кроме ручного
+    /smart_agent_task_set — там ключи задаёт человек, и это его право).
     """
     updated = copy.deepcopy(task)
     scenario = scenario_of(updated)
     stage_before = current_stage(updated)
 
     raw_updates = parsed.get("data_updates")
-    updates = (
-        normalize_data_updates(scenario, raw_updates) if isinstance(raw_updates, dict) else {}
+    updates, rejected = (
+        normalize_data_updates(stage_before, updated["data"], raw_updates)
+        if isinstance(raw_updates, dict)
+        else ({}, [])
     )
     updated["data"].update(updates)
 
-    for field in ("step", "expected_action"):
-        value = parsed.get(field)
+    for name in ("step", "expected_action"):
+        value = parsed.get(name)
         if isinstance(value, str) and value.strip():
-            updated[field] = value.strip()
+            updated[name] = value.strip()
 
-    backward = _backward_target(scenario, updated, parsed.get("stage"))
+    requested = parsed.get("stage")
+    gate_reset = False
+    backward = _backward_target(scenario, updated, requested)
     if backward is not None:
-        _roll_back(scenario, updated, backward)
+        _roll_back(
+            scenario,
+            updated,
+            backward,
+            BY_ROLLBACK,
+            f"{key_label(stage_before.gate[0])} — отказ"
+            if _gate_rejected(stage_before, updated["data"])
+            else "возврат к ранее собранному по просьбе пользователя",
+        )
+    elif _gate_rejected(stage_before, updated["data"]):
+        _reset_gate(stage_before, updated)
+        gate_reset = True
     else:
         # Правка после отката пришла — можно снова двигаться вперёд. Заодно
         # снимаются претензии ревизора инвариантов: они относились к ПРЕЖНЕМУ
         # результату, а ключ этапа только что переписан (см.
         # apply_invariant_violations).
-        if any(key in current_stage(updated).required_keys for key in updates):
+        if any(key in stage_before.required_keys for key in updates):
             updated["awaiting_correction"] = False
             updated[INVARIANT_VIOLATIONS_KEY] = []
 
         if not updated.get("awaiting_correction"):
-            # Вперёд — столько шагов, сколько позволяют собранные данные: обычно
-            # ноль или один, но если модель за один ход заполнила ключи сразу двух
-            # этапов, застревать на полпути неправильно. Ограничение по числу
-            # этапов — защита от зацикливания на случай кривого реестра сценария.
+            # Вперёд — столько шагов, сколько позволяют собранные данные. Обычно
+            # это ноль или один: ключи следующего этапа от модели в этом же ходу не
+            # принимаются. Ограничение по числу этапов — защита от зацикливания на
+            # случай кривого реестра сценария.
             for _ in range(len(scenario.stages)):
                 forward = _forward_target(scenario, updated)
                 if forward is None:
                     break
+                source = updated["stage"]
                 updated["stage"] = forward
+                record_transition(updated, source, forward, BY_AUTO)
+
+    rejected.extend(_rejected_stage_request(scenario, stage_before, updated, requested))
+    for reason in rejected:
+        record_transition(updated, stage_before.name, stage_before.name, BY_REJECTED, reason)
 
     if updated["stage"] == stage_before.name:
         if missing_keys(updated):
@@ -709,9 +1175,14 @@ def apply_state_response(task: dict, parsed: dict) -> tuple[dict, str | None]:
                 stage_before.name,
                 ", ".join(missing_keys(updated)),
             )
-        return updated, None
+        return StateChange(task=updated, rejected=rejected, gate_reset=gate_reset)
 
-    return updated, f"{stage_before.label} → {current_stage(updated).label}"
+    return StateChange(
+        task=updated,
+        transition=f"{stage_before.label} → {current_stage(updated).label}",
+        rejected=rejected,
+        gate_reset=gate_reset,
+    )
 
 
 def parse_start_response(parsed: dict) -> tuple[str, str] | None:
@@ -751,6 +1222,17 @@ def build_context_message(task: dict) -> str:
         f"Этап {position} из {len(scenario.stages)}: {stage.label}.",
         f"Что делать на этом этапе: {stage.instruction}",
     ]
+
+    # Без этой строки модель не знает, что будет дальше, и сочиняет пользователю
+    # собственные этапы («дальше — наполнение блоков»), которых в автомате нет, —
+    # а заодно анонсирует как шаг работы служебные проверки бота.
+    forward = next_forward_stage(scenario, stage)
+    lines.append(
+        (f"Следующий этап: {forward.label}." if forward is not None else "Это последний этап.")
+        + " Названий этапов не выдумывай и не обещай пользователю шагов, которых нет "
+        "в этом списке. Служебные проверки бота (в том числе проверку ограничений) "
+        "как отдельный шаг работы не анонсируй."
+    )
 
     if task.get("paused"):
         lines.append(
@@ -793,6 +1275,15 @@ def build_context_message(task: dict) -> str:
             "пользователь просит перейти дальше — вежливо объясни, каких именно "
             "пунктов не хватает, и продолжи текущий этап."
         )
+        if stage.gate is not None and missing == [stage.gate[0]]:
+            # Всё, кроме решения человека, собрано. Без этой строки модель видит
+            # только «не хватает подтверждения вводных» и не понимает, что от неё
+            # требуется не заполнить пункт, а дождаться ответа.
+            lines.append(
+                f"Осталось только решение пользователя: {key_label(stage.gate[0])}. "
+                "Задай прямой вопрос и дождись ответа — сам за пользователя этот "
+                "пункт не решай."
+            )
     elif violations:
         lines.append(
             "Этап не сменится, пока не появится новый результат, не нарушающий "
@@ -830,6 +1321,21 @@ def build_state_user_content(task: dict, messages: list[dict[str, str]]) -> str:
         f"- {key}: {key_label(key)}"
         for key in (*stage.required_keys, *stage.optional_keys)
     )
+    gate_note = ""
+    if stage.gate is not None:
+        gate_key, gate_value = stage.gate
+        gate_note = (
+            f"Условие-гейт этапа: ключ {gate_key} ({key_label(gate_key)}) должен "
+            f"получить значение \"{gate_value}\" — это решение ПОЛЬЗОВАТЕЛЯ, "
+            "заполняй его только по его прямому ответу.\n"
+        )
+    if stage.sequential_keys:
+        gate_note += (
+            "Ключи "
+            + ", ".join(stage.sequential_keys)
+            + " заполняются только после того, как собраны все предшествующие им "
+            "обязательные ключи этапа, — иначе они будут отброшены.\n"
+        )
     return (
         f"Сценарий задачи: {scenario.label}.\n"
         f"Этапы сценария:\n{stages_overview}\n\n"
@@ -838,7 +1344,9 @@ def build_state_user_content(task: dict, messages: list[dict[str, str]]) -> str:
         f"{', '.join(stage.next_stages) or 'нет (задача завершена)'}.\n"
         f"Обязательные для перехода ключи текущего этапа: "
         f"{', '.join(stage.required_keys) or 'нет'}.\n"
-        f"Ключи, которые можно заполнять на этом этапе:\n{allowed_keys or '- (нет)'}\n\n"
+        f"{gate_note}"
+        f"Ключи, которые можно заполнять на этом этапе (любые другие будут "
+        f"отброшены):\n{allowed_keys or '- (нет)'}\n\n"
         f"Новые пары вопрос-ответ, ещё не учтённые в состоянии:\n"
         f"{render_exchanges(messages)}"
     )
@@ -892,11 +1400,15 @@ def describe_state(task: dict) -> str:
     scenario = scenario_of(task)
     stage = current_stage(task)
     position = scenario.stage_index(stage.name) + 1
+    paused_note = ""
+    if task.get("paused"):
+        paused_note = " · ⏸ на паузе" + (
+            f" с {task['paused_at']}" if task.get("paused_at") else ""
+        )
     lines = [
         f"📋 Задача: {scenario.label}",
         f"Цель: {task.get('goal') or '—'}",
-        f"Этап: {stage.label} ({position} из {len(scenario.stages)})"
-        + (" · ⏸ на паузе" if task.get("paused") else ""),
+        f"Этап: {stage.label} ({position} из {len(scenario.stages)}){paused_note}",
         f"Текущий шаг: {task.get('step') or '—'}",
         f"Ожидаемое действие: {task.get('expected_action') or '—'}",
     ]
@@ -929,7 +1441,31 @@ def describe_state(task: dict) -> str:
     elif stage.name != STAGE_DONE:
         lines.append("Не хватает до следующего этапа: ничего, все пункты собраны.")
 
+    history = render_transitions(task)
+    if history:
+        lines.append("История переходов:\n" + history)
+
     return "\n".join(lines)
+
+
+def render_transitions(task: dict) -> str:
+    """История переходов задачи для /smart_agent_task_show и сводки после паузы —
+    включая ОТКЛОНЁННЫЕ попытки, чтобы «автомат не пустил» можно было увидеть, а не
+    только предположить."""
+    scenario = scenario_of(task)
+    rendered = []
+    for entry in transitions(task):
+        by = _BY_LABELS.get(entry.get("by", ""), entry.get("by", ""))
+        note = f" — {entry['note']}" if entry.get("note") else ""
+        if entry.get("by") == BY_REJECTED or entry.get("from") == entry.get("to"):
+            where = stage_label(scenario, entry.get("to", ""))
+            rendered.append(f"- {where} · {by}{note}")
+        else:
+            rendered.append(
+                f"- {stage_label(scenario, entry.get('from', ''))} → "
+                f"{stage_label(scenario, entry.get('to', ''))} · {by}{note}"
+            )
+    return "\n".join(rendered)
 
 
 def archive_fact(task: dict) -> str:

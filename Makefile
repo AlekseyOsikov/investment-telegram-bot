@@ -7,8 +7,12 @@ run:
 	python src/main.py
 
 test:
-	@echo "Тестов пока нет. Заглушка для будущего pytest-сьюта."
-	@echo "Когда появятся тесты: pytest tests/"
+	@command -v pytest >/dev/null 2>&1 || { \
+		echo "pytest не установлен (он не входит в requirements.txt, как и ruff):"; \
+		echo "  pip install pytest"; \
+		exit 1; \
+	}
+	pytest tests/
 
 clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
