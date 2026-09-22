@@ -10,7 +10,7 @@ stateless-прокси без истории диалога и без админ
 полноценного инвестиционного ассистента, поэтому архитектурные и доменные решения ниже стоит
 пересматривать по мере роста функциональности, а не считать зафиксированными навсегда.
 
-Логика разнесена по нескольким файлам и двум пакетам в `src/`:
+Логика разнесена по нескольким файлам и пакетам в `src/`:
 - `config.py` — переменные окружения и константы, не привязанные к конкретному
   LLM-провайдеру: Telegram-токен, `MAIN_CLIENT`/`MAIN_MODEL` (см. "Конфигурация"),
   `SYSTEM_PROMPT`, лимиты, логирование. Единственное место, вызывающее `load_dotenv()`.
@@ -172,10 +172,34 @@ stateless-прокси без истории диалога и без админ
     Строятся через `build_smart_agent_conversation_handler()`,
     `build_smart_agent_profile_conversation_handler()` и по одному
     `build_smart_agent_*_handler()` на каждую из остальных девятнадцати команд.
+- `mcp_integration/` — подключение к MCP-серверу (Model Context Protocol) и получение
+  от него списка инструментов, технический/диагностический режим по тому же принципу,
+  что `research/*`: не используется в обычном потоке сообщений и не даёт LLM вызывать
+  найденные инструменты — только перечисляет их.
+  - `mcp_integration/client.py` — асинхронное подключение по stdio-транспорту через
+    официальный MCP SDK (пакет `mcp`): один вызов `connect_and_list_tools()` — это
+    один цикл «запустить дочерний процесс сервера → рукопожатие → `list_tools()` →
+    закрыть», без кэширования сессии между вызовами. Сервер и его аргументы берутся
+    из `config.py` (`MCP_SERVER_COMMAND`/`MCP_SERVER_ARGS`, см. «Конфигурация»), а
+    не откуда-либо ещё — пользователь чата их не выбирает. Исключения (в т.ч.
+    `FileNotFoundError` при отсутствующей программе запуска и `TimeoutError` при
+    превышении `MCP_TIMEOUT_SECONDS`) не перехватываются — это делает вызывающий
+    код, как и в `Agent.ask()` (`agents/agent.py`). `format_tools_result()` в этом
+    же файле — чистая функция форматирования результата в текст, без сети и без
+    Telegram, покрыта тестами (`tests/test_mcp_formatting.py`).
+  - `mcp_integration/tools_command.py` — команда `/mcp_tools`: обычный
+    `CommandHandler` (без `ConversationHandler` — у команды нет ни диалога, ни
+    состояния), переводящий исключения `client.py` в сообщения на русском тем же
+    паттерном, что `handle_message` в `main.py` (перехват по отдельным классам,
+    без переиспользования `research/_shared.api_error_to_message` — там исключения
+    OpenAI SDK, здесь другие). Аргументы, переданные вместе с командой, игнорируются.
+    Собирается через `build_mcp_tools_handler()`.
 - `main.py` — обычный прокси-поток (`/start`, `/help`, `handle_message`) и точка входа
   приложения; подключает четыре режима исследования через `build_constraints_conversation_handler()`,
   `build_reasoning_conversation_handler()`, `build_temperature_conversation_handler()`,
-  `build_models_conversation_handler()`, агента через все восемь `build_agent_*` из
+  `build_models_conversation_handler()`, подключение к MCP-серверу через
+  `build_mcp_tools_handler()` (`mcp_integration/tools_command.py`), агента через все
+  восемь `build_agent_*` из
   `agents/agent_command.py`, сравнение стратегий через три `build_agent_compare_*`
   из `agents/compare_command.py`, а также smart-агента через все двадцать один
   `build_smart_agent_*` из `agents/smart_agent_command.py` —
@@ -215,7 +239,7 @@ pytest tests/
 Проверка синтаксиса без запуска:
 
 ```bash
-python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/agents/agent.py src/agents/agent_command.py src/agents/context_strategies.py src/agents/active_mode.py src/agents/compare_command.py src/agents/smart_agent.py src/agents/smart_agent_command.py src/agents/task_state.py src/agents/invariants.py src/main.py
+python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/agents/agent.py src/agents/agent_command.py src/agents/context_strategies.py src/agents/active_mode.py src/agents/compare_command.py src/agents/smart_agent.py src/agents/smart_agent_command.py src/agents/task_state.py src/agents/invariants.py src/mcp_integration/client.py src/mcp_integration/tools_command.py src/main.py
 ```
 
 `tests/` — юнит-тесты правил конечного автомата рабочей задачи
@@ -224,7 +248,10 @@ python3 -m py_compile src/config.py src/providers/deepseek_client.py src/provide
 `python src/main.py`). Тесты покрывают именно `agents/task_state.py`: это чистые
 функции без сети, Telegram и LLM, поэтому ни моков клиента, ни фикстур с файлами
 памяти там нет — при доработке автомата дописывай тесты сюда, а не заводи моки
-на `SmartAgent`.
+на `SmartAgent`. По тому же принципу — `tests/test_mcp_formatting.py` покрывает
+`mcp_integration/client.py: format_tools_result()` (чистое форматирование
+результата MCP в текст) без моков MCP-сессии и без запуска дочерних процессов —
+само подключение к серверу проверяется вручную (`/mcp_tools`), а не тестами.
 
 ## Процесс работы: OpenSpec
 
@@ -345,7 +372,8 @@ research-режимов, которые сами не выбирают конк�
 `_validate_config()` как и `MAIN_CLIENT`) — включает или выключает исследовательские
 и служебные команды: `/research_constraints`, `/research_reasoning`,
 `/research_temperature`, `/research_models`, `/agent_compare`,
-`/agent_compare_report`, `/agent_compare_reset`, `/agent_mode`, `/agent_context`. Это
+`/agent_compare_report`, `/agent_compare_reset`, `/agent_mode`, `/agent_context`,
+`/mcp_tools`. Это
 решение оператора бота (например, скрыть технические эксперименты на проде), а не
 то, что пользователь чата переключает сам. При `RESEARCH=false` эти команды не
 регистрируются как обработчики в `main.py` (`RESEARCH_ENABLED`) и не упоминаются в
@@ -462,6 +490,19 @@ smart-агента» в разделе «Архитектура»). Промпт
 работает НЕ как `AGENT_MEMORY_LONG_TERM_MAX_FACTS`: при переполнении ничего не
 вытесняется, а добавление отклоняется — незаметно выбросить заданный пользователем
 запрет нельзя. Лимит длины держит инвариант проверяемым правилом в одну фразу.
+
+`MCP_SERVER_COMMAND`/`MCP_SERVER_ARGS` (`config.py`, по умолчанию `npx` и `-y
+@modelcontextprotocol/server-everything`, аргументы разбираются `shlex.split`) —
+команда запуска MCP-сервера (`/mcp_tools`, `mcp_integration/`) по stdio-транспорту
+и её аргументы, заданы РАЗДЕЛЬНО, а не одной строкой в шелле: `StdioServerParameters`
+запускает процесс без обёртки в shell, поэтому подстановок/инъекции через `.env` не
+возникает. Как и `MAIN_CLIENT`/`MAIN_MODEL`, это настройка ОПЕРАТОРА бота — изменить
+сервер можно только правкой `.env` и перезапуском процесса, пользователь чата не
+может задать или подменить его ни аргументом команды, ни текстом сообщения (см.
+«Ограничения безопасности»). `MCP_TIMEOUT_SECONDS` (по умолчанию 60) — общий
+тайм-аут на весь цикл подключения (запуск процесса + рукопожатие + `list_tools()`),
+а не только на сетевой обмен — самое вероятное место зависания — старт `npx` при
+первом скачивании пакета.
 
 ## Архитектура
 

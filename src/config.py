@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shlex
 import sys
 import warnings
 
@@ -386,6 +387,22 @@ AGENT_INVARIANTS_SYSTEM_PROMPT = (
     "7. Верни ТОЛЬКО JSON-объект, без пояснений и без markdown-разметки."
 )
 AGENT_INVARIANTS_MAX_TOKENS = int(os.getenv("AGENT_INVARIANTS_MAX_TOKENS", "400"))
+
+# Подключение к MCP-серверу (mcp_integration/, команда /mcp_tools) — команда запуска
+# сервера и её аргументы заданы РАЗДЕЛЬНО (а не одной строкой в шелле), т.к. запуск
+# идёт без обёртки в shell (StdioServerParameters), поэтому подстановок и инъекции
+# через .env не возникает. Это настройка ОПЕРАТОРА бота, как MAIN_CLIENT/MAIN_MODEL —
+# пользователь чата не может задать или изменить сервер ни аргументом, ни текстом
+# сообщения (см. «Ограничения безопасности» в CLAUDE.md). По умолчанию — публичный
+# тестовый сервер @modelcontextprotocol/server-everything, запускаемый через npx.
+MCP_SERVER_COMMAND = os.getenv("MCP_SERVER_COMMAND", "npx").strip()
+MCP_SERVER_ARGS = shlex.split(
+    os.getenv("MCP_SERVER_ARGS", "-y @modelcontextprotocol/server-everything")
+)
+# Общий тайм-аут на весь цикл подключения (запуск процесса + рукопожатие протокола +
+# получение списка инструментов) — 60 секунд с запасом на первый запуск npx, который
+# может скачивать пакет.
+MCP_TIMEOUT_SECONDS = float(os.getenv("MCP_TIMEOUT_SECONDS", "60"))
 
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000

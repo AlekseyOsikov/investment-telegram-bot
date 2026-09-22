@@ -103,6 +103,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from mcp_integration.tools_command import build_mcp_tools_handler
 from providers.main_client import main_client
 from research.constraints import build_constraints_conversation_handler
 from research.models import build_models_conversation_handler
@@ -141,13 +142,46 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await update.message.reply_text(welcome_text)
 
 
+def _split_html_for_telegram(text: str) -> list[str]:
+    """Режет HTML-текст на части по TELEGRAM_MESSAGE_LIMIT, не разрывая строки.
+
+    В отличие от handle_message/agent_history_command (обычный текст без разметки,
+    где безопасно резать по произвольному символу — TELEGRAM_MESSAGE_LIMIT ровно
+    для этого и существует), help_text отправляется с ParseMode.HTML: сырая нарезка
+    по символам могла бы разорвать тег вроде <b>...</b> пополам и прислать невалидный
+    HTML вместо ожидаемого текста. Каждый тег в help_text открывается и закрывается
+    в пределах ОДНОЙ строки, поэтому резка по границам строк (а не внутри них)
+    гарантированно не разрывает ни один тег — при добавлении текста, где тег
+    переносится на следующую строку, эта гарантия перестанет выполняться.
+    """
+    lines = text.split("\n")
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    for line in lines:
+        added_len = len(line) + (1 if current else 0)  # +1 — символ "\n" при склейке
+        if current and current_len + added_len > TELEGRAM_MESSAGE_LIMIT:
+            chunks.append("\n".join(current))
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += added_len
+    if current:
+        chunks.append("\n".join(current))
+    return chunks
+
+
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработчик команды /help.
 
     Исследовательские/технические команды (/research_*, /agent_compare*, /agent_mode,
     /agent_context) перечисляются здесь, только если они включены переменной окружения
     RESEARCH (config.py) — см. её докстринг про то, какие команды это затрагивает и
-    почему остальные команды /agent_* в этот список не входят.
+    почему остальные команды /agent_* в этот список не входят. Список команд растёт
+    вместе с ботом, и при RESEARCH=true уже превышает лимит Telegram на одно
+    сообщение (4096 символов) — текст режется _split_html_for_telegram на несколько
+    сообщений, как и длинные ответы handle_message/agent_history_command.
     """
     command_lines = [
         "/start — приветственное сообщение",
@@ -163,6 +197,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             f"/research_temperature — режим исследования влияния temperature на ответ "
             f"{MAIN_CLIENT_LABEL} API (технический эксперимент, не для обычных вопросов)",
             "/research_models — режим исследования разных моделей API "
+            "(технический эксперимент, не для обычных вопросов)",
+            "/mcp_tools — подключиться к MCP-серверу и показать список его инструментов "
             "(технический эксперимент, не для обычных вопросов)",
         ]
     command_lines += [
@@ -244,7 +280,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "принятием финансовых решений проконсультируйся с лицензированным специалистом. "
         "Не присылай боту номера счетов, карт и другие чувствительные персональные данные."
     )
-    await update.message.reply_text(help_text, parse_mode=ParseMode.HTML)
+    for chunk in _split_html_for_telegram(help_text):
+        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML)
 
 
 # --------------------------------------------------------------------------- #
@@ -355,6 +392,7 @@ def main() -> None:
         application.add_handler(build_reasoning_conversation_handler())
         application.add_handler(build_temperature_conversation_handler())
         application.add_handler(build_models_conversation_handler())
+        application.add_handler(build_mcp_tools_handler())
     application.add_handler(build_agent_conversation_handler())
     application.add_handler(build_agent_reset_handler())
     application.add_handler(build_agent_history_handler())

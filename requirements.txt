@@ -1,3 +1,4 @@
 python-telegram-bot>=20.7,<21
 openai>=1.30.0,<2
 python-dotenv>=1.0.0,<2
+mcp>=2.2.0,<3
