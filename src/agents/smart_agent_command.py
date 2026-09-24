@@ -90,12 +90,20 @@ point своего ConversationHandler-а — это позволяет ему �
   реально ушедшие в LLM на последний вопрос (см.
   SmartAgent.get_last_context_messages) — способ проверить, что попадает в каждый
   слой и как это влияет на ответ.
-- /smart_agent_toggle <profile|invariants|short|working|long> — включает/выключает
-  слой в СБОРКЕ контекста без удаления данных (общая настройка на чат, не
+- /smart_agent_toggle <profile|invariants|short|working|long|tools> — включает/
+  выключает слой в СБОРКЕ контекста без удаления данных (общая настройка на чат, не
   per-profile) — так можно сравнить ответ на один и тот же вопрос с разными слоями
   включёнными/выключенными. Для инвариантов выключение снимает и проверку результата
   задачи, поэтому, пока слой выключен, об этом напоминает служебная строка после
-  каждого ответа.
+  каждого ответа. Слой tools — доступ ответа к инструментам рыночных данных (см.
+  agents/market_tools.py): выключение оставляет ответ без данных биржи, и отдельного
+  предупреждения пользователю каждый ход не нужно (о выключении сообщает сама эта
+  команда). Модели о нём говорит сообщение в контексте — только если сервер настроен
+  (market_tools.build_disabled_context_message): без него она выдаёт цену из прежнего
+  ответа за текущую.
+- Вызовы инструментов и предупреждения слоя tools (недоступный сервер, сбой обмена,
+  исчерпанный лимит шагов) уходят в ту же служебную строку после ответа, что и строка
+  состояния задачи и статистика токенов.
 - /smart_agent_reset — очищает три слоя памяти АКТИВНОГО ПРОФИЛЯ (не трогает сам
   профиль, его meta, его инварианты, другие профили и enabled_layers).
 
@@ -114,6 +122,7 @@ build_smart_agent_profile_conversation_handler() и по одному CommandHan
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from openai import (
@@ -150,7 +159,7 @@ from config import (
     TELEGRAM_MESSAGE_LIMIT,
 )
 
-from . import invariants, task_state
+from . import invariants, market_tools, task_state
 from .active_mode import (
     AGENT_MODE,
     COMPARE_MODE,
@@ -162,6 +171,7 @@ from .active_mode import (
 from .smart_agent import (
     FACT_SOURCE_AUTO,
     LAYER_INVARIANTS,
+    LAYER_TOOLS,
     PROFILE_FIELD_LABELS,
     PROFILE_FIELDS,
     SmartAgent,
@@ -188,6 +198,7 @@ LAYER_LABELS = {
     "short_term": "Краткосрочная (текущий диалог)",
     "working": "Рабочая (данные текущей задачи)",
     "long_term": "Долговременная (факты)",
+    "tools": "Инструменты (данные биржи)",
 }
 # Короткие алиасы для /smart_agent_toggle — вводить "long_term" в Telegram неудобно.
 LAYER_ALIASES = {
@@ -197,8 +208,9 @@ LAYER_ALIASES = {
     "short": "short_term",
     "working": "working",
     "long": "long_term",
+    "tools": "tools",
 }
-LAYER_TOGGLE_HINT = "<profile|invariants|short|working|long>"
+LAYER_TOGGLE_HINT = "<profile|invariants|short|working|long|tools>"
 
 # Подсказка к /smart_agent_invariant_add: категория необязательна, поэтому в тексте
 # команды она показана как пример, а не как требование (см. invariants.parse_input).
@@ -284,10 +296,15 @@ def _get_smart_agent(chat_id: int) -> SmartAgent:
 def _format_token_stats(result: SmartAgentAnswer) -> str:
     context_tokens = result.context_tokens if result.context_tokens is not None else "н/д"
     response = result.response_tokens if result.response_tokens is not None else "н/д"
-    return (
+    line = (
         f"📈 Токены: запрос ≈{result.request_tokens_approx} (по символам), "
         f"контекст={context_tokens}, ответ={response}"
     )
+    if result.llm_calls > 1:
+        # Вызовы инструментов — несколько обращений к модели за один вопрос, и
+        # контекст/ответ здесь суммы по всем (это реальная стоимость вопроса).
+        line += f" (суммарно по {result.llm_calls} обращениям к модели)"
+    return line
 
 
 def _task_service_lines(agent: SmartAgent) -> list[str]:
@@ -609,7 +626,11 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     try:
-        result = agent.ask(user_text)
+        # В рабочем потоке, а не прямо в обработчике: путь с инструментами внутри
+        # ask() запускает asyncio.run(), который не работает в потоке с уже
+        # запущенным циклом событий, — заодно основной цикл не блокируется на время
+        # запроса к LLM (см. докстринг SmartAgent.ask про безопасность потоков).
+        result = await asyncio.to_thread(agent.ask, user_text)
     except AuthenticationError:
         logger.error(
             "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
@@ -667,7 +688,8 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
 
     # Состояние задачи обновляется уже после отправки ответа (см. _task_service_lines),
     # а служебная информация уходит одним сообщением, а не двумя.
-    service_lines = _task_service_lines(agent)
+    service_lines = market_tools.format_call_lines(result.tool_calls) + result.warnings
+    service_lines += _task_service_lines(agent)
     service_lines.append(_format_token_stats(result))
     await update.message.reply_text("\n".join(service_lines), reply_markup=SMART_AGENT_KEYBOARD)
 
@@ -1305,6 +1327,17 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
     facts = agent.get_long_term_facts()
     lines.append(f"3️⃣ Долговременная ({status('long_term')}), фактов: {len(facts)}.")
 
+    tools_status, tools_reason = agent.get_tools_status()
+    tools_line = (
+        "🔧 Инструменты (данные биржи): "
+        f"{market_tools.describe_status(tools_status, tools_reason)}."
+    )
+    last_calls = agent.get_last_tool_calls()
+    if last_calls:
+        call_lines = "\n".join(market_tools.format_call_lines(last_calls))
+        tools_line += f"\nВызовы последнего вопроса:\n{call_lines}"
+    lines.append(tools_line)
+
     last_context = agent.get_last_context_messages()
     if last_context:
         rendered = "\n".join(f"— {m['content']}" for m in last_context if m["role"] == "system")
@@ -1326,7 +1359,7 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
 
 
 async def smart_agent_toggle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /smart_agent_toggle <profile|invariants|short|working|long> —
+    """Команда /smart_agent_toggle <profile|invariants|short|working|long|tools> —
     включает/выключает слой в СБОРКЕ контекста без удаления данных (см.
     SmartAgent.set_layer_enabled) — так можно сравнить ответ на один и тот же вопрос
     с разным набором включённых слоёв. Общая настройка на весь чат, не per-profile —
@@ -1353,6 +1386,14 @@ async def smart_agent_toggle_command(update: Update, context: ContextTypes.DEFAU
             else "\nОграничения снова действуют — и в контексте, и при проверке "
             "результата задачи."
         )
+    if layer == LAYER_TOOLS:
+        if not new_value:
+            text += "\nАгент отвечает без данных биржи, сервер не запускается."
+        elif agent.get_tools_status()[0] == market_tools.STATUS_NOT_CONFIGURED:
+            text += (
+                "\n⚠️ Но сервер рыночных данных не настроен (оператору бота нужно задать "
+                "MCP_MOEX_DIR) — пока агент отвечает без данных биржи."
+            )
     await update.message.reply_text(text)
 
 

@@ -404,6 +404,30 @@ MCP_SERVER_ARGS = shlex.split(
 # может скачивать пакет.
 MCP_TIMEOUT_SECONDS = float(os.getenv("MCP_TIMEOUT_SECONDS", "60"))
 
+# Доступ /smart_agent к инструментам локального MCP-сервера рыночных данных mcp-moex
+# (agents/market_tools.py, mcp_integration/market_session.py). MCP_MOEX_DIR — каталог
+# проекта этого сервера; пусто — возможность выключена и молчит. Команда запуска
+# (`uv run --directory <каталог> mcp-moex`) собирается в mcp_integration/
+# market_session.py списком аргументов, а не берётся из окружения: пользователь
+# просил вынести в настройку именно каталог, а запуск идёт без shell
+# (StdioServerParameters), так что значение не может внедрить произвольную команду.
+# Как MAIN_CLIENT/MAIN_MODEL и MCP_SERVER_COMMAND, это настройка ОПЕРАТОРА бота:
+# пользователь чата не может задать или подменить сервер (см. «Ограничения
+# безопасности» в CLAUDE.md). Не привязана к RESEARCH: это не исследовательская
+# команда, а часть основного ответа /smart_agent.
+MCP_MOEX_DIR = os.path.expanduser(os.getenv("MCP_MOEX_DIR", "").strip())
+# Сколько раз за ОДИН вопрос модель может запросить вызовы инструментов, прежде чем
+# ей будет предложено ответить без них. Спайк на DeepSeek: типичный вопрос
+# укладывается в 2 обращения (вызов + финальный ответ).
+MCP_MAX_TOOL_STEPS = int(os.getenv("MCP_MAX_TOOL_STEPS", "5"))
+# Предел размера результата инструмента, который возвращается МОДЕЛИ. Замер на
+# mcp-moex: get_price_history (собственный предел сервера — 300 свечей) даёт ≈62 200
+# символов pretty-printed JSON и ≈42 300 в компактной сериализации, которая и
+# передаётся модели. Предел выбран так, чтобы ПОЛНЫЙ ответ сервера умещался: обрезка
+# идёт с головы, а свечи хронологические, поэтому штатно срабатывать она не должна —
+# это предохранитель от аномально больших результатов, а не способ экономии токенов.
+MCP_TOOL_RESULT_MAX_CHARS = int(os.getenv("MCP_TOOL_RESULT_MAX_CHARS", "45000"))
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 
@@ -516,5 +540,43 @@ def _validate_config() -> None:
         )
         sys.exit(1)
 
+    if MCP_MAX_TOOL_STEPS < 1:
+        logger.error(
+            "Недопустимое значение MCP_MAX_TOOL_STEPS=%r: нужно целое число не меньше 1.",
+            MCP_MAX_TOOL_STEPS,
+        )
+        sys.exit(1)
+
+    if MCP_TOOL_RESULT_MAX_CHARS < 1:
+        logger.error(
+            "Недопустимое значение MCP_TOOL_RESULT_MAX_CHARS=%r: нужно целое число "
+            "не меньше 1.",
+            MCP_TOOL_RESULT_MAX_CHARS,
+        )
+        sys.exit(1)
+
+
+def _warn_if_moex_dir_invalid() -> None:
+    """Предупреждает в журнале, если MCP_MOEX_DIR задан, но не указывает на проект
+    сервера. Намеренно НЕ завершает процесс (в отличие от _validate_config): доступ
+    к рыночным данным — необязательная возможность, а неверный путь не должен
+    останавливать весь бот. Вопрос smart-агенту в этом случае обработается по
+    правилам недоступного сервера (agents/market_tools.py)."""
+    if not MCP_MOEX_DIR:
+        return
+    if not os.path.isdir(MCP_MOEX_DIR):
+        logger.warning(
+            "MCP_MOEX_DIR=%r не существует или не каталог — smart-агент будет "
+            "отвечать без данных биржи.",
+            MCP_MOEX_DIR,
+        )
+    elif not os.path.isfile(os.path.join(MCP_MOEX_DIR, "pyproject.toml")):
+        logger.warning(
+            "В MCP_MOEX_DIR=%r нет pyproject.toml — это не похоже на проект сервера "
+            "mcp-moex, smart-агент может отвечать без данных биржи.",
+            MCP_MOEX_DIR,
+        )
+
 
 _validate_config()
+_warn_if_moex_dir_invalid()

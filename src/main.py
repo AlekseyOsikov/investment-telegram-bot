@@ -230,7 +230,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     command_lines += [
         "/smart_agent — независимый LLM-агент с явно разделённой памятью "
         "(краткосрочная/рабочая/долговременная), хранящейся в разрезе профиля: "
-        "задавай вопросы один за другим, пока не отправишь /cancel",
+        "задавай вопросы один за другим, пока не отправишь /cancel. Если оператор "
+        "подключил данные Московской биржи, на вопросы о ценах агент сам обращается к "
+        "ним (котировки задержаны на 15 минут)",
         "/smart_agent_profile — выбрать другой профиль или создать новый (влияет на "
         "стиль/формат ответов)",
         "/smart_agent_profile_set &lt;ключ&gt; &lt;значение&gt; — точечно поправить одно поле "
@@ -256,8 +258,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/smart_agent_task_done — завершить и очистить текущую рабочую задачу",
         "/smart_agent_show — показать профиль, инварианты, все три слоя памяти и что "
         "из них ушло в LLM",
-        "/smart_agent_toggle &lt;profile|invariants|short|working|long&gt; — включить/"
-        "выключить слой в контексте",
+        "/smart_agent_toggle &lt;profile|invariants|short|working|long|tools&gt; — "
+        "включить/выключить слой в контексте (tools — данные биржи, если настроены "
+        "оператором)",
         "/smart_agent_reset — очистить память активного профиля (все три слоя)",
     ]
 

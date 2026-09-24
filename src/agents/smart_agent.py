@@ -70,6 +70,17 @@ enabled_layers — общая настройка на ВЕСЬ ЧАТ (не per-
 вообще собирается контекст, а не про то, чьи данные в нём участвуют (это решает
 активный профиль).
 
+Ещё один переключаемый слой — `tools` (agents/market_tools.py): доступ ОСНОВНОГО
+ответа к инструментам локального MCP-сервера рыночных данных mcp-moex (поиск бумаги,
+текущая цена, история цен) через function calling. Это не память и не ограничение, а
+ВОЗМОЖНОСТЬ: он ничего не хранит и ничего не запрещает, только добавляет данные биржи
+в ответ. Работает, если задан MCP_MOEX_DIR и слой включён; сервер поднимается один раз
+на вопрос (см. ask()). Выключенный слой при настроенном сервере добавляет в контекст
+короткое сообщение «данные биржи выключены» — иначе модель выдаёт цену из прежнего
+ответа за текущую. Служебные вызовы LLM (автомат задачи, детектор старта, ревизор
+инвариантов) инструментов НЕ получают. В short_term по-прежнему пишется только пара
+«вопрос — ответ», промежуточные сообщения цикла вызовов не сохраняются.
+
 Использует main_client/MAIN_MODEL — того же провайдера и модель, что и основной поток
 бота, по тому же принципу, что и Agent (см. докстринг agents/agent.py про то, почему
 это не нарушает запрет на runtime-переключение модели/провайдера/системного промпта
@@ -82,6 +93,7 @@ enabled_layers — общая настройка на ВЕСЬ ЧАТ (не per-
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import json
 import logging
@@ -102,12 +114,17 @@ from config import (
     AGENT_TASK_STATE_SYSTEM_PROMPT,
     MAIN_MODEL,
     MAX_OUTPUT_TOKENS,
+    MCP_MAX_TOOL_STEPS,
+    MCP_MOEX_DIR,
+    MCP_TIMEOUT_SECONDS,
+    MCP_TOOL_RESULT_MAX_CHARS,
     REQUEST_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
 )
+from mcp_integration.market_session import open_market_tools
 from providers.main_client import main_client
 
-from . import invariants, task_state
+from . import invariants, market_tools, task_state
 
 logger = logging.getLogger(__name__)
 
@@ -116,14 +133,18 @@ LAYER_INVARIANTS = "invariants"
 LAYER_SHORT_TERM = "short_term"
 LAYER_WORKING = "working"
 LAYER_LONG_TERM = "long_term"
-# Порядок — тот же, в котором слои уходят в контекст (см. _build_context_messages):
-# от самого жёсткого и стабильного к самому свежему.
+LAYER_TOOLS = "tools"
+# Слой tools добавлен в конец, чтобы не менять порядок прежних слоёв: место сообщения
+# слоя в контексте (после профиля, до долговременной памяти) определяет
+# _build_context_messages, а не порядок этого кортежа. Старые файлы памяти без ключа
+# "tools" читаются как «включён» (см. _load_state) — миграция не нужна.
 ALL_LAYERS = (
     LAYER_PROFILE,
     LAYER_INVARIANTS,
     LAYER_SHORT_TERM,
     LAYER_WORKING,
     LAYER_LONG_TERM,
+    LAYER_TOOLS,
 )
 
 # Поля профиля персонализации (анкета при создании, /smart_agent_profile_set для
@@ -207,8 +228,16 @@ class SmartAgentAnswer:
 
     text: str
     request_tokens_approx: int
+    # При вызовах инструментов — суммы по ВСЕМ обращениям к модели за вопрос (это
+    # реальная стоимость вопроса), а не по последнему; llm_calls — сколько их было.
     context_tokens: int | None
     response_tokens: int | None
+    # Слой tools: вызванные инструменты и предупреждения для пользователя
+    # (недоступный сервер, сбой обмена посреди вопроса, исчерпанный лимит шагов) —
+    # командный слой печатает их отдельно от ответа (agents/smart_agent_command.py).
+    tool_calls: list[market_tools.ToolCallRecord] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    llm_calls: int = 1
 
 
 def _empty_profile() -> dict:
@@ -243,6 +272,10 @@ class SmartAgent:
         task_state_max_tokens: int = AGENT_TASK_STATE_MAX_TOKENS,
         task_start_max_tokens: int = AGENT_TASK_START_MAX_TOKENS,
         invariants_max_tokens: int = AGENT_INVARIANTS_MAX_TOKENS,
+        mcp_moex_dir: str = MCP_MOEX_DIR,
+        mcp_timeout: float = MCP_TIMEOUT_SECONDS,
+        max_tool_steps: int = MCP_MAX_TOOL_STEPS,
+        tool_result_max_chars: int = MCP_TOOL_RESULT_MAX_CHARS,
     ) -> None:
         self._client = client
         self._model = model
@@ -256,6 +289,10 @@ class SmartAgent:
         self._task_state_max_tokens = task_state_max_tokens
         self._task_start_max_tokens = task_start_max_tokens
         self._invariants_max_tokens = invariants_max_tokens
+        self._mcp_moex_dir = mcp_moex_dir
+        self._mcp_timeout = mcp_timeout
+        self._max_tool_steps = max_tool_steps
+        self._tool_result_max_chars = tool_result_max_chars
         (
             self._profiles,
             self._active_profile,
@@ -263,6 +300,11 @@ class SmartAgent:
         ) = self._load_state()
         # То, что реально ушло в LLM на последний ask() — см. get_last_context_messages().
         self._last_context_messages: list[dict[str, str]] = []
+        # Слой tools: итог последнего вопроса (в памяти, на диск не пишется — это
+        # диагностика для /smart_agent_show, а не настройка).
+        self._tools_status = market_tools.STATUS_UNKNOWN
+        self._tools_status_reason: str | None = None
+        self._last_tool_calls: list[market_tools.ToolCallRecord] = []
 
     @staticmethod
     def _default_enabled_layers() -> dict[str, bool]:
@@ -734,14 +776,21 @@ class SmartAgent:
             ),
         }
 
-    def _build_context_messages(self) -> list[dict[str, str]]:
+    def _build_context_messages(
+        self, tools_message: dict[str, str] | None = None
+    ) -> list[dict[str, str]]:
         """Собирает контекст LLM из явно ВКЛЮЧЁННЫХ слоёв (self._enabled_layers)
         активного профиля — в отличие от Agent, здесь нет автоматического выбора
         одной стратегии: пользователь сам решает и что сохранять (см. remember/
         start_task), и какие слои участвуют в конкретном запросе (см.
         set_layer_enabled). Порядок слоёв в сообщении — от самого жёсткого и
-        стабильного к самому свежему: инварианты -> профиль -> долговременная
-        память -> рабочая задача -> краткосрочный диалог.
+        стабильного к самому свежему: инварианты -> профиль -> инструменты ->
+        долговременная память -> рабочая задача -> краткосрочный диалог.
+
+        tools_message — готовое сообщение слоя tools (доступен/недоступен, см.
+        agents/market_tools.py); его передаёт ask() только когда слой включён и
+        сервер настроен, поэтому здесь проверка слоя не повторяется. Инварианты
+        остаются первыми и прямо получают приоритет над этим сообщением.
         """
         messages = [{"role": "system", "content": self._system_prompt}]
         if self._active_profile is None:
@@ -758,6 +807,9 @@ class SmartAgent:
             meta_message = self._profile_meta_message(profile["meta"])
             if meta_message:
                 messages.append(meta_message)
+
+        if tools_message is not None:
+            messages.append(tools_message)
 
         if self._enabled_layers[LAYER_LONG_TERM] and profile["long_term"]:
             facts_text = "\n".join(f"- {fact['text']}" for fact in profile["long_term"])
@@ -801,6 +853,127 @@ class SmartAgent:
             return None
         return {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens}
 
+    def _chat(self, messages: list[dict], tools: list[dict] | None = None):
+        """Один вызов модели для ОСНОВНОГО ответа. Без tools (None или пусто) запрос
+        идентичен прежнему — ключ `tools` в него не попадает; служебные вызовы
+        (_call_json_api) идут мимо этого метода и инструментов не получают."""
+        kwargs = {"tools": tools} if tools else {}
+        return self._client.chat.completions.create(
+            model=self._model,
+            messages=messages,
+            max_tokens=self._max_output_tokens,
+            timeout=self._timeout,
+            **kwargs,
+        )
+
+    def _plain_completion(
+        self, user_text: str, tools_message: dict[str, str] | None = None
+    ) -> market_tools.ToolLoopResult:
+        """Обычный ответ одним вызовом модели, без инструментов. tools_message — только
+        вариант «данные биржи недоступны» (см. ask()); без него это ровно прежнее
+        поведение ask() до появления слоя tools."""
+        messages = self._build_context_messages(tools_message)
+        self._last_context_messages = list(messages)
+        messages.append({"role": "user", "content": user_text})
+
+        response = self._chat(messages)
+        usage = self._extract_usage(response)
+        return market_tools.ToolLoopResult(
+            text=response.choices[0].message.content,
+            llm_calls=1,
+            prompt_tokens=usage["prompt_tokens"] if usage else None,
+            completion_tokens=usage["completion_tokens"] if usage else None,
+        )
+
+    def _market_tools_mode(self) -> str:
+        """STATUS_OFF — слой выключен пользователем, STATUS_NOT_CONFIGURED — не задан
+        MCP_MOEX_DIR (оба — без предупреждений и без запуска процесса; при STATUS_OFF
+        ask() дополнительно смотрит, настроен ли сервер, — см. там), STATUS_OK —
+        стоит ПОПЫТАТЬСЯ поднять сервер (получится ли — выяснится в ask())."""
+        if not self._enabled_layers[LAYER_TOOLS]:
+            return market_tools.STATUS_OFF
+        if not self._mcp_moex_dir:
+            return market_tools.STATUS_NOT_CONFIGURED
+        return market_tools.STATUS_OK
+
+    @staticmethod
+    def _describe_launch_failure(exc: BaseException) -> str:
+        """Короткая причина, почему сервер не запустился, — для /smart_agent_show
+        (подробности пишутся в журнал). SDK часто заворачивает исходную ошибку в
+        ExceptionGroup (anyio), поэтому разворачиваем её до первой конкретной. Проверка
+        по атрибуту `exceptions`, а не по BaseExceptionGroup: тот появился только в
+        Python 3.11, а проект заявляет 3.10+ (pyproject.toml)."""
+        while getattr(exc, "exceptions", None):
+            exc = exc.exceptions[0]
+        if isinstance(exc, FileNotFoundError):
+            return "не найден uv (проверь PATH)"
+        if isinstance(exc, TimeoutError):
+            return "сервер не ответил за отведённое время"
+        return f"сбой запуска ({type(exc).__name__})"
+
+    async def _run_tool_loop(self, tools, user_text: str) -> market_tools.ToolLoopResult:
+        """Цикл вызовов внутри открытой сессии MCP: контекст со слоем tools, затем
+        market_tools.run_tool_loop с реальными вызовами модели и инструментов."""
+        messages = self._build_context_messages(market_tools.build_context_message())
+        self._last_context_messages = list(messages)
+        messages.append({"role": "user", "content": user_text})
+
+        def complete(history: list[dict], with_tools: bool):
+            return self._chat(history, tools.openai_tools if with_tools else None)
+
+        return await market_tools.run_tool_loop(
+            messages, complete, tools.call, self._max_tool_steps
+        )
+
+    async def _tool_completion_async(
+        self, user_text: str
+    ) -> tuple[market_tools.ToolLoopResult | None, str | None]:
+        """Ответ с инструментами: (результат, None) либо (None, причина), если сервер
+        рыночных данных недоступен — тогда ask() отвечает без инструментов.
+
+        Исключения основного вызова модели (OpenAI SDK) обязаны дойти до командного
+        слоя КАК ЕСТЬ — он переводит их в понятные сообщения. Но контексты stdio_client/
+        ClientSession построены на anyio, который может завернуть их в ExceptionGroup
+        и тем самым обойти эти `except`. Поэтому ошибка тела ловится ВНУТРИ сессии,
+        запоминается и возбуждается заново уже после выхода из неё. Сбой самого
+        закрытия сессии, когда ответ уже получен, ответ не отменяет — только журнал.
+        """
+        result: market_tools.ToolLoopResult | None = None
+        body_error: Exception | None = None
+        opened = False
+        no_tools = False
+        try:
+            async with open_market_tools(
+                self._mcp_moex_dir, self._mcp_timeout, self._tool_result_max_chars
+            ) as tools:
+                opened = True
+                if not tools.openai_tools:
+                    no_tools = True
+                else:
+                    try:
+                        result = await self._run_tool_loop(tools, user_text)
+                    except Exception as exc:  # noqa: BLE001 — возбуждается ниже, см. докстринг
+                        body_error = exc
+        except Exception as exc:  # noqa: BLE001 — сюда попадают и сбой запуска, и сбой закрытия
+            if not opened:
+                logger.warning(
+                    "Не удалось запустить MCP-сервер рыночных данных — отвечаю без "
+                    "инструментов.",
+                    exc_info=True,
+                )
+                return None, self._describe_launch_failure(exc)
+            logger.warning(
+                "Сбой при завершении сессии MCP-сервера рыночных данных.", exc_info=True
+            )
+
+        if body_error is not None:
+            raise body_error
+        if no_tools:
+            return None, "сервер не предоставил инструментов только для чтения"
+        if result is None:
+            return None, "сессия с сервером оборвалась"
+        return result, None
+
     def ask(self, user_text: str) -> SmartAgentAnswer:
         """Отправляет вопрос в LLM вместе с контекстом активного профиля, собранным
         из явно включённых слоёв (см. _build_context_messages), и возвращает ответ.
@@ -811,7 +984,26 @@ class SmartAgent:
         Может выбросить исключение OpenAI SDK — см. докстринг класса про то, что
         перехват делает вызывающий код. История дописывается в short_term активного
         профиля только после успешного ответа API — неудачный вызов не искажает
-        сохранённый диалог.
+        сохранённый диалог, а промежуточные сообщения цикла вызовов инструментов туда
+        не попадают вовсе: пишется ровно пара «вопрос — итоговый ответ».
+
+        Слой tools. Если он включён и задан MCP_MOEX_DIR, ответ строится циклом вызовов
+        инструментов (agents/market_tools.py) поверх одного процесса MCP-сервера на
+        этот вопрос; недоступный сервер не блокирует ответ — вопрос обрабатывается без
+        инструментов, с сообщением слоя «данные биржи недоступны» и предупреждением в
+        SmartAgentAnswer.warnings. Незаданный MCP_MOEX_DIR — ровно прежнее поведение, без
+        запуска процесса и без asyncio. Выключенный слой — тоже без процесса и без
+        asyncio, но если сервер настроен, в контексте одно сообщение «данные биржи
+        выключены» (market_tools.build_disabled_context_message).
+
+        МЕТОД СИНХРОННЫЙ, но внутри путь с инструментами вызывает asyncio.run() — он
+        бросит RuntimeError, если вызвать ask() в потоке с уже работающим циклом
+        событий. Единственный вызывающий (agents/smart_agent_command.py) оборачивает
+        вызов в asyncio.to_thread(), заодно не блокируя основной цикл на время запроса
+        к LLM. Потокобезопасность держится на том, что обновления PTB обрабатываются
+        последовательно (concurrent_updates не включён в main.py): состояние агента
+        чата не трогают два потока сразу. Если это когда-нибудь изменится — здесь
+        понадобится блокировка на чат.
         """
         if self._active_profile is None:
             raise RuntimeError(
@@ -824,22 +1016,44 @@ class SmartAgent:
         # Agent.ask(), см. докстринг agents/agent.py про кириллицу в BPE-токенайзерах.
         request_tokens_approx = len(user_text) // 2
 
-        messages = self._build_context_messages()
-        self._last_context_messages = list(messages)
-        messages.append({"role": "user", "content": user_text})
+        mode = self._market_tools_mode()
+        reason: str | None = None
+        warnings: list[str] = []
+        if mode == market_tools.STATUS_OK:
+            outcome, reason = asyncio.run(self._tool_completion_async(user_text))
+            if outcome is None:
+                mode = market_tools.STATUS_UNAVAILABLE
+                outcome = self._plain_completion(
+                    user_text, market_tools.build_unavailable_context_message()
+                )
+                warnings.append(market_tools.UNAVAILABLE_WARNING)
+        else:
+            # Слой выключен, но сервер настроен: модели нужно сказать, что данные биржи
+            # выключены, иначе она выдаёт цену из прежнего ответа за текущую (см.
+            # market_tools.build_disabled_context_message). Без настроенного сервера
+            # сообщения нет — чат ведёт себя как до появления слоя.
+            disabled_message = (
+                market_tools.build_disabled_context_message()
+                if mode == market_tools.STATUS_OFF and self._mcp_moex_dir
+                else None
+            )
+            outcome = self._plain_completion(user_text, disabled_message)
 
-        response = self._client.chat.completions.create(
-            model=self._model,
-            messages=messages,
-            max_tokens=self._max_output_tokens,
-            timeout=self._timeout,
-        )
-        content = response.choices[0].message.content
-        answer = content or "Модель вернула пустой ответ. Попробуй переформулировать вопрос."
+        if outcome.transport_failure:
+            warnings.append(market_tools.PARTIAL_DATA_WARNING)
+        if outcome.step_limit_reached:
+            warnings.append(market_tools.step_limit_warning(self._max_tool_steps))
 
-        usage = self._extract_usage(response)
-        context_tokens = usage["prompt_tokens"] if usage else None
-        response_tokens = usage["completion_tokens"] if usage else None
+        # Статус для /smart_agent_show. Выключенный слой и незаданный каталог здесь не
+        # хранятся: get_tools_status() определяет их по текущей настройке, а не по
+        # прошлому вопросу.
+        if mode in (market_tools.STATUS_OK, market_tools.STATUS_UNAVAILABLE):
+            self._tools_status, self._tools_status_reason = mode, reason
+        else:
+            self._tools_status, self._tools_status_reason = market_tools.STATUS_UNKNOWN, None
+        self._last_tool_calls = list(outcome.calls)
+
+        answer = outcome.text or "Модель вернула пустой ответ. Попробуй переформулировать вопрос."
 
         short_term = self._profiles[self._active_profile]["short_term"]
         short_term.append({"role": "user", "content": user_text})
@@ -849,9 +1063,26 @@ class SmartAgent:
         return SmartAgentAnswer(
             text=answer,
             request_tokens_approx=request_tokens_approx,
-            context_tokens=context_tokens,
-            response_tokens=response_tokens,
+            context_tokens=outcome.prompt_tokens,
+            response_tokens=outcome.completion_tokens,
+            tool_calls=list(outcome.calls),
+            warnings=warnings,
+            llm_calls=outcome.llm_calls,
         )
+
+    def get_tools_status(self) -> tuple[str, str | None]:
+        """Статус слоя tools для /smart_agent_show: (STATUS_*, причина недоступности).
+        Выключенный слой и незаданный MCP_MOEX_DIR определяются по ТЕКУЩЕЙ настройке,
+        остальное — по итогу последнего вопроса с момента запуска бота."""
+        if not self._enabled_layers[LAYER_TOOLS]:
+            return market_tools.STATUS_OFF, None
+        if not self._mcp_moex_dir:
+            return market_tools.STATUS_NOT_CONFIGURED, None
+        return self._tools_status, self._tools_status_reason
+
+    def get_last_tool_calls(self) -> list[market_tools.ToolCallRecord]:
+        """Инструменты, вызванные на последнем вопросе (пусто, если вызовов не было)."""
+        return list(self._last_tool_calls)
 
     # --- Конечный автомат задачи: отдельный технический вызов после ответа --- #
 
