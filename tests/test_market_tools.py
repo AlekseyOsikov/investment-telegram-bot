@@ -15,8 +15,12 @@ from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
 from agents import market_tools
 from agents.market_tools import ToolCallRecord, run_tool_loop
 from mcp_integration.market_session import (
+    MODEL_TOOL_ALLOWLIST,
     TRUNCATION_NOTE,
+    MarketTools,
     ToolOutcome,
+    build_server_params,
+    is_model_tool,
     is_read_only,
     parse_arguments,
     result_to_text,
@@ -64,6 +68,98 @@ def test_tool_marked_not_read_only_is_rejected():
 def test_annotations_without_read_only_hint_is_rejected():
     tool = Tool(name="x", input_schema=SCHEMA, annotations=ToolAnnotations(title="t"))
     assert is_read_only(tool) is False
+
+
+# --- перечень разрешённых инструментов (второй рубеж защиты модели) ---
+
+WATCH_TOOL_NAMES = [
+    "watch_set",
+    "watch_stop",
+    "watch_status",
+    "watch_get_report",
+    "watch_run_due",
+    "watch_ack",
+]
+
+
+class _RecordingSession:
+    """Фейковая сессия: запоминает вызовы, чтобы проверить, что до сервера они не дошли."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def call_tool(self, name, arguments):
+        self.calls.append((name, arguments))
+        return _result(text="ok")
+
+
+def _market_tools(tools, session=None):
+    return MarketTools(session or _RecordingSession(), tools, timeout=5, max_result_chars=1000)
+
+
+def test_allowlist_is_exactly_the_three_read_tools():
+    assert MODEL_TOOL_ALLOWLIST == {"search_securities", "get_current_price", "get_price_history"}
+
+
+def test_allowed_read_only_tool_is_a_model_tool():
+    assert is_model_tool(_tool(name="get_current_price", read_only=True)) is True
+
+
+def test_read_only_tool_outside_allowlist_is_not_a_model_tool():
+    assert is_model_tool(_tool(name="some_new_reader", read_only=True)) is False
+
+
+def test_allowlisted_tool_without_read_only_mark_is_not_a_model_tool():
+    assert is_model_tool(_tool(name="get_current_price", read_only=False)) is False
+    assert is_model_tool(_tool(name="get_current_price", annotated=False)) is False
+
+
+def test_watch_tools_never_reach_the_model_even_if_marked_read_only():
+    # Худший случай: сервер по ошибке пометил инструменты расписания как read-only.
+    tools = [_tool(name=name, read_only=True) for name in WATCH_TOOL_NAMES]
+    tools.append(_tool(name="get_current_price", read_only=True))
+    market = _market_tools(tools)
+    offered = [item["function"]["name"] for item in market.openai_tools]
+    assert offered == ["get_current_price"]
+
+
+def test_calling_a_watch_tool_by_name_is_an_error_and_does_not_reach_the_server():
+    session = _RecordingSession()
+    market = _market_tools(
+        [_tool(name="watch_get_report", read_only=True), _tool(name="get_current_price")], session
+    )
+    outcome = asyncio.run(market.call("watch_get_report", '{"chat_id": 42}'))
+    assert outcome.is_error is True
+    assert "get_current_price" in outcome.text  # подсказка, что доступно
+    assert session.calls == []
+
+
+def test_calling_a_read_only_tool_outside_allowlist_does_not_reach_the_server():
+    session = _RecordingSession()
+    market = _market_tools([_tool(name="some_new_reader", read_only=True)], session)
+    outcome = asyncio.run(market.call("some_new_reader", "{}"))
+    assert outcome.is_error is True
+    assert session.calls == []
+
+
+def test_allowed_tool_call_reaches_the_server():
+    session = _RecordingSession()
+    market = _market_tools([_tool(name="get_current_price")], session)
+    outcome = asyncio.run(market.call("get_current_price", '{"secid": "SBER"}'))
+    assert outcome.is_error is False
+    assert session.calls == [("get_current_price", {"secid": "SBER"})]
+
+
+def test_model_server_is_started_without_watch_mode():
+    params = build_server_params("/opt/mcp-moex")
+    assert params.command == "uv"
+    assert params.args == ["run", "--directory", "/opt/mcp-moex", "mcp-moex"]
+    assert not any(arg.startswith("--watch") for arg in params.args)
+
+
+def test_server_params_keep_a_hostile_directory_as_a_single_argument():
+    params = build_server_params("/opt/x; rm -rf ~ && echo 'hi'")
+    assert params.args == ["run", "--directory", "/opt/x; rm -rf ~ && echo 'hi'", "mcp-moex"]
 
 
 # --- схема для OpenAI ---

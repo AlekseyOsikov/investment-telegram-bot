@@ -35,6 +35,15 @@ from mcp.client.stdio import stdio_client
 
 logger = logging.getLogger(__name__)
 
+# Инструменты сервера, которые вообще можно отдать МОДЕЛИ. Это второй рубеж защиты
+# после пометки read-only: сервер для ответа smart-агента запускается БЕЗ режима
+# расписания (build_server_params ниже), поэтому инструментов watch_* в этой сессии
+# нет вовсе, а перечень страхует от ошибки конфигурации и от новых read-only
+# инструментов сервера, которые модели пока отдавать не решено. Новый инструмент для
+# модели требует добавить его сюда явно — это желаемое трение. См. design.md
+# изменения add-price-watch-commands, решение 6.
+MODEL_TOOL_ALLOWLIST = frozenset({"search_securities", "get_current_price", "get_price_history"})
+
 # Пометка в конце усечённого результата. Обрезка идёт с головы (там заголовок и
 # сводка), а хронологические данные (свечи) лежат в конце — поэтому пометка прямо
 # направляет модель к более крупному интервалу или меньшему периоду.
@@ -72,6 +81,25 @@ def is_read_only(tool) -> bool:
     сервере когда-нибудь появится пишущий инструмент (design.md, решение 5)."""
     annotations = getattr(tool, "annotations", None)
     return getattr(annotations, "read_only_hint", None) is True
+
+
+def is_model_tool(tool) -> bool:
+    """Инструмент можно отдать модели: он в явном перечне разрешённых И помечен
+    сервером как только читающий. Оба условия обязательны — см. MODEL_TOOL_ALLOWLIST."""
+    return tool.name in MODEL_TOOL_ALLOWLIST and is_read_only(tool)
+
+
+def build_server_params(directory: str) -> StdioServerParameters:
+    """Параметры запуска сервера рыночных данных для ответа smart-агента.
+
+    Команда собирается списком аргументов без shell, поэтому значение directory не
+    может внедрить команду. Флага `--watch-db` здесь НЕТ намеренно: в режиме по
+    умолчанию сервер публикует только три инструмента чтения, а инструменты
+    расписания (принимают chat_id от клиента) модель не видит вообще.
+    """
+    return StdioServerParameters(
+        command="uv", args=["run", "--directory", directory, "mcp-moex"]
+    )
 
 
 def to_openai_tool(tool) -> dict:
@@ -156,14 +184,16 @@ class MarketTools:
         self._session = session
         self._timeout = timeout
         self._max_result_chars = max_result_chars
-        readonly = [tool for tool in tools if is_read_only(tool)]
-        skipped = [tool.name for tool in tools if not is_read_only(tool)]
+        allowed = [tool for tool in tools if is_model_tool(tool)]
+        skipped = [tool.name for tool in tools if not is_model_tool(tool)]
         if skipped:
             logger.warning(
-                "Инструменты без пометки read-only не отданы модели: %s", ", ".join(skipped)
+                "Инструменты не отданы модели (нет пометки read-only или нет в перечне "
+                "разрешённых): %s",
+                ", ".join(skipped),
             )
-        self._names = [tool.name for tool in readonly]
-        self.openai_tools: list[dict] = [to_openai_tool(tool) for tool in readonly]
+        self._names = [tool.name for tool in allowed]
+        self.openai_tools: list[dict] = [to_openai_tool(tool) for tool in allowed]
 
     async def call(self, name: str, raw_arguments: str | None) -> ToolOutcome:
         """Выполняет вызов и НЕ бросает исключений уровня инструмента: любая неудача
@@ -223,9 +253,7 @@ async def open_market_tools(
     (медленный старт uv); сам вызов инструментов ограничен тем же значением отдельно
     (MarketTools.call). Исключения запуска не перехватываются — см. докстринг модуля.
     """
-    params = StdioServerParameters(
-        command="uv", args=["run", "--directory", directory, "mcp-moex"]
-    )
+    params = build_server_params(directory)
     async with stdio_client(params) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
             async with asyncio.timeout(timeout):

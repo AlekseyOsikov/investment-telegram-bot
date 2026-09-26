@@ -97,6 +97,7 @@ from config import (
     MAIN_MODEL,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_TOKENS,
+    PRICE_WATCH_ACTIVE,
     REQUEST_TIMEOUT_SECONDS,
     RESEARCH_ENABLED,
     SYSTEM_PROMPT,
@@ -104,6 +105,8 @@ from config import (
     TELEGRAM_MESSAGE_LIMIT,
 )
 from mcp_integration.tools_command import build_mcp_tools_handler
+from price_watch.commands import build_price_watch_handlers
+from price_watch.scheduler import start_scheduler, stop_scheduler
 from providers.main_client import main_client
 from research.constraints import build_constraints_conversation_handler
 from research.models import build_models_conversation_handler
@@ -137,7 +140,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         "— жёсткие ограничения, которые я не нарушаю "
         "(/smart_agent_invariant_add). В любом режиме не присылай, пожалуйста, "
         "номера счетов, карт и другие чувствительные данные.\n\n"
-        "Используй /help, чтобы посмотреть список команд."
+        + (
+            "📡 Ещё одно исключение — опрос цен: после команды /watch я сам, без твоего "
+            "вопроса, присылаю сводки по выбранным бумагам и храню на диске список "
+            "тикеров этого чата и публичные цены. Всё это удаляется командой /watch_stop; "
+            "обычные сообщения я по-прежнему не запоминаю.\n\n"
+            if PRICE_WATCH_ACTIVE
+            else ""
+        )
+        + "Используй /help, чтобы посмотреть список команд."
     )
     await update.message.reply_text(welcome_text)
 
@@ -263,6 +274,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "оператором)",
         "/smart_agent_reset — очистить память активного профиля (все три слоя)",
     ]
+    if PRICE_WATCH_ACTIVE:
+        command_lines += [
+            "/watch &lt;тикеры&gt; &lt;период опроса&gt; &lt;период сводки&gt; — опрашивать цены "
+            "бумаг Мосбиржи по расписанию и сам присылать сводки, например "
+            "/watch SBER GAZP 15m 1h (период — число и единица: m/м минуты, h/ч часы, "
+            "d/д сутки; новая команда заменяет прежний опрос)",
+            "/watch_status — состояние опроса цен: бумаги, периоды, ближайшие сроки",
+            "/watch_report — сводка по накопленным замерам прямо сейчас",
+            "/watch_stop — остановить опрос цен и удалить его замеры",
+        ]
 
     help_text = (
         "ℹ️ <b>Как пользоваться ботом</b>\n\n"
@@ -383,7 +404,12 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # --------------------------------------------------------------------------- #
 
 def main() -> None:
-    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    builder = Application.builder().token(TELEGRAM_BOT_TOKEN)
+    if PRICE_WATCH_ACTIVE:
+        # Плановая выдача сводок опроса цен (price_watch/scheduler.py): стартует вместе
+        # с приложением и останавливается до его завершения.
+        builder = builder.post_init(start_scheduler).post_stop(stop_scheduler)
+    application = builder.build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
@@ -441,6 +467,12 @@ def main() -> None:
     application.add_handler(build_smart_agent_show_handler())
     application.add_handler(build_smart_agent_toggle_handler())
     application.add_handler(build_smart_agent_reset_handler())
+    # Опрос цен по тикерам с регулярными сводками (/watch*) — не исследовательский
+    # режим, поэтому не под RESEARCH_ENABLED: активен, только если оператор задал
+    # MCP_MOEX_DIR и не выключил PRICE_WATCH (config.PRICE_WATCH_ACTIVE).
+    if PRICE_WATCH_ACTIVE:
+        for handler in build_price_watch_handlers():
+            application.add_handler(handler)
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE, handle_message)

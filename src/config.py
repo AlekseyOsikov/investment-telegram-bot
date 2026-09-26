@@ -428,6 +428,28 @@ MCP_MAX_TOOL_STEPS = int(os.getenv("MCP_MAX_TOOL_STEPS", "5"))
 # это предохранитель от аномально больших результатов, а не способ экономии токенов.
 MCP_TOOL_RESULT_MAX_CHARS = int(os.getenv("MCP_TOOL_RESULT_MAX_CHARS", "45000"))
 
+# Опрос цен по тикерам с регулярными сводками (/watch*, price_watch/): бот сам
+# вызывает инструменты расписания сервера mcp-moex по таймеру и присылает сводки без
+# вопроса от пользователя. Активна, только если оператор задал MCP_MOEX_DIR (тот же
+# каталог сервера, что у smart-агента) и не выключил возможность флагом PRICE_WATCH —
+# отдельный флаг нужен, чтобы можно было оставить smart-агенту данные биржи, но не
+# включать бота, который пишет сам. Как и RESEARCH, PRICE_WATCH — решение оператора, а
+# не то, что переключает пользователь чата.
+_PRICE_WATCH_RAW = os.getenv("PRICE_WATCH", "true").strip().lower()
+PRICE_WATCH = _PRICE_WATCH_RAW in _TRUE_VALUES
+# Файл SQLite, в котором сервер хранит опросы, замеры и сводки. Путь ОБЯЗАТЕЛЬНО
+# абсолютный: сервер запускается как `uv run --directory <MCP_MOEX_DIR> ...`, а это
+# меняет рабочий каталог процесса — относительный путь указал бы внутрь каталога
+# mcp-moex, а не бота. Каталог data/ в .gitignore (там идентификаторы чатов).
+PRICE_WATCH_DB = os.path.abspath(
+    os.path.expanduser(os.getenv("PRICE_WATCH_DB", "data/price_watch/watch.sqlite3").strip())
+)
+# Предельное время одного обращения к серверу расписания (запуск процесса +
+# рукопожатие + вызов инструмента). Больше общего MCP_TIMEOUT_SECONDS: плановый вызов
+# опрашивает биржу по всем чатам разом.
+PRICE_WATCH_TIMEOUT_SECONDS = float(os.getenv("PRICE_WATCH_TIMEOUT_SECONDS", "90"))
+PRICE_WATCH_ACTIVE = PRICE_WATCH and bool(MCP_MOEX_DIR)
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 
@@ -552,6 +574,21 @@ def _validate_config() -> None:
             "Недопустимое значение MCP_TOOL_RESULT_MAX_CHARS=%r: нужно целое число "
             "не меньше 1.",
             MCP_TOOL_RESULT_MAX_CHARS,
+        )
+        sys.exit(1)
+
+    if _PRICE_WATCH_RAW not in _TRUE_VALUES | _FALSE_VALUES:
+        logger.error(
+            "Недопустимое значение PRICE_WATCH=%r. Допустимые значения: true/false "
+            "(также принимаются 1/0, yes/no, on/off).",
+            _PRICE_WATCH_RAW,
+        )
+        sys.exit(1)
+
+    if PRICE_WATCH_TIMEOUT_SECONDS <= 0:
+        logger.error(
+            "Недопустимое значение PRICE_WATCH_TIMEOUT_SECONDS=%r: нужно число больше 0.",
+            PRICE_WATCH_TIMEOUT_SECONDS,
         )
         sys.exit(1)
 
