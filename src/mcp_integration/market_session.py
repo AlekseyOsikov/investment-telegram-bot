@@ -24,6 +24,7 @@ agents/market_tools.py). Процесс сервера один на вопро�
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -41,8 +42,39 @@ logger = logging.getLogger(__name__)
 # нет вовсе, а перечень страхует от ошибки конфигурации и от новых read-only
 # инструментов сервера, которые модели пока отдавать не решено. Новый инструмент для
 # модели требует добавить его сюда явно — это желаемое трение. См. design.md
-# изменения add-price-watch-commands, решение 6.
-MODEL_TOOL_ALLOWLIST = frozenset({"search_securities", "get_current_price", "get_price_history"})
+# изменения add-price-watch-commands, решение 6. Три последних имени — инструменты
+# анализа истории (метрики, сравнение с индексом, сравнение двух бумаг): они чистые
+# функции без сети и без побочных эффектов (изменение add-smart-agent-analytics-chain).
+MODEL_TOOL_ALLOWLIST = frozenset(
+    {
+        "search_securities",
+        "get_current_price",
+        "get_price_history",
+        "compute_price_metrics",
+        "compare_with_benchmark",
+        "compare_securities",
+    }
+)
+
+# Инструмент, результаты которого получают имена-ссылки (r1, r2, ...), и параметры
+# инструментов анализа, принимающие от модели ТОЛЬКО такую ссылку. Единственное место,
+# где сказано, какие параметры несут историю: по нему строятся схема для модели,
+# проверка и подстановка ссылок. См. design.md изменения add-smart-agent-analytics-chain.
+HISTORY_TOOL = "get_price_history"
+REF_PARAMS: dict[str, tuple[str, ...]] = {
+    "compute_price_metrics": ("history",),
+    "compare_with_benchmark": ("history", "benchmark_history"),
+    "compare_securities": ("history_a", "history_b"),
+}
+
+REF_PARAM_DESCRIPTION = (
+    'Ссылка на результат get_price_history: имя из пометки «Результат сохранён как rN» '
+    '(например, {"ref":"r1"}). Сами данные передавать нельзя.'
+)
+REF_TOOL_DESCRIPTION_SUFFIX = (
+    'В параметры с историей передавай не данные, а ссылку {"ref":"rN"} на результат '
+    "get_price_history: имя указано в пометке к результату."
+)
 
 # Пометка в конце усечённого результата. Обрезка идёт с головы (там заголовок и
 # сводка), а хронологические данные (свечи) лежат в конце — поэтому пометка прямо
@@ -166,6 +198,122 @@ def truncate_result(text: str, max_chars: int) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Ссылки на результаты истории (чистые функции)
+#
+# Модель называет результат предыдущего шага ({"ref": "r1"}), а данные подставляет
+# код: перепечатывая сотни свечей, модель их искажает и тратит на это токены. Серверу
+# данные уходят целиком «по значению» и дословно в том виде, в каком он их выдал.
+# --------------------------------------------------------------------------- #
+
+
+def ref_note(name: str) -> str:
+    """Пометка в конце сообщения с результатом истории: под каким именем он сохранён."""
+    return (
+        f"\n[Результат сохранён как {name}: чтобы передать его в инструмент анализа, "
+        f'укажи {{"ref":"{name}"}}.]'
+    )
+
+
+def extract_structured(result) -> dict | None:
+    """Полный результат вызова как словарь: `structured_content`, а если его нет —
+    JSON из текстовых блоков. None — разобрать не удалось (ссылка тогда не выдаётся)."""
+    structured = getattr(result, "structured_content", None)
+    if isinstance(structured, dict):
+        return structured
+    text_blocks = "".join(getattr(block, "text", "") or "" for block in (result.content or []))
+    try:
+        parsed = json.loads(text_blocks)
+    except (TypeError, ValueError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _contains_schema_ref(node) -> bool:
+    if isinstance(node, dict):
+        return "$ref" in node or any(_contains_schema_ref(value) for value in node.values())
+    if isinstance(node, list):
+        return any(_contains_schema_ref(item) for item in node)
+    return False
+
+
+def with_ref_parameters(schema: dict, params: tuple[str, ...]) -> dict:
+    """Копия схемы инструмента, где параметры `params` описаны как ссылка
+    `{"ref": "rN"}`, а не как структура истории. `$defs` убирается, если на него больше
+    никто не ссылается (иначе в схеме остались бы мёртвые определения свечи и сводки).
+    Исходная схема не изменяется."""
+    result = copy.deepcopy(schema)
+    properties = result.get("properties", {})
+    for param in params:
+        if param in properties:
+            properties[param] = {
+                "type": "object",
+                "description": REF_PARAM_DESCRIPTION,
+                "properties": {
+                    "ref": {"type": "string", "description": "Имя результата, например r1."}
+                },
+                "required": ["ref"],
+                "additionalProperties": False,
+            }
+    if "$defs" in result and not _contains_schema_ref(
+        {key: value for key, value in result.items() if key != "$defs"}
+    ):
+        del result["$defs"]
+    return result
+
+
+def _is_ref_value(value) -> bool:
+    return isinstance(value, dict) and set(value) == {"ref"} and isinstance(value["ref"], str)
+
+
+def _available_refs_hint(store: dict[str, dict]) -> str:
+    if not store:
+        return "Ссылок пока нет: сначала вызови get_price_history для нужной бумаги."
+    return f"Доступные ссылки: {', '.join(store)}."
+
+
+def resolve_refs(
+    tool_name: str, arguments: dict, store: dict[str, dict]
+) -> tuple[dict | None, str | None]:
+    """Заменяет ссылки в аргументах вызова сохранёнными результатами: (аргументы, None)
+    либо (None, текст ошибки для модели) — тогда до сервера вызов не доходит.
+
+    В параметрах из REF_PARAMS допустима ТОЛЬКО ссылка (объект с единственным строковым
+    полем `ref` на существующее имя): история вместо ссылки, значение иного вида, лишние
+    поля и неизвестное имя — ошибки. В любом другом параметре любого инструмента ссылка
+    тоже отклоняется. Отсутствие обязательного параметра здесь не проверяется — это
+    делает сервер, и его текст ошибки идёт модели как есть. Подставляется глубокая копия:
+    результат можно использовать повторно, а библиотека вправе менять уходящий словарь.
+    """
+    ref_params = REF_PARAMS.get(tool_name, ())
+    resolved = dict(arguments)
+    for param in ref_params:
+        if param not in arguments:
+            continue
+        value = arguments[param]
+        if not _is_ref_value(value):
+            return None, (
+                f"Параметр «{param}» принимает только ссылку вида "
+                '{"ref":"rN"} на результат get_price_history, а не данные. '
+                + _available_refs_hint(store)
+            )
+        name = value["ref"]
+        if name not in store:
+            return None, (
+                f"Параметр «{param}»: ссылки «{name}» нет среди результатов этого вопроса. "
+                + _available_refs_hint(store)
+            )
+        resolved[param] = copy.deepcopy(store[name])
+    for param, value in arguments.items():
+        if param not in ref_params and isinstance(value, dict) and "ref" in value:
+            return None, (
+                f"Параметр «{param}» инструмента «{tool_name}» не принимает ссылок: "
+                "ссылки {\"ref\":\"rN\"} допустимы только в параметрах с историей цен "
+                "у инструментов анализа."
+            )
+    return resolved, None
+
+
+# --------------------------------------------------------------------------- #
 # Сессия
 # --------------------------------------------------------------------------- #
 
@@ -193,7 +341,32 @@ class MarketTools:
                 ", ".join(skipped),
             )
         self._names = [tool.name for tool in allowed]
-        self.openai_tools: list[dict] = [to_openai_tool(tool) for tool in allowed]
+        self.openai_tools: list[dict] = [self._model_tool(tool) for tool in allowed]
+        # Реестр результатов истории этого вопроса: имя -> полный результат сервера.
+        # Объект живёт один вопрос, поэтому имена не переживают вопрос без очистки.
+        self._results: dict[str, dict] = {}
+        # Ссылки выдаются, только если модели предоставлен хотя бы один инструмент
+        # анализа: со старым сервером сообщения остаются такими, как до появления ссылок.
+        self._analytics = any(name in REF_PARAMS for name in self._names)
+
+    @property
+    def analytics_available(self) -> bool:
+        """Среди предоставленных модели инструментов есть инструмент анализа истории."""
+        return self._analytics
+
+    @staticmethod
+    def _model_tool(tool) -> dict:
+        """Описание инструмента для модели: у инструментов анализа параметры с историей
+        описаны как ссылка, а к описанию добавлено предложение о ссылках."""
+        converted = to_openai_tool(tool)
+        params = REF_PARAMS.get(tool.name)
+        if params:
+            function = converted["function"]
+            function["parameters"] = with_ref_parameters(function["parameters"], params)
+            function["description"] = (
+                f"{function['description']}\n\n{REF_TOOL_DESCRIPTION_SUFFIX}".strip()
+            )
+        return converted
 
     async def call(self, name: str, raw_arguments: str | None) -> ToolOutcome:
         """Выполняет вызов и НЕ бросает исключений уровня инструмента: любая неудача
@@ -208,6 +381,10 @@ class MarketTools:
         arguments, error = parse_arguments(raw_arguments)
         if error is not None:
             return ToolOutcome(error, is_error=True)
+        if self._analytics:
+            arguments, error = resolve_refs(name, arguments, self._results)
+            if error is not None:
+                return ToolOutcome(error, is_error=True)
 
         try:
             async with asyncio.timeout(self._timeout):
@@ -236,8 +413,35 @@ class MarketTools:
                 f"Инструмент «{name}» вернул неожиданный ответ.", is_error=True
             )
 
-        text = truncate_result(result_to_text(result), self._max_result_chars)
-        return ToolOutcome(text, is_error=bool(getattr(result, "is_error", False)))
+        is_error = bool(getattr(result, "is_error", False))
+        text = result_to_text(result)
+        if name == HISTORY_TOOL and self._analytics and not is_error:
+            outcome = self._remember_history(result, text)
+            if outcome is not None:
+                return outcome
+        return ToolOutcome(truncate_result(text, self._max_result_chars), is_error=is_error)
+
+    def _remember_history(self, result, text: str) -> ToolOutcome | None:
+        """Сохраняет результат истории под именем rN и возвращает сообщение для модели с
+        пометкой; None — сохранить не удалось (тогда результат идёт как обычный текст).
+
+        Хранится полный результат, а не усечённый текст. Пометка добавляется ПОСЛЕ
+        усечения, но усечение оставляет под неё место: объём сообщения вместе с
+        пометками не превышает предела, и пометка не теряется при усечении с головы.
+        """
+        stored = extract_structured(result)
+        if stored is None:
+            logger.warning(
+                "Результат %s не разобран как объект — ссылка не выдана.", HISTORY_TOOL
+            )
+            return None
+        name = f"r{len(self._results) + 1}"
+        note = ref_note(name)
+        if len(note) > self._max_result_chars:
+            logger.warning("Предел размера результата меньше пометки о ссылке — ссылка не выдана.")
+            return None
+        self._results[name] = stored
+        return ToolOutcome(truncate_result(text, self._max_result_chars - len(note)) + note)
 
 
 @asynccontextmanager

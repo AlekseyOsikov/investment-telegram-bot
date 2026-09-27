@@ -8,6 +8,7 @@ MCP SDK (mcp.types), собранные вручную; сама сессия п
 
 import asyncio
 import json
+from datetime import date
 from types import SimpleNamespace
 
 from mcp.types import CallToolResult, TextContent, Tool, ToolAnnotations
@@ -16,16 +17,21 @@ from agents import market_tools
 from agents.market_tools import ToolCallRecord, run_tool_loop
 from mcp_integration.market_session import (
     MODEL_TOOL_ALLOWLIST,
+    REF_PARAMS,
     TRUNCATION_NOTE,
     MarketTools,
     ToolOutcome,
     build_server_params,
+    extract_structured,
     is_model_tool,
     is_read_only,
     parse_arguments,
+    ref_note,
+    resolve_refs,
     result_to_text,
     to_openai_tool,
     truncate_result,
+    with_ref_parameters,
 )
 
 SCHEMA = {
@@ -97,8 +103,26 @@ def _market_tools(tools, session=None):
     return MarketTools(session or _RecordingSession(), tools, timeout=5, max_result_chars=1000)
 
 
-def test_allowlist_is_exactly_the_three_read_tools():
-    assert MODEL_TOOL_ALLOWLIST == {"search_securities", "get_current_price", "get_price_history"}
+def test_allowlist_is_exactly_the_six_read_tools():
+    assert MODEL_TOOL_ALLOWLIST == {
+        "search_securities",
+        "get_current_price",
+        "get_price_history",
+        "compute_price_metrics",
+        "compare_with_benchmark",
+        "compare_securities",
+    }
+
+
+def test_analytics_tools_are_model_tools_when_read_only():
+    for name in ("compute_price_metrics", "compare_with_benchmark", "compare_securities"):
+        assert is_model_tool(_tool(name=name, read_only=True)) is True
+
+
+def test_analytics_tool_without_read_only_mark_is_not_a_model_tool():
+    for name in ("compute_price_metrics", "compare_with_benchmark", "compare_securities"):
+        assert is_model_tool(_tool(name=name, read_only=False)) is False
+        assert is_model_tool(_tool(name=name, annotated=False)) is False
 
 
 def test_allowed_read_only_tool_is_a_model_tool():
@@ -601,3 +625,583 @@ def test_loop_empty_final_content_is_returned_as_is():
     # Подстановку запасного текста делает SmartAgent, цикл ничего не выдумывает.
     result = _run(ScriptedModel(_response(content=None)), FakeTools())
     assert not result.text
+
+
+# --------------------------------------------------------------------------- #
+# Ссылки на результаты истории (изменение add-smart-agent-analytics-chain)
+# --------------------------------------------------------------------------- #
+
+# Схема в том виде, в каком её строит сервер: параметры типа HistoryResult дают $ref на
+# $defs (см. design.md, «Context»).
+ANALYTICS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "history": {"$ref": "#/$defs/HistoryResult", "description": "История бумаги"},
+        "benchmark_history": {"$ref": "#/$defs/HistoryResult"},
+    },
+    "required": ["history", "benchmark_history"],
+    "$defs": {
+        "Candle": {"type": "object", "properties": {"close": {"type": "number"}}},
+        "HistoryResult": {
+            "type": "object",
+            "properties": {"candles": {"type": "array", "items": {"$ref": "#/$defs/Candle"}}},
+        },
+    },
+}
+
+
+def _analytics_tool(name="compare_with_benchmark", read_only=True):
+    return Tool(
+        name=name,
+        description="Сравнение с эталоном",
+        input_schema=ANALYTICS_SCHEMA,
+        annotations=ToolAnnotations(read_only_hint=read_only),
+    )
+
+
+def _history(secid="SBER", n=2, close=300.0):
+    return {
+        "secid": secid,
+        "interval": "month",
+        "candles": [
+            {"begin": f"2025-{i + 1:02d}-01T00:00:00+03:00", "close": close + i}
+            for i in range(n)
+        ],
+        "candles_truncated": False,
+        "message": None,
+    }
+
+
+class _ScriptedSession:
+    """Фейковая сессия: на каждый вызов отдаёт следующий заготовленный результат
+    (либо один и тот же, если задан не список) и запоминает аргументы вызовов."""
+
+    def __init__(self, results=None):
+        self.results = results or {}
+        self.calls = []
+
+    async def call_tool(self, name, arguments):
+        self.calls.append((name, arguments))
+        outcome = self.results.get(name, _result(text="ok"))
+        return outcome.pop(0) if isinstance(outcome, list) else outcome
+
+
+def _analytics_market(session=None, max_chars=100_000, extra=()):
+    tools = [_tool(name="get_price_history"), _analytics_tool(), *extra]
+    return MarketTools(session or _ScriptedSession(), tools, timeout=5, max_result_chars=max_chars)
+
+
+def _invoke(market, name, arguments):
+    return asyncio.run(market.call(name, json.dumps(arguments)))
+
+
+# --- признак «есть инструменты анализа» ---
+
+
+def test_analytics_available_only_with_an_analytics_tool():
+    old_server = MarketTools(
+        _ScriptedSession(),
+        [_tool(name="search_securities"), _tool(name="get_price_history")],
+        timeout=5,
+        max_result_chars=1000,
+    )
+    assert old_server.analytics_available is False
+    assert _analytics_market().analytics_available is True
+    for name in REF_PARAMS:
+        market = MarketTools(
+            _ScriptedSession(), [_analytics_tool(name=name)], timeout=5, max_result_chars=1000
+        )
+        assert market.analytics_available is True
+
+
+def test_analytics_tool_without_read_only_mark_does_not_make_analytics_available():
+    market = MarketTools(
+        _ScriptedSession(),
+        [_tool(name="get_price_history"), _analytics_tool(read_only=False)],
+        timeout=5,
+        max_result_chars=1000,
+    )
+    assert market.analytics_available is False
+    assert [t["function"]["name"] for t in market.openai_tools] == ["get_price_history"]
+
+
+# --- выдача имён ---
+
+
+def test_successful_history_gets_sequential_names():
+    session = _ScriptedSession({"get_price_history": [
+        _result(structured=_history("SBER")), _result(structured=_history("IMOEX"))
+    ]})
+    market = _analytics_market(session)
+    first = _invoke(market, "get_price_history", {"secid": "SBER"})
+    second = _invoke(market, "get_price_history", {"secid": "IMOEX"})
+    assert first.text.endswith(ref_note("r1"))
+    assert second.text.endswith(ref_note("r2"))
+    assert first.is_error is False
+
+
+def test_other_tools_and_errors_get_no_name():
+    session = _ScriptedSession({
+        "search_securities": _result(structured={"results": []}),
+        "get_price_history": _result(text="Неизвестный тикер", is_error=True),
+    })
+    market = _analytics_market(session, extra=[_tool(name="search_securities")])
+    search = _invoke(market, "search_securities", {"query": "Сбер"})
+    history_error = _invoke(market, "get_price_history", {"secid": "NOPE"})
+    assert "Результат сохранён" not in search.text
+    assert history_error.text == "Неизвестный тикер"
+    assert history_error.is_error is True
+    # следующая удачная история всё равно получает r1: ошибки имён не занимают
+    session.results["get_price_history"] = _result(structured=_history())
+    assert _invoke(market, "get_price_history", {"secid": "SBER"}).text.endswith(ref_note("r1"))
+
+
+def test_old_server_history_text_is_unchanged_and_has_no_name():
+    structured = _history()
+    session = _ScriptedSession({"get_price_history": _result(structured=structured)})
+    market = MarketTools(
+        session, [_tool(name="get_price_history")], timeout=5, max_result_chars=100_000
+    )
+    outcome = _invoke(market, "get_price_history", {"secid": "SBER"})
+    assert outcome.text == json.dumps(structured, separators=(",", ":"), ensure_ascii=False)
+    assert "Результат сохранён" not in outcome.text
+
+
+def test_stored_value_is_the_full_result_not_the_truncated_text():
+    big = _history(n=200)
+    session = _ScriptedSession({
+        "get_price_history": _result(structured=big),
+        "compare_with_benchmark": _result(text="ok"),
+    })
+    market = _analytics_market(session, max_chars=1000)
+    history = _invoke(market, "get_price_history", {"secid": "SBER"})
+    assert TRUNCATION_NOTE in history.text  # модель получила усечённое
+    _invoke(market, "compare_with_benchmark",
+          {"history": {"ref": "r1"}, "benchmark_history": {"ref": "r1"}})
+    _, arguments = session.calls[-1]
+    assert arguments["history"] == big  # серверу ушёл полный результат
+    assert len(arguments["history"]["candles"]) == 200
+
+
+def test_result_without_structured_content_uses_json_text():
+    body = _history()
+    session = _ScriptedSession({"get_price_history": _result(text=json.dumps(body))})
+    market = _analytics_market(session)
+    outcome = _invoke(market, "get_price_history", {"secid": "SBER"})
+    assert outcome.text.endswith(ref_note("r1"))
+
+
+def test_unparseable_result_gets_no_name():
+    session = _ScriptedSession({"get_price_history": _result(text="не JSON")})
+    market = _analytics_market(session)
+    outcome = _invoke(market, "get_price_history", {"secid": "SBER"})
+    assert outcome.text == "не JSON"
+    assert "Результат сохранён" not in outcome.text
+
+
+def test_extract_structured_prefers_structured_content():
+    assert extract_structured(_result(text='{"a": 1}', structured={"b": 2})) == {"b": 2}
+    assert extract_structured(_result(text="[1, 2]")) is None
+    assert extract_structured(_result()) is None
+
+
+# --- пометка и предел размера ---
+
+
+def test_note_is_present_and_size_stays_within_limit():
+    market = _analytics_market(
+        _ScriptedSession({"get_price_history": _result(structured=_history())}), max_chars=5000
+    )
+    outcome = _invoke(market, "get_price_history", {"secid": "SBER"})
+    assert outcome.text.endswith(ref_note("r1"))
+    assert len(outcome.text) <= 5000
+
+
+def test_note_survives_truncation_and_size_stays_within_limit():
+    market = _analytics_market(
+        _ScriptedSession({"get_price_history": _result(structured=_history(n=300))}),
+        max_chars=800,
+    )
+    outcome = _invoke(market, "get_price_history", {"secid": "SBER"})
+    assert TRUNCATION_NOTE in outcome.text
+    assert outcome.text.endswith(ref_note("r1"))
+    assert len(outcome.text) <= 800
+
+
+def test_limit_smaller_than_the_note_gives_no_name_and_does_not_crash():
+    market = _analytics_market(
+        _ScriptedSession({"get_price_history": _result(structured=_history())}), max_chars=20
+    )
+    outcome = _invoke(market, "get_price_history", {"secid": "SBER"})
+    assert "Результат сохранён" not in outcome.text
+    assert len(outcome.text) <= 20
+
+
+# --- resolve_refs ---
+
+STORE = {"r1": _history("SBER"), "r2": _history("IMOEX", close=2900.0)}
+
+
+def test_resolve_replaces_refs_with_stored_results():
+    resolved, error = resolve_refs(
+        "compare_with_benchmark",
+        {"history": {"ref": "r1"}, "benchmark_history": {"ref": "r2"}},
+        STORE,
+    )
+    assert error is None
+    assert resolved == {"history": STORE["r1"], "benchmark_history": STORE["r2"]}
+
+
+def test_resolve_substitutes_a_copy_not_the_stored_object():
+    resolved, _ = resolve_refs("compute_price_metrics", {"history": {"ref": "r1"}}, STORE)
+    assert resolved["history"] == STORE["r1"]
+    assert resolved["history"] is not STORE["r1"]
+    resolved["history"]["candles"].clear()
+    assert len(STORE["r1"]["candles"]) == 2
+
+
+def test_resolve_allows_reusing_one_ref_in_several_params_and_calls():
+    args = {"history_a": {"ref": "r1"}, "history_b": {"ref": "r1"}}
+    first, error = resolve_refs("compare_securities", args, STORE)
+    second, _ = resolve_refs("compare_securities", args, STORE)
+    assert error is None and first == second
+
+
+def test_resolve_does_not_mutate_input_arguments():
+    arguments = {"history": {"ref": "r1"}}
+    resolve_refs("compute_price_metrics", arguments, STORE)
+    assert arguments == {"history": {"ref": "r1"}}
+
+
+def test_resolve_rejects_data_instead_of_a_ref():
+    resolved, error = resolve_refs("compute_price_metrics", {"history": _history()}, STORE)
+    assert resolved is None
+    assert "history" in error and "ссылку" in error
+    assert "r1, r2" in error  # перечислены доступные имена
+
+
+def test_resolve_rejects_non_object_and_bad_ref_shapes():
+    for value in ("r1", ["r1"], None, 5, {"ref": 1}, {"ref": "r1", "extra": 1}, {}):
+        resolved, error = resolve_refs("compute_price_metrics", {"history": value}, STORE)
+        assert resolved is None and error, value
+
+
+def test_resolve_unknown_ref_lists_available_names():
+    resolved, error = resolve_refs("compute_price_metrics", {"history": {"ref": "r9"}}, STORE)
+    assert resolved is None
+    assert "r9" in error and "r1, r2" in error
+
+
+def test_resolve_with_empty_store_points_to_get_price_history():
+    resolved, error = resolve_refs("compute_price_metrics", {"history": {"ref": "r1"}}, {})
+    assert resolved is None
+    assert "get_price_history" in error
+
+
+def test_resolve_rejects_ref_in_a_foreign_parameter():
+    resolved, error = resolve_refs("get_current_price", {"secid": {"ref": "r1"}}, STORE)
+    assert resolved is None and "secid" in error
+    resolved, error = resolve_refs(
+        "compute_price_metrics", {"history": {"ref": "r1"}, "note": {"ref": "r2"}}, STORE
+    )
+    assert resolved is None and "note" in error
+
+
+def test_resolve_does_not_check_missing_params_the_server_does():
+    resolved, error = resolve_refs("compare_with_benchmark", {"history": {"ref": "r1"}}, STORE)
+    assert error is None
+    assert set(resolved) == {"history"}
+
+
+def test_resolve_leaves_ordinary_arguments_alone():
+    arguments = {"secid": "SBER", "interval": "month"}
+    resolved, error = resolve_refs("get_price_history", arguments, STORE)
+    assert error is None
+    assert resolved == {"secid": "SBER", "interval": "month"}
+
+
+# --- MarketTools.call: подстановка и отказы до сервера ---
+
+
+def test_call_with_refs_sends_server_exactly_the_stored_results():
+    sber, imoex = _history("SBER"), _history("IMOEX", close=2900.0)
+    session = _ScriptedSession({
+        "get_price_history": [_result(structured=sber), _result(structured=imoex)],
+        "compare_with_benchmark": _result(text="сравнение"),
+    })
+    market = _analytics_market(session)
+    _invoke(market, "get_price_history", {"secid": "SBER"})
+    _invoke(market, "get_price_history", {"secid": "IMOEX"})
+    outcome = _invoke(
+        market,
+        "compare_with_benchmark",
+        {"history": {"ref": "r1"}, "benchmark_history": {"ref": "r2"}},
+    )
+    assert outcome.text == "сравнение"
+    assert session.calls[-1] == (
+        "compare_with_benchmark",
+        {"history": sber, "benchmark_history": imoex},
+    )
+
+
+def test_call_with_data_or_unknown_ref_does_not_reach_the_server():
+    session = _ScriptedSession({"get_price_history": _result(structured=_history())})
+    market = _analytics_market(session)
+    _invoke(market, "get_price_history", {"secid": "SBER"})
+    calls_before = len(session.calls)
+
+    data = _invoke(market, "compare_with_benchmark",
+                 {"history": _history(), "benchmark_history": {"ref": "r1"}})
+    unknown = _invoke(market, "compare_with_benchmark",
+                    {"history": {"ref": "r7"}, "benchmark_history": {"ref": "r1"}})
+    for outcome in (data, unknown):
+        assert outcome.is_error is True
+        assert outcome.transport_failure is False
+    assert len(session.calls) == calls_before
+
+
+def test_refs_do_not_survive_into_a_new_question():
+    session = _ScriptedSession({"get_price_history": _result(structured=_history())})
+    _invoke(_analytics_market(session), "get_price_history", {"secid": "SBER"})
+    next_question = _analytics_market(session)  # новый вопрос — новый MarketTools
+    calls_before = len(session.calls)
+    outcome = _invoke(next_question, "compute_price_metrics", {"history": {"ref": "r1"}})
+    assert outcome.is_error is True
+    assert len(session.calls) == calls_before
+
+
+# --- with_ref_parameters и схема для модели ---
+
+
+def test_with_ref_parameters_replaces_params_and_drops_unused_defs():
+    schema = with_ref_parameters(ANALYTICS_SCHEMA, ("history", "benchmark_history"))
+    assert "$defs" not in schema
+    for param in ("history", "benchmark_history"):
+        assert schema["properties"][param]["required"] == ["ref"]
+        assert schema["properties"][param]["additionalProperties"] is False
+        assert schema["properties"][param]["properties"]["ref"]["type"] == "string"
+    assert schema["required"] == ["history", "benchmark_history"]
+
+
+def test_with_ref_parameters_keeps_defs_still_referenced_and_other_params():
+    schema = {
+        "type": "object",
+        "properties": {"history": {"$ref": "#/$defs/H"}, "other": {"$ref": "#/$defs/H"}},
+        "$defs": {"H": {"type": "object"}},
+    }
+    result = with_ref_parameters(schema, ("history",))
+    assert result["properties"]["other"] == {"$ref": "#/$defs/H"}
+    assert result["$defs"] == {"H": {"type": "object"}}
+
+
+def test_with_ref_parameters_does_not_mutate_the_source_schema():
+    before = json.dumps(ANALYTICS_SCHEMA, sort_keys=True)
+    with_ref_parameters(ANALYTICS_SCHEMA, ("history", "benchmark_history"))
+    assert json.dumps(ANALYTICS_SCHEMA, sort_keys=True) == before
+
+
+def test_model_sees_analytics_params_as_refs_and_description_mentions_refs():
+    market = _analytics_market()
+    by_name = {t["function"]["name"]: t["function"] for t in market.openai_tools}
+    compare = by_name["compare_with_benchmark"]
+    assert compare["parameters"]["properties"]["history"]["required"] == ["ref"]
+    assert "$defs" not in compare["parameters"]
+    assert compare["description"].startswith("Сравнение с эталоном")
+    assert '{"ref"' in compare["description"]
+    # инструмент не из таблицы ссылок описан как раньше
+    plain = to_openai_tool(_tool(name="get_price_history"))["function"]
+    assert by_name["get_price_history"] == plain
+
+
+# --- сообщение слоя: дата и правила цепочки анализа ---
+
+TODAY = date(2026, 9, 27)  # воскресенье
+
+
+def _analytics_message(today=TODAY):
+    return market_tools.build_context_message(today, analytics=True)["content"]
+
+
+def test_context_message_without_analytics_is_the_old_one():
+    plain = market_tools.build_context_message()
+    assert plain == market_tools.build_context_message(analytics=False)
+    # дата без анализа не попадает в сообщение — оно совпадает с прежним
+    assert plain == market_tools.build_context_message(TODAY, analytics=False)
+    assert "ЦЕПОЧКА АНАЛИЗА" not in plain["content"]
+    assert "Сегодня" not in plain["content"]
+    assert "ref" not in plain["content"]
+
+
+def test_analytics_message_contains_todays_date_and_weekday():
+    text = _analytics_message()
+    assert "2026-09-27" in text
+    assert "воскресенье" in text
+    assert "понедельник" in _analytics_message(date(2026, 9, 28))
+
+
+def test_analytics_message_requires_a_date():
+    try:
+        market_tools.build_context_message(analytics=True)
+    except ValueError:
+        return
+    raise AssertionError("ожидали ValueError без даты")
+
+
+def test_analytics_message_picks_interval_by_period_boundaries():
+    text = _analytics_message()
+    assert "по границам периода" in text
+    assert "interval=month" in text
+    assert "даже если пользователь не просил разбивку по месяцам" in text
+    # неделя — не обычный выбор, а исключение с оговоркой
+    assert "interval=week допустим только с оговоркой" in text
+    assert "неделя или месяц" not in text
+
+
+def test_analytics_message_states_date_rules_and_defaults_and_comparison_split():
+    text = _analytics_message()
+    assert "date_from" in text and "date_till" in text
+    assert "первое число месяца" in text and "последний день месяца" in text
+    assert "обыкновенные акции" in text and "IMOEX" in text
+    assert "compare_with_benchmark" in text and "compare_securities" in text
+    assert "облигации не сравниваются" in text
+
+
+def test_analytics_message_explains_refs_and_forbids_inventing_them():
+    text = _analytics_message()
+    assert '{"ref":"rN"}' in text
+    assert "Данные в параметры истории передавать нельзя" in text
+    assert "имена ссылок не выдумывай" in text
+
+
+def test_analytics_message_takes_numbers_from_the_result_and_names_the_base():
+    text = _analytics_message()
+    assert "не пересчитывай" in text
+    assert "открытия первой свечи" in text
+    assert "Назови период" in text
+
+
+def test_analytics_message_keeps_the_no_override_rule_last():
+    text = _analytics_message()
+    assert text.rstrip().endswith("Инварианты пользователя имеют приоритет над этим блоком.")
+    lowered = text.lower()
+    assert "не отменяет" in lowered and "не ослабляет" in lowered
+    assert "обязательные" in lowered and "инвестиционная рекомендация" in lowered
+    # правила 1-5 базового сообщения на месте
+    assert text.startswith(market_tools.build_context_message()["content"][:200])
+
+
+def test_analytics_message_is_system_role_and_distinct_from_other_variants():
+    message = market_tools.build_context_message(TODAY, analytics=True)
+    assert message["role"] == "system"
+    contents = {
+        message["content"],
+        market_tools.build_context_message()["content"],
+        market_tools.build_unavailable_context_message()["content"],
+        market_tools.build_disabled_context_message()["content"],
+    }
+    assert len(contents) == 4
+
+
+# --- сквозной цикл: фейковая модель + MarketTools + фейковая сессия ---
+
+
+def _tool_call_ns(call_id, name, arguments):
+    return SimpleNamespace(
+        id=call_id,
+        type="function",
+        function=SimpleNamespace(name=name, arguments=json.dumps(arguments)),
+    )
+
+
+def _analysis_chain_market(session):
+    tools = [
+        _tool(name="search_securities"),
+        _tool(name="get_price_history"),
+        _analytics_tool(),
+    ]
+    return MarketTools(session, tools, timeout=5, max_result_chars=100_000)
+
+
+def _run_chain(model, market, max_steps=8):
+    return asyncio.run(run_tool_loop(BASE, model, market.call, max_steps))
+
+
+def test_chain_search_history_compare_by_refs_passes_stored_results_to_server():
+    sber, imoex = _history("SBER", close=280.0), _history("IMOEX", close=2900.0)
+    session = _ScriptedSession({
+        "search_securities": [
+            _result(structured={"r": "SBER"}),
+            _result(structured={"r": "IMOEX"}),
+        ],
+        "get_price_history": [_result(structured=sber), _result(structured=imoex)],
+        "compare_with_benchmark": _result(text="Сравнение готово"),
+    })
+    model = ScriptedModel(
+        _response(tool_calls=[
+            _tool_call_ns("c1", "search_securities", {"query": "Сбербанк"}),
+            _tool_call_ns("c2", "search_securities", {"query": "индекс Мосбиржи"}),
+        ]),
+        _response(tool_calls=[
+            _tool_call_ns("c3", "get_price_history", {"secid": "SBER", "interval": "month"}),
+            _tool_call_ns("c4", "get_price_history", {"secid": "IMOEX", "interval": "month"}),
+        ]),
+        _response(tool_calls=[_tool_call_ns(
+            "c5", "compare_with_benchmark",
+            {"history": {"ref": "r1"}, "benchmark_history": {"ref": "r2"}},
+        )]),
+        _response(content="Итог по сравнению"),
+    )
+    result = _run_chain(model, _analysis_chain_market(session))
+
+    assert result.text == "Итог по сравнению"
+    assert [name for name, _ in session.calls] == [
+        "search_securities", "search_securities",
+        "get_price_history", "get_price_history",
+        "compare_with_benchmark",
+    ]
+    # серверу ушли ровно сохранённые результаты обеих историй
+    assert session.calls[-1][1] == {"history": sber, "benchmark_history": imoex}
+    # модель в сообщениях tool увидела имена, которыми потом воспользовалась
+    tool_messages = [m["content"] for m in model.requests[2][0] if m["role"] == "tool"]
+    assert any(ref_note("r1") in text for text in tool_messages)
+    assert any(ref_note("r2") in text for text in tool_messages)
+    # в записях о вызовах аргументы сравнения короткие: ссылки, а не свечи
+    compare = result.calls[-1]
+    assert compare.name == "compare_with_benchmark"
+    assert compare.arguments == '{"history": {"ref": "r1"}, "benchmark_history": {"ref": "r2"}}'
+    assert len(market_tools.format_call_line(compare)) < 120
+    assert result.step_limit_reached is False
+
+
+def test_chain_model_sends_data_instead_of_ref_gets_error_and_recovers():
+    sber, imoex = _history("SBER", close=280.0), _history("IMOEX", close=2900.0)
+    session = _ScriptedSession({
+        "get_price_history": [_result(structured=sber), _result(structured=imoex)],
+        "compare_with_benchmark": _result(text="Сравнение готово"),
+    })
+    model = ScriptedModel(
+        _response(tool_calls=[
+            _tool_call_ns("c1", "get_price_history", {"secid": "SBER"}),
+            _tool_call_ns("c2", "get_price_history", {"secid": "IMOEX"}),
+        ]),
+        # ошибка модели: вместо ссылки перепечатана история (с искажением)
+        _response(tool_calls=[_tool_call_ns(
+            "c3", "compare_with_benchmark",
+            {"history": _history("SBER", close=281.0), "benchmark_history": {"ref": "r2"}},
+        )]),
+        _response(tool_calls=[_tool_call_ns(
+            "c4", "compare_with_benchmark",
+            {"history": {"ref": "r1"}, "benchmark_history": {"ref": "r2"}},
+        )]),
+        _response(content="Готово"),
+    )
+    result = _run_chain(model, _analysis_chain_market(session))
+
+    assert result.text == "Готово"  # цикл не прервался, вопрос получил ответ
+    assert result.calls[2].is_error is True  # первая попытка отклонена ботом
+    assert result.transport_failure is False
+    # искажённая история до сервера не дошла: сравнение вызвано ровно один раз, верно
+    compares = [args for name, args in session.calls if name == "compare_with_benchmark"]
+    assert compares == [{"history": sber, "benchmark_history": imoex}]
+    error_text = [m["content"] for m in model.requests[2][0] if m["role"] == "tool"][-1]
+    assert "history" in error_text and "ссылку" in error_text

@@ -97,8 +97,9 @@ import asyncio
 import copy
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from config import (
@@ -250,6 +251,17 @@ def _empty_profile() -> dict:
     }
 
 
+# Московское время — фиксированное смещение UTC+3, как в самом сервере рыночных данных
+# (часовых поясов с переводом стрелок в России нет): без зависимости от zoneinfo/tzdata
+# на хосте. «Сегодня» нужно сообщению слоя tools, чтобы модель могла назвать границы
+# периода вроде «за последний год» (см. market_tools.build_context_message).
+_MSK = timezone(timedelta(hours=3))
+
+
+def _moscow_today() -> date:
+    return datetime.now(_MSK).date()
+
+
 class SmartAgent:
     """Один экземпляр на чат (см. agents/smart_agent_command.py, кэш по chat_id, как
     _agents в agent_command.py). Состояние — именованные профили (каждый со своими
@@ -276,6 +288,7 @@ class SmartAgent:
         mcp_timeout: float = MCP_TIMEOUT_SECONDS,
         max_tool_steps: int = MCP_MAX_TOOL_STEPS,
         tool_result_max_chars: int = MCP_TOOL_RESULT_MAX_CHARS,
+        today: Callable[[], date] = _moscow_today,
     ) -> None:
         self._client = client
         self._model = model
@@ -293,6 +306,7 @@ class SmartAgent:
         self._mcp_timeout = mcp_timeout
         self._max_tool_steps = max_tool_steps
         self._tool_result_max_chars = tool_result_max_chars
+        self._today = today
         (
             self._profiles,
             self._active_profile,
@@ -914,7 +928,14 @@ class SmartAgent:
     async def _run_tool_loop(self, tools, user_text: str) -> market_tools.ToolLoopResult:
         """Цикл вызовов внутри открытой сессии MCP: контекст со слоем tools, затем
         market_tools.run_tool_loop с реальными вызовами модели и инструментов."""
-        messages = self._build_context_messages(market_tools.build_context_message())
+        # Дата и правила цепочки анализа попадают в сообщение слоя, только если сервер
+        # опубликовал инструменты анализа (analytics_available): со старым сервером
+        # сообщение прежнее.
+        messages = self._build_context_messages(
+            market_tools.build_context_message(
+                today=self._today(), analytics=tools.analytics_available
+            )
+        )
         self._last_context_messages = list(messages)
         messages.append({"role": "user", "content": user_text})
 
