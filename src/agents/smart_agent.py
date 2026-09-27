@@ -115,6 +115,7 @@ from config import (
     AGENT_TASK_STATE_SYSTEM_PROMPT,
     MAIN_MODEL,
     MAX_OUTPUT_TOKENS,
+    MCP_BYBIT_DIR,
     MCP_MAX_TOOL_STEPS,
     MCP_MOEX_DIR,
     MCP_TIMEOUT_SECONDS,
@@ -122,10 +123,24 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
 )
-from mcp_integration.market_session import open_market_tools
+from mcp_integration.market_session import (
+    BYBIT_MODEL_TOOL_ALLOWLIST,
+    MODEL_TOOL_ALLOWLIST,
+    SOURCE_BYBIT,
+    SOURCE_MOEX,
+    MarketSource,
+    MultiMarketTools,
+    open_multi_market_tools,
+)
 from providers.main_client import main_client
 
 from . import invariants, market_tools, task_state
+
+# Постоянные данные ДВУХ источников рыночных данных (design.md изменения
+# add-smart-agent-bybit-tools) — программа запуска и перечень разрешённых
+# инструментов у каждого источника свои (см. mcp_integration/market_session.py).
+_SOURCE_PROGRAMS = {SOURCE_MOEX: "mcp-moex", SOURCE_BYBIT: "mcp-bybit"}
+_SOURCE_ALLOWLISTS = {SOURCE_MOEX: MODEL_TOOL_ALLOWLIST, SOURCE_BYBIT: BYBIT_MODEL_TOOL_ALLOWLIST}
 
 logger = logging.getLogger(__name__)
 
@@ -295,6 +310,7 @@ class SmartAgent:
         task_start_max_tokens: int = AGENT_TASK_START_MAX_TOKENS,
         invariants_max_tokens: int = AGENT_INVARIANTS_MAX_TOKENS,
         mcp_moex_dir: str = MCP_MOEX_DIR,
+        mcp_bybit_dir: str = MCP_BYBIT_DIR,
         mcp_timeout: float = MCP_TIMEOUT_SECONDS,
         max_tool_steps: int = MCP_MAX_TOOL_STEPS,
         tool_result_max_chars: int = MCP_TOOL_RESULT_MAX_CHARS,
@@ -312,7 +328,11 @@ class SmartAgent:
         self._task_state_max_tokens = task_state_max_tokens
         self._task_start_max_tokens = task_start_max_tokens
         self._invariants_max_tokens = invariants_max_tokens
-        self._mcp_moex_dir = mcp_moex_dir
+        # source_id -> каталог (пустая строка — источник не настроен), для ВСЕХ
+        # известных источников — не только настроенных: get_tools_status() показывает
+        # строку на каждый из них, включая "не настроен" (design.md изменения
+        # add-smart-agent-bybit-tools, решение 7).
+        self._source_dirs = {SOURCE_MOEX: mcp_moex_dir, SOURCE_BYBIT: mcp_bybit_dir}
         self._mcp_timeout = mcp_timeout
         self._max_tool_steps = max_tool_steps
         self._tool_result_max_chars = tool_result_max_chars
@@ -324,15 +344,30 @@ class SmartAgent:
         ) = self._load_state()
         # То, что реально ушло в LLM на последний ask() — см. get_last_context_messages().
         self._last_context_messages: list[dict[str, str]] = []
-        # Слой tools: итог последнего вопроса (в памяти, на диск не пишется — это
-        # диагностика для /smart_agent_show, а не настройка).
-        self._tools_status = market_tools.STATUS_UNKNOWN
-        self._tools_status_reason: str | None = None
+        # Слой tools: итог последнего вопроса ПО КАЖДОМУ источнику (в памяти, на диск
+        # не пишется — это диагностика для /smart_agent_show, а не настройка).
+        self._tools_status: dict[str, tuple[str, str | None]] = {}
         self._last_tool_calls: list[market_tools.ToolCallRecord] = []
 
     @staticmethod
     def _default_enabled_layers() -> dict[str, bool]:
         return {layer: True for layer in ALL_LAYERS}
+
+    def _configured_sources(self) -> list[MarketSource]:
+        """Источники, у которых оператор задал каталог — независимо друг от друга
+        (design.md изменения add-smart-agent-bybit-tools). Порядок — MOEX, затем
+        Bybit (порядок self._source_dirs), не имеет значения для поведения."""
+        return [
+            MarketSource(
+                source_id,
+                market_tools.SOURCE_LABELS[source_id],
+                directory,
+                _SOURCE_PROGRAMS[source_id],
+                _SOURCE_ALLOWLISTS[source_id],
+            )
+            for source_id, directory in self._source_dirs.items()
+            if directory
+        ]
 
     def _load_state(
         self,
@@ -801,7 +836,7 @@ class SmartAgent:
         }
 
     def _build_context_messages(
-        self, tools_message: dict[str, str] | None = None
+        self, tools_messages: list[dict[str, str]] | None = None
     ) -> list[dict[str, str]]:
         """Собирает контекст LLM из явно ВКЛЮЧЁННЫХ слоёв (self._enabled_layers)
         активного профиля — в отличие от Agent, здесь нет автоматического выбора
@@ -811,10 +846,13 @@ class SmartAgent:
         стабильного к самому свежему: инварианты -> профиль -> инструменты ->
         долговременная память -> рабочая задача -> краткосрочный диалог.
 
-        tools_message — готовое сообщение слоя tools (доступен/недоступен, см.
-        agents/market_tools.py); его передаёт ask() только когда слой включён и
-        сервер настроен, поэтому здесь проверка слоя не повторяется. Инварианты
-        остаются первыми и прямо получают приоритет над этим сообщением.
+        tools_messages — готовые сообщения слоя tools (доступные источники,
+        недоступные источники, выключенные источники — см. agents/market_tools.py и
+        design.md изменения add-smart-agent-bybit-tools); может быть несколько СРАЗУ
+        (например, «доступен MOEX» + «недоступен Bybit»). Их передаёт ask() только
+        когда слой включён и хотя бы один источник настроен, поэтому здесь проверка
+        слоя не повторяется. Инварианты остаются первыми и прямо получают приоритет
+        над этими сообщениями.
         """
         messages = [{"role": "system", "content": self._system_prompt}]
         if self._active_profile is None:
@@ -832,8 +870,8 @@ class SmartAgent:
             if meta_message:
                 messages.append(meta_message)
 
-        if tools_message is not None:
-            messages.append(tools_message)
+        if tools_messages:
+            messages.extend(tools_messages)
 
         if self._enabled_layers[LAYER_LONG_TERM] and profile["long_term"]:
             facts_text = "\n".join(f"- {fact['text']}" for fact in profile["long_term"])
@@ -891,12 +929,12 @@ class SmartAgent:
         )
 
     def _plain_completion(
-        self, user_text: str, tools_message: dict[str, str] | None = None
+        self, user_text: str, tools_messages: list[dict[str, str]] | None = None
     ) -> market_tools.ToolLoopResult:
-        """Обычный ответ одним вызовом модели, без инструментов. tools_message — только
-        вариант «данные биржи недоступны» (см. ask()); без него это ровно прежнее
-        поведение ask() до появления слоя tools."""
-        messages = self._build_context_messages(tools_message)
+        """Обычный ответ одним вызовом модели, без инструментов. tools_messages —
+        только вариант «данные источника(ов) выключены» (см. ask()); без него это
+        ровно прежнее поведение ask() до появления слоя tools."""
+        messages = self._build_context_messages(tools_messages)
         self._last_context_messages = list(messages)
         messages.append({"role": "user", "content": user_text})
 
@@ -910,42 +948,44 @@ class SmartAgent:
         )
 
     def _market_tools_mode(self) -> str:
-        """STATUS_OFF — слой выключен пользователем, STATUS_NOT_CONFIGURED — не задан
-        MCP_MOEX_DIR (оба — без предупреждений и без запуска процесса; при STATUS_OFF
-        ask() дополнительно смотрит, настроен ли сервер, — см. там), STATUS_OK —
-        стоит ПОПЫТАТЬСЯ поднять сервер (получится ли — выяснится в ask())."""
+        """STATUS_OFF — слой выключен пользователем, STATUS_NOT_CONFIGURED — ни один
+        источник не настроен (оба — без предупреждений и без запуска процессов; при
+        STATUS_OFF ask() дополнительно смотрит, настроен ли хоть один источник, —
+        см. там), STATUS_OK — стоит ПОПЫТАТЬСЯ поднять настроенные источники
+        (получится ли — выяснится в ask())."""
         if not self._enabled_layers[LAYER_TOOLS]:
             return market_tools.STATUS_OFF
-        if not self._mcp_moex_dir:
+        if not self._configured_sources():
             return market_tools.STATUS_NOT_CONFIGURED
         return market_tools.STATUS_OK
 
-    @staticmethod
-    def _describe_launch_failure(exc: BaseException) -> str:
-        """Короткая причина, почему сервер не запустился, — для /smart_agent_show
-        (подробности пишутся в журнал). SDK часто заворачивает исходную ошибку в
-        ExceptionGroup (anyio), поэтому разворачиваем её до первой конкретной. Проверка
-        по атрибуту `exceptions`, а не по BaseExceptionGroup: тот появился только в
-        Python 3.11, а проект заявляет 3.10+ (pyproject.toml)."""
-        while getattr(exc, "exceptions", None):
-            exc = exc.exceptions[0]
-        if isinstance(exc, FileNotFoundError):
-            return "не найден uv (проверь PATH)"
-        if isinstance(exc, TimeoutError):
-            return "сервер не ответил за отведённое время"
-        return f"сбой запуска ({type(exc).__name__})"
-
-    async def _run_tool_loop(self, tools, user_text: str) -> market_tools.ToolLoopResult:
-        """Цикл вызовов внутри открытой сессии MCP: контекст со слоем tools, затем
-        market_tools.run_tool_loop с реальными вызовами модели и инструментов."""
-        # Дата и правила цепочки анализа попадают в сообщение слоя, только если сервер
-        # опубликовал инструменты анализа (analytics_available): со старым сервером
-        # сообщение прежнее.
-        messages = self._build_context_messages(
-            market_tools.build_context_message(
-                today=self._today(), analytics=tools.analytics_available
+    async def _run_tool_loop(
+        self, tools: MultiMarketTools, unavailable: dict[str, str], user_text: str
+    ) -> market_tools.ToolLoopResult:
+        """Цикл вызовов внутри открытых сессий MCP: контекст со слоем tools (доступные
+        источники + недоступные, если такие есть — design.md изменения
+        add-smart-agent-bybit-tools, решение 3), затем market_tools.run_tool_loop с
+        реальными вызовами модели и инструментов. Если ни один источник не дал
+        инструментов (`tools.openai_tools` пуст), это ровно однo-вызовный ответ без
+        function calling — run_tool_loop не отличает такой случай от обычного вопроса
+        без вызовов."""
+        tools_messages: list[dict[str, str]] = []
+        available_ids = tools.source_ids()
+        if available_ids:
+            sources_info = [
+                market_tools.AvailableSource(
+                    id=source_id, analytics_available=tools.analytics_available_for(source_id)
+                )
+                for source_id in available_ids
+            ]
+            tools_messages.append(
+                market_tools.build_context_message(sources_info, today=self._today())
             )
-        )
+        if unavailable:
+            labels = [market_tools.SOURCE_LABELS[source_id] for source_id in unavailable]
+            tools_messages.append(market_tools.build_unavailable_context_message(labels))
+
+        messages = self._build_context_messages(tools_messages)
         self._last_context_messages = list(messages)
         messages.append({"role": "user", "content": user_text})
 
@@ -958,52 +998,44 @@ class SmartAgent:
 
     async def _tool_completion_async(
         self, user_text: str
-    ) -> tuple[market_tools.ToolLoopResult | None, str | None]:
-        """Ответ с инструментами: (результат, None) либо (None, причина), если сервер
-        рыночных данных недоступен — тогда ask() отвечает без инструментов.
+    ) -> tuple[market_tools.ToolLoopResult, dict[str, str]]:
+        """Ответ с инструментами доступных источников: (результат, {source_id: причина
+        недоступности} для источников, которые в этом вопросе не поднялись). Каждый
+        источник открывается и падает независимо (open_multi_market_tools) — недоступность
+        одного не отбирает инструменты у другого (design.md, решение 3); если НИ ОДИН
+        источник не дал инструментов, результат всё равно есть — это обычный ответ без
+        function calling с сообщением о недоступности всех настроенных источников.
 
         Исключения основного вызова модели (OpenAI SDK) обязаны дойти до командного
         слоя КАК ЕСТЬ — он переводит их в понятные сообщения. Но контексты stdio_client/
         ClientSession построены на anyio, который может завернуть их в ExceptionGroup
-        и тем самым обойти эти `except`. Поэтому ошибка тела ловится ВНУТРИ сессии,
-        запоминается и возбуждается заново уже после выхода из неё. Сбой самого
-        закрытия сессии, когда ответ уже получен, ответ не отменяет — только журнал.
+        и тем самым обойти эти `except`. Поэтому ошибка тела ловится ВНУТРИ сессий,
+        запоминается и возбуждается заново уже после выхода из них. Сбой самого
+        закрытия сессий, когда ответ уже получен, ответ не отменяет — только журнал.
         """
-        result: market_tools.ToolLoopResult | None = None
+        # Пустой запасной результат — на случай (практически недостижимый: _open_one
+        # перехватывает всё по каждому источнику отдельно), если тело цикла вообще не
+        # выполнилось; ask() и так подставляет запасной текст пустому ответу.
+        result: market_tools.ToolLoopResult = market_tools.ToolLoopResult(text=None)
         body_error: Exception | None = None
-        opened = False
-        no_tools = False
+        unavailable: dict[str, str] = {}
         try:
-            async with open_market_tools(
-                self._mcp_moex_dir, self._mcp_timeout, self._tool_result_max_chars
-            ) as tools:
-                opened = True
-                if not tools.openai_tools:
-                    no_tools = True
-                else:
-                    try:
-                        result = await self._run_tool_loop(tools, user_text)
-                    except Exception as exc:  # noqa: BLE001 — возбуждается ниже, см. докстринг
-                        body_error = exc
-        except Exception as exc:  # noqa: BLE001 — сюда попадают и сбой запуска, и сбой закрытия
-            if not opened:
-                logger.warning(
-                    "Не удалось запустить MCP-сервер рыночных данных — отвечаю без "
-                    "инструментов.",
-                    exc_info=True,
-                )
-                return None, self._describe_launch_failure(exc)
+            async with open_multi_market_tools(
+                self._configured_sources(), self._mcp_timeout, self._tool_result_max_chars
+            ) as (tools, failures):
+                unavailable = failures
+                try:
+                    result = await self._run_tool_loop(tools, unavailable, user_text)
+                except Exception as exc:  # noqa: BLE001 — возбуждается ниже, см. докстринг
+                    body_error = exc
+        except Exception:  # noqa: BLE001 — сбой закрытия сессий (тело уже отработало выше)
             logger.warning(
-                "Сбой при завершении сессии MCP-сервера рыночных данных.", exc_info=True
+                "Сбой при завершении сессий MCP-серверов рыночных данных.", exc_info=True
             )
 
         if body_error is not None:
             raise body_error
-        if no_tools:
-            return None, "сервер не предоставил инструментов только для чтения"
-        if result is None:
-            return None, "сессия с сервером оборвалась"
-        return result, None
+        return result, unavailable
 
     def ask(self, user_text: str) -> SmartAgentAnswer:
         """Отправляет вопрос в LLM вместе с контекстом активного профиля, собранным
@@ -1018,14 +1050,16 @@ class SmartAgent:
         сохранённый диалог, а промежуточные сообщения цикла вызовов инструментов туда
         не попадают вовсе: пишется ровно пара «вопрос — итоговый ответ».
 
-        Слой tools. Если он включён и задан MCP_MOEX_DIR, ответ строится циклом вызовов
-        инструментов (agents/market_tools.py) поверх одного процесса MCP-сервера на
-        этот вопрос; недоступный сервер не блокирует ответ — вопрос обрабатывается без
-        инструментов, с сообщением слоя «данные биржи недоступны» и предупреждением в
-        SmartAgentAnswer.warnings. Незаданный MCP_MOEX_DIR — ровно прежнее поведение, без
-        запуска процесса и без asyncio. Выключенный слой — тоже без процесса и без
-        asyncio, но если сервер настроен, в контексте одно сообщение «данные биржи
-        выключены» (market_tools.build_disabled_context_message).
+        Слой tools. Если он включён и хотя бы один источник настроен (MCP_MOEX_DIR/
+        MCP_BYBIT_DIR), ответ строится циклом вызовов инструментов (agents/market_tools.py)
+        поверх сессий каждого настроенного источника на этот вопрос; недоступность
+        ОДНОГО источника не отбирает инструменты у другого (design.md изменения
+        add-smart-agent-bybit-tools, решение 3) — вопрос обрабатывается с сообщением
+        слоя «данные <источник> недоступны» и предупреждением в SmartAgentAnswer.warnings
+        именно про этот источник. Если не настроен ни один источник — ровно прежнее
+        поведение, без запуска процессов и без asyncio. Выключенный слой — тоже без
+        процессов и без asyncio, но если хотя бы один источник настроен, в контексте
+        одно сообщение «данные <источники> выключены» (market_tools.build_disabled_context_message).
 
         МЕТОД СИНХРОННЫЙ, но внутри путь с инструментами вызывает asyncio.run() — он
         бросит RuntimeError, если вызвать ask() в потоке с уже работающим циклом
@@ -1048,24 +1082,22 @@ class SmartAgent:
         request_tokens_approx = len(user_text) // 2
 
         mode = self._market_tools_mode()
-        reason: str | None = None
         warnings: list[str] = []
+        unavailable: dict[str, str] = {}
         if mode == market_tools.STATUS_OK:
-            outcome, reason = asyncio.run(self._tool_completion_async(user_text))
-            if outcome is None:
-                mode = market_tools.STATUS_UNAVAILABLE
-                outcome = self._plain_completion(
-                    user_text, market_tools.build_unavailable_context_message()
-                )
-                warnings.append(market_tools.UNAVAILABLE_WARNING)
+            outcome, unavailable = asyncio.run(self._tool_completion_async(user_text))
+            if unavailable:
+                labels = [market_tools.SOURCE_LABELS[source_id] for source_id in unavailable]
+                warnings.append(market_tools.unavailable_warning(labels))
         else:
-            # Слой выключен, но сервер настроен: модели нужно сказать, что данные биржи
-            # выключены, иначе она выдаёт цену из прежнего ответа за текущую (см.
-            # market_tools.build_disabled_context_message). Без настроенного сервера
-            # сообщения нет — чат ведёт себя как до появления слоя.
+            # Слой выключен, но хотя бы один источник настроен: модели нужно сказать,
+            # что данные выключены, иначе она выдаёт цену из прежнего ответа за
+            # текущую (см. market_tools.build_disabled_context_message). Если ни один
+            # источник не настроен, сообщения нет — чат ведёт себя как до появления слоя.
+            configured = self._configured_sources()
             disabled_message = (
-                market_tools.build_disabled_context_message()
-                if mode == market_tools.STATUS_OFF and self._mcp_moex_dir
+                [market_tools.build_disabled_context_message([s.label for s in configured])]
+                if mode == market_tools.STATUS_OFF and configured
                 else None
             )
             outcome = self._plain_completion(user_text, disabled_message)
@@ -1075,13 +1107,19 @@ class SmartAgent:
         if outcome.step_limit_reached:
             warnings.append(market_tools.step_limit_warning(self._max_tool_steps))
 
-        # Статус для /smart_agent_show. Выключенный слой и незаданный каталог здесь не
-        # хранятся: get_tools_status() определяет их по текущей настройке, а не по
-        # прошлому вопросу.
-        if mode in (market_tools.STATUS_OK, market_tools.STATUS_UNAVAILABLE):
-            self._tools_status, self._tools_status_reason = mode, reason
+        # Статус для /smart_agent_show, ПО КАЖДОМУ настроенному источнику. Выключенный
+        # слой и незаданный каталог здесь не хранятся: get_tools_status() определяет их
+        # по текущей настройке, а не по прошлому вопросу.
+        if mode == market_tools.STATUS_OK:
+            for source in self._configured_sources():
+                if source.id in unavailable:
+                    self._tools_status[source.id] = (
+                        market_tools.STATUS_UNAVAILABLE, unavailable[source.id]
+                    )
+                else:
+                    self._tools_status[source.id] = (market_tools.STATUS_OK, None)
         else:
-            self._tools_status, self._tools_status_reason = market_tools.STATUS_UNKNOWN, None
+            self._tools_status = {}
         self._last_tool_calls = list(outcome.calls)
 
         answer = outcome.text or "Модель вернула пустой ответ. Попробуй переформулировать вопрос."
@@ -1101,15 +1139,23 @@ class SmartAgent:
             llm_calls=outcome.llm_calls,
         )
 
-    def get_tools_status(self) -> tuple[str, str | None]:
-        """Статус слоя tools для /smart_agent_show: (STATUS_*, причина недоступности).
-        Выключенный слой и незаданный MCP_MOEX_DIR определяются по ТЕКУЩЕЙ настройке,
-        остальное — по итогу последнего вопроса с момента запуска бота."""
+    def get_tools_status(self) -> dict[str, tuple[str, str | None]]:
+        """Статус слоя tools для /smart_agent_show, ПО КАЖДОМУ известному источнику
+        (design.md изменения add-smart-agent-bybit-tools, решение 7) —
+        {source_id: (STATUS_*, причина недоступности)}. Выключенный слой определяется
+        по ТЕКУЩЕЙ настройке для всех источников сразу; незаданный каталог — тоже по
+        текущей настройке, для КАЖДОГО источника отдельно; остальное — по итогу
+        последнего вопроса с момента запуска бота, где этот источник участвовал."""
         if not self._enabled_layers[LAYER_TOOLS]:
-            return market_tools.STATUS_OFF, None
-        if not self._mcp_moex_dir:
-            return market_tools.STATUS_NOT_CONFIGURED, None
-        return self._tools_status, self._tools_status_reason
+            return {source_id: (market_tools.STATUS_OFF, None) for source_id in self._source_dirs}
+        return {
+            source_id: (
+                (market_tools.STATUS_NOT_CONFIGURED, None)
+                if not directory
+                else self._tools_status.get(source_id, (market_tools.STATUS_UNKNOWN, None))
+            )
+            for source_id, directory in self._source_dirs.items()
+        }
 
     def get_last_tool_calls(self) -> list[market_tools.ToolCallRecord]:
         """Инструменты, вызванные на последнем вопросе (пусто, если вызовов не было)."""

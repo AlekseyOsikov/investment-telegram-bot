@@ -1,10 +1,20 @@
-"""Сессия с MCP-сервером рыночных данных (mcp-moex) для основного ответа /smart_agent.
+"""Сессия с MCP-серверами рыночных данных (mcp-moex, mcp-bybit) для основного ответа
+/smart_agent.
 
 В отличие от client.py (диагностический цикл «подключиться → перечислить → закрыть»),
 здесь сессия остаётся открытой на весь ВОПРОС пользователя: схемы инструментов нужны
 до первого обращения к LLM, а сами вызовы происходят по ходу цикла tool-calls (см.
 agents/market_tools.py). Процесс сервера один на вопрос и не живёт между вопросами —
 см. design.md изменения add-smart-agent-moex-tools, решение 3.
+
+Источников может быть НЕСКОЛЬКО (сейчас MOEX и Bybit, design.md изменения
+add-smart-agent-bybit-tools) — каждый со своим каталогом, программой запуска и
+перечнем разрешённых инструментов. `MarketTools` (одна сессия, один источник) не
+знает о существовании других источников и не префиксует свои имена — этим её
+поведение и покрывающие её тесты не меняются по сравнению с однo-источниковой
+версией. Объединение нескольких источников в один фасад для модели (префиксация
+имён, диспетчеризация вызова по префиксу, частичная доступность) — отдельный слой,
+`MultiMarketTools`/`open_multi_market_tools()`, ниже.
 
 Граница ответственности такая же, как у client.py/tools_command.py: здесь только
 механика MCP, без Telegram и без знания о том, как агент строит контекст. Всё, что
@@ -15,7 +25,9 @@ agents/market_tools.py). Процесс сервера один на вопро�
 Два класса неудач разведены намеренно:
 - неудача ЗАПУСКА сервера (нет `uv`, нет каталога, тайм-аут рукопожатия, нарушение
   протокола) — исключение из open_market_tools(), его перехватывает вызывающий код и
-  переводит вопрос в режим «без инструментов»;
+  переводит вопрос в режим «без инструментов» (для одного источника) или отмечает
+  этот источник недоступным, не трогая остальные (для нескольких, см.
+  open_multi_market_tools());
 - неудача ВЫЗОВА инструмента (неизвестное имя, невалидные аргументы, ошибка сервера,
   обрыв обмена, тайм-аут вызова) — исключением НЕ становится: MarketTools.call()
   возвращает текст для модели, чтобы вопрос не остался без ответа.
@@ -28,7 +40,7 @@ import copy
 import json
 import logging
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 
 from mcp import ClientSession, StdioServerParameters
@@ -55,6 +67,30 @@ MODEL_TOOL_ALLOWLIST = frozenset(
         "compare_securities",
     }
 )
+
+# Тот же принцип для второго источника (mcp-bybit, design.md изменения
+# add-smart-agent-bybit-tools) — свой перечень, потому что имя поиска у Bybit другое
+# (search_symbols, а не search_securities), а остальные пять имён совпадают буквально
+# с MOEX и без префикса источника (см. MultiMarketTools ниже) были бы неразличимы.
+BYBIT_MODEL_TOOL_ALLOWLIST = frozenset(
+    {
+        "search_symbols",
+        "get_current_price",
+        "get_price_history",
+        "compute_price_metrics",
+        "compare_with_benchmark",
+        "compare_securities",
+    }
+)
+
+# Идентификаторы источников — используются как префикс имени инструмента для модели
+# (см. MultiMarketTools) и как ключ в статусах/конфигурации (agents/smart_agent.py,
+# agents/market_tools.py). Разделитель префикса — "__": имена инструментов обоих
+# серверов используют одиночное подчёркивание (snake_case), поэтому первое "__" в
+# имени всегда однозначно отделяет источник от собственного имени инструмента.
+SOURCE_MOEX = "moex"
+SOURCE_BYBIT = "bybit"
+SOURCE_PREFIX_SEPARATOR = "__"
 
 # Инструмент, результаты которого получают имена-ссылки (r1, r2, ...), и параметры
 # инструментов анализа, принимающие от модели ТОЛЬКО такую ссылку. Единственное место,
@@ -115,23 +151,42 @@ def is_read_only(tool) -> bool:
     return getattr(annotations, "read_only_hint", None) is True
 
 
-def is_model_tool(tool) -> bool:
+def is_model_tool(tool, allowlist: frozenset[str] = MODEL_TOOL_ALLOWLIST) -> bool:
     """Инструмент можно отдать модели: он в явном перечне разрешённых И помечен
-    сервером как только читающий. Оба условия обязательны — см. MODEL_TOOL_ALLOWLIST."""
-    return tool.name in MODEL_TOOL_ALLOWLIST and is_read_only(tool)
+    сервером как только читающий. Оба условия обязательны. `allowlist` по умолчанию —
+    перечень MOEX (обратная совместимость для однo-источникового вызова); у Bybit
+    свой перечень (BYBIT_MODEL_TOOL_ALLOWLIST), передаваемый явно."""
+    return tool.name in allowlist and is_read_only(tool)
 
 
-def build_server_params(directory: str) -> StdioServerParameters:
+def build_server_params(directory: str, program: str = "mcp-moex") -> StdioServerParameters:
     """Параметры запуска сервера рыночных данных для ответа smart-агента.
 
     Команда собирается списком аргументов без shell, поэтому значение directory не
-    может внедрить команду. Флага `--watch-db` здесь НЕТ намеренно: в режиме по
-    умолчанию сервер публикует только три инструмента чтения, а инструменты
-    расписания (принимают chat_id от клиента) модель не видит вообще.
+    может внедрить команду. Флага `--watch-db` здесь НЕТ намеренно (и mcp-bybit его
+    вообще не поддерживает): в режиме по умолчанию сервер публикует только
+    инструменты чтения, а инструменты расписания (принимают chat_id от клиента)
+    модель не видит вообще. `program` — имя программы источника (`mcp-moex` по
+    умолчанию для обратной совместимости, `mcp-bybit` для второго источника).
     """
     return StdioServerParameters(
-        command="uv", args=["run", "--directory", directory, "mcp-moex"]
+        command="uv", args=["run", "--directory", directory, program]
     )
+
+
+def describe_launch_failure(exc: BaseException) -> str:
+    """Короткая причина, почему сервер источника не запустился, — для
+    /smart_agent_show (подробности пишутся в журнал). SDK часто заворачивает исходную
+    ошибку в ExceptionGroup (anyio), поэтому разворачиваем её до первой конкретной.
+    Проверка по атрибуту `exceptions`, а не по BaseExceptionGroup: тот появился
+    только в Python 3.11, а проект заявляет 3.10+ (pyproject.toml)."""
+    while getattr(exc, "exceptions", None):
+        exc = exc.exceptions[0]
+    if isinstance(exc, FileNotFoundError):
+        return "не найден uv (проверь PATH)"
+    if isinstance(exc, TimeoutError):
+        return "сервер не ответил за отведённое время"
+    return f"сбой запуска ({type(exc).__name__})"
 
 
 def to_openai_tool(tool) -> dict:
@@ -328,12 +383,13 @@ class MarketTools:
         tools: list,
         timeout: float,
         max_result_chars: int,
+        allowlist: frozenset[str] = MODEL_TOOL_ALLOWLIST,
     ) -> None:
         self._session = session
         self._timeout = timeout
         self._max_result_chars = max_result_chars
-        allowed = [tool for tool in tools if is_model_tool(tool)]
-        skipped = [tool.name for tool in tools if not is_model_tool(tool)]
+        allowed = [tool for tool in tools if is_model_tool(tool, allowlist)]
+        skipped = [tool.name for tool in tools if not is_model_tool(tool, allowlist)]
         if skipped:
             logger.warning(
                 "Инструменты не отданы модели (нет пометки read-only или нет в перечне "
@@ -446,9 +502,13 @@ class MarketTools:
 
 @asynccontextmanager
 async def open_market_tools(
-    directory: str, timeout: float, max_result_chars: int
+    directory: str,
+    timeout: float,
+    max_result_chars: int,
+    program: str = "mcp-moex",
+    allowlist: frozenset[str] = MODEL_TOOL_ALLOWLIST,
 ) -> AsyncIterator[MarketTools]:
-    """Запускает `uv run --directory <directory> mcp-moex`, делает рукопожатие и
+    """Запускает `uv run --directory <directory> <program>`, делает рукопожатие и
     получает список инструментов; процесс завершается при выходе из блока.
 
     Команда собирается списком аргументов и запускается без shell
@@ -456,11 +516,150 @@ async def open_market_tools(
     Тайм-аут охватывает рукопожатие и list_tools() — самое вероятное место зависания
     (медленный старт uv); сам вызов инструментов ограничен тем же значением отдельно
     (MarketTools.call). Исключения запуска не перехватываются — см. докстринг модуля.
+    `program`/`allowlist` по умолчанию соответствуют MOEX (обратная совместимость для
+    однo-источникового вызова); второй источник передаёт их явно.
     """
-    params = build_server_params(directory)
+    params = build_server_params(directory, program)
     async with stdio_client(params) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
             async with asyncio.timeout(timeout):
                 await session.initialize()
                 listed = await session.list_tools()
-            yield MarketTools(session, list(listed.tools), timeout, max_result_chars)
+            yield MarketTools(session, list(listed.tools), timeout, max_result_chars, allowlist)
+
+
+# --------------------------------------------------------------------------- #
+# Несколько источников за один вопрос (design.md изменения
+# add-smart-agent-bybit-tools, решения 1-3)
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class MarketSource:
+    """Постоянные данные одного настроенного источника — то, что нужно, чтобы его
+    открыть (open_market_tools) и опознать в статусах/сообщениях слоя. `label` —
+    человекочитаемое имя для текстов (agents/market_tools.py), а не для протокола."""
+
+    id: str
+    label: str
+    directory: str
+    program: str
+    allowlist: frozenset[str]
+
+
+class MultiMarketTools:
+    """Фасад над несколькими открытыми `MarketTools` (по одной на источник) для
+    модели: объединённый список инструментов с именами вида
+    `<источник>__<имя>` и диспетчеризация вызова по этому префиксу к нужному
+    источнику (design.md, решения 1 и 4). Каждый `MarketTools` внутри не меняется и
+    не знает о существовании других — префикс существует только на границе с
+    моделью, поэтому реестр ссылок на историю (rN) у каждого источника свой и
+    естественно изолирован: диспетчеризация уже направляет вызов инструмента анализа
+    к правильному источнику ДО того, как тот разрешает свои ссылки."""
+
+    def __init__(self, sources: dict[str, MarketTools]) -> None:
+        self._sources = sources
+        self.openai_tools: list[dict] = []
+        for source_id, tools in sources.items():
+            for tool in tools.openai_tools:
+                prefixed = copy.deepcopy(tool)
+                prefixed["function"]["name"] = (
+                    f"{source_id}{SOURCE_PREFIX_SEPARATOR}{tool['function']['name']}"
+                )
+                self.openai_tools.append(prefixed)
+
+    def source_ids(self) -> list[str]:
+        """Источники, сессию с которыми удалось открыть в этом вопросе (в порядке
+        добавления)."""
+        return list(self._sources)
+
+    def analytics_available_for(self, source_id: str) -> bool:
+        tools = self._sources.get(source_id)
+        return tools.analytics_available if tools is not None else False
+
+    async def call(self, name: str, raw_arguments: str | None) -> ToolOutcome:
+        """Разбирает признак источника (первое вхождение SOURCE_PREFIX_SEPARATOR) и
+        делегирует вызов его MarketTools.call(). Неизвестный или отсутствующий
+        признак — ошибка текстом для модели, без обращения к какому-либо серверу."""
+        source_id, _, bare_name = name.partition(SOURCE_PREFIX_SEPARATOR)
+        if not bare_name:
+            return ToolOutcome(
+                f"Имя инструмента «{name}» не несёт признака источника "
+                f"(ожидался вид «источник{SOURCE_PREFIX_SEPARATOR}имя»).",
+                is_error=True,
+            )
+        tools = self._sources.get(source_id)
+        if tools is None:
+            available = ", ".join(self._sources) or "нет"
+            return ToolOutcome(
+                f"Источник «{source_id}» недоступен в этом вопросе. Доступные "
+                f"источники: {available}.",
+                is_error=True,
+            )
+        return await tools.call(bare_name, raw_arguments)
+
+
+@asynccontextmanager
+async def open_multi_market_tools(
+    sources: list[MarketSource], timeout: float, max_result_chars: int
+) -> AsyncIterator[tuple[MultiMarketTools, dict[str, str]]]:
+    """Открывает сессию с каждым источником из `sources` ПОСЛЕДОВАТЕЛЬНО, в одном и
+    том же asyncio-таске: источник, который не удалось поднять (сбой запуска,
+    тайм-аут рукопожатия), не мешает использовать остальные (design.md, решение 3) —
+    открытие остальных просто продолжается дальше по списку. Каждая сессия
+    закрывается по выходу из блока независимо от исхода другой (через общий
+    AsyncExitStack).
+
+    НЕ открывает сессии конкурентно (asyncio.gather/отдельные таски) — это было
+    первым вариантом (design.md, решение 2), но открытие сессии в одном таске и её
+    использование/закрытие в другом ломает anyio: `stdio_client`/`ClientSession`
+    держат внутренний task group, чей cancel scope обязан закрываться в ТОМ ЖЕ
+    таске, где был открыт (`RuntimeError: Attempted to exit cancel scope in a
+    different task than it was entered in` — воспроизведено вручную при попытке
+    открыть источники через asyncio.gather с общим AsyncExitStack, закрываемым в
+    таске-вызывающем). Последовательное открытие в одном таске избегает этого риска
+    полностью: у каждого источника — на несколько сотен миллисекунд больше задержка
+    (~0,75 с на источник, значит ~1,5 с на вопрос с двумя настроенными источниками
+    вместо ~0,75 с при гипотетической параллели), но корректность важнее экономии
+    доли секунды. См. design.md, обновлённое решение 2.
+
+    Возвращает (агрегатор доступных источников, {source_id: причина неудачи} для
+    источников, которые поднять не удалось). Пустой `sources` — агрегатор без
+    инструментов и пустой словарь неудач; вызывающий код такой случай не должен
+    создавать (список настроенных источников формируется им самим), но он не
+    считается ошибкой.
+    """
+    async with AsyncExitStack() as stack:
+        opened: dict[str, MarketTools] = {}
+        failures: dict[str, str] = {}
+
+        for source in sources:
+            try:
+                tools = await stack.enter_async_context(
+                    open_market_tools(
+                        source.directory,
+                        timeout,
+                        max_result_chars,
+                        source.program,
+                        source.allowlist,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 — сбой ОДНОГО источника не должен мешать другим
+                logger.warning(
+                    "Не удалось запустить источник рыночных данных %r — отвечаю без "
+                    "его инструментов.",
+                    source.id,
+                    exc_info=True,
+                )
+                failures[source.id] = describe_launch_failure(exc)
+                continue
+            if not tools.openai_tools:
+                # Сессия открылась, но сервер не предоставил ни одного инструмента
+                # только для чтения из перечня — источник считается недоступным, как
+                # и при сбое запуска (та же семантика STATUS_UNAVAILABLE, что и до
+                # появления второго источника).
+                failures[source.id] = "сервер не предоставил инструментов только для чтения"
+                continue
+            opened[source.id] = tools
+
+        yield MultiMarketTools(opened), failures

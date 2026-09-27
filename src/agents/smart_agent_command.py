@@ -95,10 +95,12 @@ point своего ConversationHandler-а — это позволяет ему �
   чат, не per-profile) — так можно сравнить ответ на один и тот же вопрос с разными
   слоями включёнными/выключенными. Для инвариантов выключение снимает и проверку
   результата задачи, поэтому, пока слой выключен, об этом напоминает служебная строка
-  после каждого ответа. Слой tools — доступ ответа к инструментам рыночных данных (см.
-  agents/market_tools.py): выключение оставляет ответ без данных биржи, и отдельного
-  предупреждения пользователю каждый ход не нужно (о выключении сообщает сама эта
-  команда). Модели о нём говорит сообщение в контексте — только если сервер настроен
+  после каждого ответа. Слой tools — доступ ответа к инструментам ОДНОГО ИЛИ
+  НЕСКОЛЬКИХ источников рыночных данных (MOEX/Bybit, см. agents/market_tools.py,
+  design.md изменения add-smart-agent-bybit-tools): выключение оставляет ответ без
+  данных ни одного из настроенных источников, и отдельного предупреждения
+  пользователю каждый ход не нужно (о выключении сообщает сама эта команда). Модели
+  о нём говорит сообщение в контексте — только если хотя бы один источник настроен
   (market_tools.build_disabled_context_message): без него она выдаёт цену из прежнего
   ответа за текущую. Седьмой пункт, autostart, — НЕ слой контекста, а флаг автомата
   рабочей задачи: выключает только автоматическое обнаружение НОВОЙ задачи, не
@@ -1337,11 +1339,15 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
     facts = agent.get_long_term_facts()
     lines.append(f"3️⃣ Долговременная ({status('long_term')}), фактов: {len(facts)}.")
 
-    tools_status, tools_reason = agent.get_tools_status()
-    tools_line = (
-        "🔧 Инструменты (данные биржи): "
-        f"{market_tools.describe_status(tools_status, tools_reason)}."
+    # Статус КАЖДОГО источника отдельной строкой (design.md изменения
+    # add-smart-agent-bybit-tools, решение 7) — вызовы последнего вопроса при этом
+    # общим списком: имя каждого вызова уже несёт признак источника (moex__/bybit__).
+    tools_statuses = agent.get_tools_status()
+    status_lines = "\n".join(
+        f"- {market_tools.describe_status(market_tools.SOURCE_LABELS[source_id], status, reason)}."
+        for source_id, (status, reason) in tools_statuses.items()
     )
+    tools_line = f"🔧 Инструменты (данные рынков):\n{status_lines}"
     last_calls = agent.get_last_tool_calls()
     if last_calls:
         call_lines = "\n".join(market_tools.format_call_lines(last_calls))
@@ -1409,11 +1415,15 @@ async def smart_agent_toggle_command(update: Update, context: ContextTypes.DEFAU
         )
     if layer == LAYER_TOOLS:
         if not new_value:
-            text += "\nАгент отвечает без данных биржи, сервер не запускается."
-        elif agent.get_tools_status()[0] == market_tools.STATUS_NOT_CONFIGURED:
+            text += "\nАгент отвечает без данных рынков, серверы не запускаются."
+        elif all(
+            status == market_tools.STATUS_NOT_CONFIGURED
+            for status, _ in agent.get_tools_status().values()
+        ):
             text += (
-                "\n⚠️ Но сервер рыночных данных не настроен (оператору бота нужно задать "
-                "MCP_MOEX_DIR) — пока агент отвечает без данных биржи."
+                "\n⚠️ Но ни один источник рыночных данных не настроен (оператору бота "
+                "нужно задать MCP_MOEX_DIR и/или MCP_BYBIT_DIR) — пока агент отвечает "
+                "без данных рынков."
             )
     if layer == LAYER_TASK_AUTOSTART:
         # Это не слой контекста, а флаг автомата — оговорка обязательна в обе стороны,
