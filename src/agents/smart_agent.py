@@ -139,6 +139,15 @@ LAYER_TOOLS = "tools"
 # слоя в контексте (после профиля, до долговременной памяти) определяет
 # _build_context_messages, а не порядок этого кортежа. Старые файлы памяти без ключа
 # "tools" читаются как «включён» (см. _load_state) — миграция не нужна.
+LAYER_TASK_AUTOSTART = "task_autostart"
+# task_autostart — НЕ слой контекста (в отличие от шести выше он ничего не добавляет и
+# не убирает из сообщений LLM), а поведенческий флаг автомата рабочей задачи: включает/
+# выключает только автоматическое ОБНАРУЖЕНИЕ новой задачи (_maybe_start_task). Лежит в
+# ALL_LAYERS/enabled_layers ради готового механизма хранения и переключения
+# (/smart_agent_toggle) — см. design.md изменения add-smart-agent-task-autostart-toggle,
+# решение 1. Добавлен в конец по тому же принципу, что и tools: не менять порядок
+# прежних ключей. Старые файлы памяти без этого ключа читаются как «включён» (см.
+# _load_state) — миграция не нужна.
 ALL_LAYERS = (
     LAYER_PROFILE,
     LAYER_INVARIANTS,
@@ -146,6 +155,7 @@ ALL_LAYERS = (
     LAYER_WORKING,
     LAYER_LONG_TERM,
     LAYER_TOOLS,
+    LAYER_TASK_AUTOSTART,
 )
 
 # Поля профиля персонализации (анкета при создании, /smart_agent_profile_set для
@@ -1304,8 +1314,16 @@ class SmartAgent:
 
         Автоматический старт возможен только при отсутствии активной задачи —
         подменять незавершённую задачу новой автомат не должен, для смены сценария
-        есть явная команда /smart_agent_task_start.
+        есть явная команда /smart_agent_task_start. Условие входа теперь ДВОЙНОЕ:
+        сверх этого пользователь должен явно не выключить обнаружение флагом
+        /smart_agent_toggle autostart (LAYER_TASK_AUTOSTART) — тогда задача начинается
+        только явной командой. Флаг не трогает ничего другого: слой working, ручные
+        команды и автопродвижение уже идущей задачи (см. update_task_state ниже) от
+        него не зависят — см. design.md изменения add-smart-agent-task-autostart-toggle.
         """
+        if not self._enabled_layers[LAYER_TASK_AUTOSTART]:
+            return None
+
         short_term = profile["short_term"]
         if len(short_term) < 2:
             return None
