@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any, Protocol
 
-from mcp_integration.market_session import SOURCE_BYBIT, SOURCE_MOEX
+from mcp_integration.market_session import SOURCE_BYBIT, SOURCE_CBR, SOURCE_MOEX
 
 logger = logging.getLogger(__name__)
 
@@ -40,23 +40,33 @@ logger = logging.getLogger(__name__)
 # формулировками (по тому же принципу, что AGENT_STRATEGY_LABELS в config.py).
 # `SOURCE_LABELS` — короткая подпись для статусов (/smart_agent_show), `SOURCE_DESCRIPTIONS`
 # — фраза о назначении источника для сообщения слоя (build_context_message).
-SOURCE_LABELS = {SOURCE_MOEX: "MOEX", SOURCE_BYBIT: "Bybit"}
+SOURCE_LABELS = {SOURCE_MOEX: "MOEX", SOURCE_BYBIT: "Bybit", SOURCE_CBR: "CBR"}
 SOURCE_DESCRIPTIONS = {
     SOURCE_MOEX: (
         "Московская биржа — акции, облигации, фонды и индексы РФ (тикеры вида SBER)"
     ),
     SOURCE_BYBIT: "Bybit — спотовые пары криптовалют (символы вида BTCUSDT)",
+    SOURCE_CBR: (
+        "Банк России — официальные курсы валют, ключевая ставка, инфляция "
+        "(справочные данные, не рыночные цены)"
+    ),
 }
 
 
 @dataclass(frozen=True)
 class AvailableSource:
     """Один источник, доступный модели В ЭТОМ ВОПРОСЕ — то, что нужно
-    build_context_message(), чтобы назвать источник и решить, добавлять ли для него
-    абзац цепочки анализа (design.md изменения add-smart-agent-bybit-tools)."""
+    build_context_message(), чтобы назвать источник и решить, какие абзацы для него
+    добавить. `analytics_available` — есть ли у источника отдельные инструменты
+    анализа истории (MOEX/Bybit, design.md изменения add-smart-agent-bybit-tools).
+    `has_reference_notes` — независимое от анализа поле: у источника есть СВОИ
+    справочные правила, которые нужно показывать ВСЕГДА, когда источник доступен, а
+    не только при наличии инструментов анализа (Банк России — у него их нет вовсе,
+    design.md изменения add-smart-agent-cbr-tools, решение 3)."""
 
     id: str
     analytics_available: bool
+    has_reference_notes: bool = False
 
 # Статус слоя на последний вопрос (для /smart_agent_show). Хранится в памяти объекта
 # SmartAgent, на диск не пишется — это диагностика, а не настройка.
@@ -257,6 +267,32 @@ _ANALYTICS_BLOCKS: dict[str, Callable[[date], str]] = {
 }
 
 
+def _cbr_notes_block() -> str:
+    """Абзац справочных правил источника Банк России — в отличие от абзацев MOEX/
+    Bybit НЕ завязан на сегодняшнюю дату и показывается независимо от
+    `analytics_available` (design.md изменения add-smart-agent-cbr-tools, решение 3):
+    у источника нет инструментов анализа истории вовсе, зато есть свои особенности,
+    важные для КАЖДОГО вопроса, где он участвует."""
+    return (
+        "СПРАВОЧНЫЕ ПРАВИЛА (Банк России). Инструменты cbr__* отдают официальные "
+        "данные ЦБ РФ, а не рыночные котировки:\n"
+        "- Курс валюты (cbr__get_rate/cbr__history_rates) — это курс, который Банк "
+        "России устанавливает ОДИН РАЗ В ДЕНЬ, а не текущая биржевая цена. Результат "
+        "содержит дату, на которую действует курс, — называй пользователю именно эту "
+        "дату, а не дату своего запроса: если запрошенный день выходной или курс за "
+        "него ещё не опубликован, сервер вернёт последнюю доступную дату.\n"
+        "- cbr__history_rates отдаёт историю не длиннее ГОДА за один вызов. Для более "
+        "длинного периода вызывай его несколько раз подряд с последовательными "
+        "диапазонами, а не проси весь период сразу.\n"
+        "- cbr__statistics — компактный снимок (ключевая ставка, курсы USD/EUR/CNY, "
+        "инфляция за последний период). Если пользователю нужны конкретные даты, "
+        "диапазон лет для инфляции или полная история — вызови соответствующий "
+        "отдельный инструмент, а не ограничивайся снимком.\n"
+        "Этот абзац не отменяет и не ослабляет обязательные правила основной "
+        "инструкции; инварианты пользователя сохраняют приоритет.\n"
+    )
+
+
 def build_context_message(
     sources: list[AvailableSource], today: date | None = None
 ) -> dict[str, str]:
@@ -271,8 +307,11 @@ def build_context_message(
 
     Для каждого источника с analytics_available=True добавляется его собственный
     абзац цепочки анализа (с сегодняшней датой — тогда `today` обязателен). Источник
-    без инструментов анализа не получает абзаца вовсе — так ведёт себя слой со
-    старым сервером, который их не публикует.
+    без инструментов анализа не получает такого абзаца — так ведёт себя слой со
+    старым сервером, который их не публикует. Источник с `has_reference_notes=True`
+    (Банк России) получает СВОЙ отдельный абзац ВСЕГДА, пока он доступен — независимо
+    от `analytics_available` и без требования `today` (design.md изменения
+    add-smart-agent-cbr-tools, решение 3).
     """
     if not sources:
         raise ValueError("build_context_message() вызван без доступных источников.")
@@ -283,6 +322,9 @@ def build_context_message(
         for source in sources:
             if source.analytics_available:
                 body += _ANALYTICS_BLOCKS[source.id](today)
+    for source in sources:
+        if source.has_reference_notes:
+            body += _cbr_notes_block()
     return {"role": "system", "content": body + _CONTEXT_TAIL}
 
 

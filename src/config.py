@@ -421,6 +421,15 @@ MCP_MOEX_DIR = os.path.expanduser(os.getenv("MCP_MOEX_DIR", "").strip())
 # пусто — источник выключен и молчит, незаданность одного источника не влияет на
 # другой (design.md изменения add-smart-agent-bybit-tools).
 MCP_BYBIT_DIR = os.path.expanduser(os.getenv("MCP_BYBIT_DIR", "").strip())
+# Третий источник — Банк России (пакет PyPI `atomno-mcp-cbr-rates`: курс валюты,
+# ключевая ставка, инфляция, макро-снимок). В отличие от MOEX/Bybit у него нет
+# локального каталога проекта — сервер устанавливается и запускается автоматически
+# через `uvx` (design.md изменения add-smart-agent-cbr-tools, решение 1), поэтому
+# настройка источника — простой булев флаг включения, а не каталог. По умолчанию
+# выключен и молчит, тем же принципом, что MCP_MOEX_DIR/MCP_BYBIT_DIR при пустом
+# значении.
+_MCP_CBR_RATES_ENABLED_RAW = os.getenv("MCP_CBR_RATES_ENABLED", "false").strip().lower()
+MCP_CBR_RATES_ENABLED = _MCP_CBR_RATES_ENABLED_RAW in _TRUE_VALUES
 # Сколько раз за ОДИН вопрос модель может запросить вызовы инструментов, прежде чем
 # ей будет предложено ответить без них. Спайк на DeepSeek: типичный вопрос
 # укладывается в 2 обращения (вызов + финальный ответ). Умолчание 8, а не 5: цепочка
@@ -586,6 +595,14 @@ def _validate_config() -> None:
             "Недопустимое значение MCP_TOOL_RESULT_MAX_CHARS=%r: нужно целое число "
             "не меньше 1.",
             MCP_TOOL_RESULT_MAX_CHARS,
+        )
+        sys.exit(1)
+
+    if _MCP_CBR_RATES_ENABLED_RAW not in _TRUE_VALUES | _FALSE_VALUES:
+        logger.error(
+            "Недопустимое значение MCP_CBR_RATES_ENABLED=%r. Допустимые значения: "
+            "true/false (также принимаются 1/0, yes/no, on/off).",
+            _MCP_CBR_RATES_ENABLED_RAW,
         )
         sys.exit(1)
 

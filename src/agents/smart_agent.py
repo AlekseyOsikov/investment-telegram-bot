@@ -116,6 +116,7 @@ from config import (
     MAIN_MODEL,
     MAX_OUTPUT_TOKENS,
     MCP_BYBIT_DIR,
+    MCP_CBR_RATES_ENABLED,
     MCP_MAX_TOOL_STEPS,
     MCP_MOEX_DIR,
     MCP_TIMEOUT_SECONDS,
@@ -125,20 +126,30 @@ from config import (
 )
 from mcp_integration.market_session import (
     BYBIT_MODEL_TOOL_ALLOWLIST,
+    CBR_MODEL_TOOL_ALLOWLIST,
+    CBR_PACKAGE,
     MODEL_TOOL_ALLOWLIST,
     SOURCE_BYBIT,
+    SOURCE_CBR,
     SOURCE_MOEX,
     MarketSource,
     MultiMarketTools,
+    build_server_params,
+    build_uvx_server_params,
     open_multi_market_tools,
 )
 from providers.main_client import main_client
 
 from . import invariants, market_tools, task_state
 
-# Постоянные данные ДВУХ источников рыночных данных (design.md изменения
-# add-smart-agent-bybit-tools) — программа запуска и перечень разрешённых
-# инструментов у каждого источника свои (см. mcp_integration/market_session.py).
+# Постоянные данные источников рыночных данных с ЛОКАЛЬНЫМ каталогом проекта (MOEX,
+# Bybit) — программа запуска и перечень разрешённых инструментов у каждого свои (см.
+# mcp_integration/market_session.py). Банк России (SOURCE_CBR) настроен иначе — у
+# него нет каталога, только булев флаг включения (design.md изменения
+# add-smart-agent-cbr-tools, решение 4) — поэтому он не входит в эти словари и
+# собирается отдельной явной веткой в _configured_sources()/get_tools_status(), а не
+# через общую таблицу: три источника с двумя разными формами конфигурации не
+# оправдывают раннюю абстракцию «реестр источников».
 _SOURCE_PROGRAMS = {SOURCE_MOEX: "mcp-moex", SOURCE_BYBIT: "mcp-bybit"}
 _SOURCE_ALLOWLISTS = {SOURCE_MOEX: MODEL_TOOL_ALLOWLIST, SOURCE_BYBIT: BYBIT_MODEL_TOOL_ALLOWLIST}
 
@@ -311,6 +322,7 @@ class SmartAgent:
         invariants_max_tokens: int = AGENT_INVARIANTS_MAX_TOKENS,
         mcp_moex_dir: str = MCP_MOEX_DIR,
         mcp_bybit_dir: str = MCP_BYBIT_DIR,
+        cbr_enabled: bool = MCP_CBR_RATES_ENABLED,
         mcp_timeout: float = MCP_TIMEOUT_SECONDS,
         max_tool_steps: int = MCP_MAX_TOOL_STEPS,
         tool_result_max_chars: int = MCP_TOOL_RESULT_MAX_CHARS,
@@ -333,6 +345,10 @@ class SmartAgent:
         # строку на каждый из них, включая "не настроен" (design.md изменения
         # add-smart-agent-bybit-tools, решение 7).
         self._source_dirs = {SOURCE_MOEX: mcp_moex_dir, SOURCE_BYBIT: mcp_bybit_dir}
+        # Банк России — булев флаг, не каталог (design.md изменения
+        # add-smart-agent-cbr-tools, решение 4); хранится отдельно от _source_dirs,
+        # т.к. семантика другая (вкл/выкл, а не путь).
+        self._cbr_enabled = cbr_enabled
         self._mcp_timeout = mcp_timeout
         self._max_tool_steps = max_tool_steps
         self._tool_result_max_chars = tool_result_max_chars
@@ -354,20 +370,32 @@ class SmartAgent:
         return {layer: True for layer in ALL_LAYERS}
 
     def _configured_sources(self) -> list[MarketSource]:
-        """Источники, у которых оператор задал каталог — независимо друг от друга
-        (design.md изменения add-smart-agent-bybit-tools). Порядок — MOEX, затем
-        Bybit (порядок self._source_dirs), не имеет значения для поведения."""
-        return [
+        """Источники, которые оператор включил — независимо друг от друга: MOEX/Bybit
+        каталогом (design.md изменения add-smart-agent-bybit-tools), Банк России
+        булевым флагом (design.md изменения add-smart-agent-cbr-tools, решение 4).
+        Порядок — MOEX, Bybit (self._source_dirs), затем CBR; не имеет значения для
+        поведения."""
+        sources = [
             MarketSource(
                 source_id,
                 market_tools.SOURCE_LABELS[source_id],
-                directory,
-                _SOURCE_PROGRAMS[source_id],
+                build_server_params(directory, _SOURCE_PROGRAMS[source_id]),
                 _SOURCE_ALLOWLISTS[source_id],
             )
             for source_id, directory in self._source_dirs.items()
             if directory
         ]
+        if self._cbr_enabled:
+            sources.append(
+                MarketSource(
+                    SOURCE_CBR,
+                    market_tools.SOURCE_LABELS[SOURCE_CBR],
+                    build_uvx_server_params(CBR_PACKAGE),
+                    CBR_MODEL_TOOL_ALLOWLIST,
+                    require_read_only=False,
+                )
+            )
+        return sources
 
     def _load_state(
         self,
@@ -974,7 +1002,9 @@ class SmartAgent:
         if available_ids:
             sources_info = [
                 market_tools.AvailableSource(
-                    id=source_id, analytics_available=tools.analytics_available_for(source_id)
+                    id=source_id,
+                    analytics_available=tools.analytics_available_for(source_id),
+                    has_reference_notes=(source_id == SOURCE_CBR),
                 )
                 for source_id in available_ids
             ]
@@ -1141,14 +1171,16 @@ class SmartAgent:
 
     def get_tools_status(self) -> dict[str, tuple[str, str | None]]:
         """Статус слоя tools для /smart_agent_show, ПО КАЖДОМУ известному источнику
-        (design.md изменения add-smart-agent-bybit-tools, решение 7) —
-        {source_id: (STATUS_*, причина недоступности)}. Выключенный слой определяется
-        по ТЕКУЩЕЙ настройке для всех источников сразу; незаданный каталог — тоже по
-        текущей настройке, для КАЖДОГО источника отдельно; остальное — по итогу
-        последнего вопроса с момента запуска бота, где этот источник участвовал."""
+        (design.md изменения add-smart-agent-bybit-tools, решение 7; Банк России —
+        add-smart-agent-cbr-tools) — {source_id: (STATUS_*, причина недоступности)}.
+        Выключенный слой определяется по ТЕКУЩЕЙ настройке для всех источников сразу;
+        незаданный каталог/невключённый флаг — тоже по текущей настройке, для
+        КАЖДОГО источника отдельно; остальное — по итогу последнего вопроса с
+        момента запуска бота, где этот источник участвовал."""
+        all_source_ids = (*self._source_dirs, SOURCE_CBR)
         if not self._enabled_layers[LAYER_TOOLS]:
-            return {source_id: (market_tools.STATUS_OFF, None) for source_id in self._source_dirs}
-        return {
+            return {source_id: (market_tools.STATUS_OFF, None) for source_id in all_source_ids}
+        statuses = {
             source_id: (
                 (market_tools.STATUS_NOT_CONFIGURED, None)
                 if not directory
@@ -1156,6 +1188,12 @@ class SmartAgent:
             )
             for source_id, directory in self._source_dirs.items()
         }
+        statuses[SOURCE_CBR] = (
+            self._tools_status.get(SOURCE_CBR, (market_tools.STATUS_UNKNOWN, None))
+            if self._cbr_enabled
+            else (market_tools.STATUS_NOT_CONFIGURED, None)
+        )
+        return statuses
 
     def get_last_tool_calls(self) -> list[market_tools.ToolCallRecord]:
         """Инструменты, вызванные на последнем вопросе (пусто, если вызовов не было)."""

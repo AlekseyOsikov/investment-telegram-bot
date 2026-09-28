@@ -1,5 +1,5 @@
-"""Сессия с MCP-серверами рыночных данных (mcp-moex, mcp-bybit) для основного ответа
-/smart_agent.
+"""Сессия с MCP-серверами рыночных данных (mcp-moex, mcp-bybit, atomno-mcp-cbr-rates)
+для основного ответа /smart_agent.
 
 В отличие от client.py (диагностический цикл «подключиться → перечислить → закрыть»),
 здесь сессия остаётся открытой на весь ВОПРОС пользователя: схемы инструментов нужны
@@ -7,13 +7,18 @@
 agents/market_tools.py). Процесс сервера один на вопрос и не живёт между вопросами —
 см. design.md изменения add-smart-agent-moex-tools, решение 3.
 
-Источников может быть НЕСКОЛЬКО (сейчас MOEX и Bybit, design.md изменения
-add-smart-agent-bybit-tools) — каждый со своим каталогом, программой запуска и
-перечнем разрешённых инструментов. `MarketTools` (одна сессия, один источник) не
-знает о существовании других источников и не префиксует свои имена — этим её
-поведение и покрывающие её тесты не меняются по сравнению с однo-источниковой
-версией. Объединение нескольких источников в один фасад для модели (префиксация
-имён, диспетчеризация вызова по префиксу, частичная доступность) — отдельный слой,
+Источников может быть НЕСКОЛЬКО (сейчас MOEX, Bybit и Банк России) — каждый со своей
+готовой командой запуска (`MarketSource.params`), перечнем разрешённых инструментов и
+требованием (или его отсутствием) к пометке `read_only_hint` (design.md изменения
+add-smart-agent-cbr-tools). Способ запуска у источников РАЗНЫЙ: MOEX/Bybit
+устанавливаются из локального каталога проекта (`build_server_params`), Банк России —
+из опубликованного пакета через `uvx`, без каталога (`build_uvx_server_params`) —
+`MarketSource`/`open_market_tools` не знают, какой из способов использован, только
+готовую `StdioServerParameters`. `MarketTools` (одна сессия, один источник) не знает
+о существовании других источников и не префиксует свои имена — этим её поведение и
+покрывающие её тесты не меняются по сравнению с однo-источниковой версией.
+Объединение нескольких источников в один фасад для модели (префиксация имён,
+диспетчеризация вызова по префиксу, частичная доступность) — отдельный слой,
 `MultiMarketTools`/`open_multi_market_tools()`, ниже.
 
 Граница ответственности такая же, как у client.py/tools_command.py: здесь только
@@ -83,13 +88,32 @@ BYBIT_MODEL_TOOL_ALLOWLIST = frozenset(
     }
 )
 
+# Третий источник — Банк России (пакет PyPI atomno-mcp-cbr-rates, design.md изменения
+# add-smart-agent-cbr-tools). Проверено вручную подключением к живому серверу: пять
+# инструментов, ни у одного из них НЕТ пометки read_only_hint, хотя по сигнатуре и
+# описанию каждый — параметризованное чтение публичных данных cbr.ru без побочных
+# эффектов (код валюты, даты, диапазон лет — ничего похожего на запись). Перечень
+# разрешённых имён здесь остаётся ОБЯЗАТЕЛЬНЫМ, как и у MOEX/Bybit, — снимается
+# только проверка пометки, см. REQUIRE_READ_ONLY_EXCEPTIONS ниже.
+CBR_MODEL_TOOL_ALLOWLIST = frozenset(
+    {
+        "get_rate",
+        "history_rates",
+        "key_rate",
+        "inflation",
+        "statistics",
+    }
+)
+CBR_PACKAGE = "atomno-mcp-cbr-rates"
+
 # Идентификаторы источников — используются как префикс имени инструмента для модели
 # (см. MultiMarketTools) и как ключ в статусах/конфигурации (agents/smart_agent.py,
-# agents/market_tools.py). Разделитель префикса — "__": имена инструментов обоих
+# agents/market_tools.py). Разделитель префикса — "__": имена инструментов всех
 # серверов используют одиночное подчёркивание (snake_case), поэтому первое "__" в
 # имени всегда однозначно отделяет источник от собственного имени инструмента.
 SOURCE_MOEX = "moex"
 SOURCE_BYBIT = "bybit"
+SOURCE_CBR = "cbr"
 SOURCE_PREFIX_SEPARATOR = "__"
 
 # Инструмент, результаты которого получают имена-ссылки (r1, r2, ...), и параметры
@@ -151,27 +175,51 @@ def is_read_only(tool) -> bool:
     return getattr(annotations, "read_only_hint", None) is True
 
 
-def is_model_tool(tool, allowlist: frozenset[str] = MODEL_TOOL_ALLOWLIST) -> bool:
-    """Инструмент можно отдать модели: он в явном перечне разрешённых И помечен
-    сервером как только читающий. Оба условия обязательны. `allowlist` по умолчанию —
-    перечень MOEX (обратная совместимость для однo-источникового вызова); у Bybit
-    свой перечень (BYBIT_MODEL_TOOL_ALLOWLIST), передаваемый явно."""
-    return tool.name in allowlist and is_read_only(tool)
+def is_model_tool(
+    tool, allowlist: frozenset[str] = MODEL_TOOL_ALLOWLIST, require_read_only: bool = True
+) -> bool:
+    """Инструмент можно отдать модели: он в явном перечне разрешённых И (если для его
+    источника это требуется) помечен сервером как только читающий. `allowlist` по
+    умолчанию — перечень MOEX (обратная совместимость для однo-источникового вызова);
+    у Bybit/CBR свои перечни, передаваемые явно.
+
+    `require_read_only=False` снимает ТОЛЬКО проверку пометки `read_only_hint` — вхождение
+    в `allowlist` остаётся обязательным всегда. Это узкое, явное исключение для
+    ОДНОГО заранее решённого источника (сейчас — Банк России, design.md изменения
+    add-smart-agent-cbr-tools, решение 2), а не общее правило: значение задаёт
+    вызывающий код по идентификатору источника, а не что-либо в самом инструменте —
+    его нельзя получить, просто не выставив аннотацию на сервере."""
+    if tool.name not in allowlist:
+        return False
+    return True if not require_read_only else is_read_only(tool)
 
 
 def build_server_params(directory: str, program: str = "mcp-moex") -> StdioServerParameters:
-    """Параметры запуска сервера рыночных данных для ответа smart-агента.
+    """Параметры запуска сервера рыночных данных, устанавливаемого из ЛОКАЛЬНОГО
+    каталога проекта (MOEX/Bybit), для ответа smart-агента.
 
     Команда собирается списком аргументов без shell, поэтому значение directory не
     может внедрить команду. Флага `--watch-db` здесь НЕТ намеренно (и mcp-bybit его
     вообще не поддерживает): в режиме по умолчанию сервер публикует только
     инструменты чтения, а инструменты расписания (принимают chat_id от клиента)
     модель не видит вообще. `program` — имя программы источника (`mcp-moex` по
-    умолчанию для обратной совместимости, `mcp-bybit` для второго источника).
+    умолчанию для обратной совместимости, `mcp-bybit` для второго источника). Для
+    источника без локального каталога (Банк России) см. build_uvx_server_params().
     """
     return StdioServerParameters(
         command="uv", args=["run", "--directory", directory, program]
     )
+
+
+def build_uvx_server_params(package: str) -> StdioServerParameters:
+    """Параметры запуска сервера рыночных данных, устанавливаемого и запускаемого
+    автоматически из ОПУБЛИКОВАННОГО пакета (Банк России, `uvx <package>`), без
+    локального каталога проекта (design.md изменения add-smart-agent-cbr-tools,
+    решение 1). `package` — имя пакета, известное системе (константа в коде, см.
+    CBR_PACKAGE), а не значение, которое задаёт оператор: единственный операторский
+    параметр источника такого типа — булев флаг включения, поэтому здесь даже
+    теоретически нет строки, куда можно было бы внедрить произвольную команду."""
+    return StdioServerParameters(command="uvx", args=[package])
 
 
 def describe_launch_failure(exc: BaseException) -> str:
@@ -384,12 +432,15 @@ class MarketTools:
         timeout: float,
         max_result_chars: int,
         allowlist: frozenset[str] = MODEL_TOOL_ALLOWLIST,
+        require_read_only: bool = True,
     ) -> None:
         self._session = session
         self._timeout = timeout
         self._max_result_chars = max_result_chars
-        allowed = [tool for tool in tools if is_model_tool(tool, allowlist)]
-        skipped = [tool.name for tool in tools if not is_model_tool(tool, allowlist)]
+        allowed = [tool for tool in tools if is_model_tool(tool, allowlist, require_read_only)]
+        skipped = [
+            tool.name for tool in tools if not is_model_tool(tool, allowlist, require_read_only)
+        ]
         if skipped:
             logger.warning(
                 "Инструменты не отданы модели (нет пометки read-only или нет в перечне "
@@ -502,30 +553,37 @@ class MarketTools:
 
 @asynccontextmanager
 async def open_market_tools(
-    directory: str,
+    params: StdioServerParameters,
     timeout: float,
     max_result_chars: int,
-    program: str = "mcp-moex",
     allowlist: frozenset[str] = MODEL_TOOL_ALLOWLIST,
+    require_read_only: bool = True,
 ) -> AsyncIterator[MarketTools]:
-    """Запускает `uv run --directory <directory> <program>`, делает рукопожатие и
-    получает список инструментов; процесс завершается при выходе из блока.
+    """Запускает сервер по готовым `params`, делает рукопожатие и получает список
+    инструментов; процесс завершается при выходе из блока.
 
-    Команда собирается списком аргументов и запускается без shell
-    (StdioServerParameters), поэтому значение directory не может внедрить команду.
+    `params` собирает вызывающий код (build_server_params() — для источника с
+    локальным каталогом проекта; build_uvx_server_params() — для источника,
+    устанавливаемого из опубликованного пакета, design.md изменения
+    add-smart-agent-cbr-tools, решение 1): эта функция сама не знает и не должна
+    знать, КАК источник запускается — только что запускать. Оба builder'а собирают
+    команду списком аргументов без shell, так что операторские значения (каталог,
+    имя пакета) не могут внедрить произвольную команду.
     Тайм-аут охватывает рукопожатие и list_tools() — самое вероятное место зависания
-    (медленный старт uv); сам вызов инструментов ограничен тем же значением отдельно
-    (MarketTools.call). Исключения запуска не перехватываются — см. докстринг модуля.
-    `program`/`allowlist` по умолчанию соответствуют MOEX (обратная совместимость для
-    однo-источникового вызова); второй источник передаёт их явно.
+    (медленный старт uv/uvx, скачивание пакета из PyPI при первом запуске); сам вызов
+    инструментов ограничен тем же значением отдельно (MarketTools.call). Исключения
+    запуска не перехватываются — см. докстринг модуля.
+    `allowlist`/`require_read_only` по умолчанию соответствуют MOEX (обратная
+    совместимость для однo-источникового вызова); другие источники передают их явно.
     """
-    params = build_server_params(directory, program)
     async with stdio_client(params) as (read_stream, write_stream):
         async with ClientSession(read_stream, write_stream) as session:
             async with asyncio.timeout(timeout):
                 await session.initialize()
                 listed = await session.list_tools()
-            yield MarketTools(session, list(listed.tools), timeout, max_result_chars, allowlist)
+            yield MarketTools(
+                session, list(listed.tools), timeout, max_result_chars, allowlist, require_read_only
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -538,13 +596,20 @@ async def open_market_tools(
 class MarketSource:
     """Постоянные данные одного настроенного источника — то, что нужно, чтобы его
     открыть (open_market_tools) и опознать в статусах/сообщениях слоя. `label` —
-    человекочитаемое имя для текстов (agents/market_tools.py), а не для протокола."""
+    человекочитаемое имя для текстов (agents/market_tools.py), а не для протокола.
+
+    `params` — уже готовая команда запуска (build_server_params() для источника с
+    локальным каталогом, build_uvx_server_params() для источника-пакета без каталога)
+    — MarketSource и всё, что его использует, не знают, КАК источник запускается
+    (design.md изменения add-smart-agent-cbr-tools, решение 1). `require_read_only`
+    по умолчанию `True` (поведение MOEX/Bybit не меняется); `False` — узкое, явное
+    исключение для конкретного источника (см. is_model_tool())."""
 
     id: str
     label: str
-    directory: str
-    program: str
+    params: StdioServerParameters
     allowlist: frozenset[str]
+    require_read_only: bool = True
 
 
 class MultiMarketTools:
@@ -637,11 +702,11 @@ async def open_multi_market_tools(
             try:
                 tools = await stack.enter_async_context(
                     open_market_tools(
-                        source.directory,
+                        source.params,
                         timeout,
                         max_result_chars,
-                        source.program,
                         source.allowlist,
+                        source.require_read_only,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 — сбой ОДНОГО источника не должен мешать другим

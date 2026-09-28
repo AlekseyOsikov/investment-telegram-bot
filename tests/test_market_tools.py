@@ -17,15 +17,19 @@ from agents import market_tools
 from agents.market_tools import ToolCallRecord, run_tool_loop
 from mcp_integration.market_session import (
     BYBIT_MODEL_TOOL_ALLOWLIST,
+    CBR_MODEL_TOOL_ALLOWLIST,
+    CBR_PACKAGE,
     MODEL_TOOL_ALLOWLIST,
     REF_PARAMS,
     SOURCE_BYBIT,
+    SOURCE_CBR,
     SOURCE_MOEX,
     TRUNCATION_NOTE,
     MarketTools,
     MultiMarketTools,
     ToolOutcome,
     build_server_params,
+    build_uvx_server_params,
     describe_launch_failure,
     extract_structured,
     is_model_tool,
@@ -196,6 +200,14 @@ def test_server_params_accept_a_different_program_for_a_second_source():
     assert params.args == ["run", "--directory", "/opt/mcp-bybit", "mcp-bybit"]
 
 
+def test_uvx_server_params_have_no_directory_and_no_shell():
+    # Источник без локального каталога (Банк России) — только имя пакета, известное
+    # системе, а не операторская строка (design.md изменения add-smart-agent-cbr-tools).
+    params = build_uvx_server_params(CBR_PACKAGE)
+    assert params.command == "uvx"
+    assert params.args == [CBR_PACKAGE]
+
+
 def test_bybit_allowlist_differs_only_in_search_tool_name():
     assert BYBIT_MODEL_TOOL_ALLOWLIST == {
         "search_symbols",
@@ -208,6 +220,19 @@ def test_bybit_allowlist_differs_only_in_search_tool_name():
     assert BYBIT_MODEL_TOOL_ALLOWLIST != MODEL_TOOL_ALLOWLIST
 
 
+def test_cbr_allowlist_has_no_overlap_with_market_data_tools():
+    assert CBR_MODEL_TOOL_ALLOWLIST == {
+        "get_rate",
+        "history_rates",
+        "key_rate",
+        "inflation",
+        "statistics",
+    }
+    # Ни поиска, ни инструментов анализа/сравнения — цепочка ссылок к CBR не применима.
+    assert CBR_MODEL_TOOL_ALLOWLIST.isdisjoint(MODEL_TOOL_ALLOWLIST)
+    assert CBR_MODEL_TOOL_ALLOWLIST.isdisjoint(REF_PARAMS)
+
+
 def test_market_tools_accepts_an_explicit_allowlist():
     # Инструмент Bybit ("search_symbols") не входит в MOEX allowlist, но входит в свой.
     session = _RecordingSession()
@@ -218,6 +243,47 @@ def test_market_tools_accepts_an_explicit_allowlist():
         max_result_chars=1000, allowlist=BYBIT_MODEL_TOOL_ALLOWLIST,
     )
     assert [t["function"]["name"] for t in bybit.openai_tools] == ["search_symbols"]
+
+
+def test_require_read_only_false_admits_an_unannotated_tool_in_its_allowlist():
+    # Банк России: ни один инструмент не несёт read_only_hint (проверено на живом
+    # сервере) — узкое, явное исключение допускает его ТОЛЬКО через require_read_only.
+    session = _RecordingSession()
+    cbr = MarketTools(
+        session, [_tool(name="get_rate", read_only=False, annotated=False)], timeout=5,
+        max_result_chars=1000, allowlist=CBR_MODEL_TOOL_ALLOWLIST, require_read_only=False,
+    )
+    assert [t["function"]["name"] for t in cbr.openai_tools] == ["get_rate"]
+
+
+def test_require_read_only_true_by_default_still_rejects_unannotated_tools():
+    # Регресс-тест: без явного require_read_only=False поведение MOEX/Bybit не меняется.
+    session = _RecordingSession()
+    market = MarketTools(
+        session, [_tool(name="get_rate", read_only=False, annotated=False)], timeout=5,
+        max_result_chars=1000, allowlist=CBR_MODEL_TOOL_ALLOWLIST,
+    )
+    assert market.openai_tools == []
+
+
+def test_require_read_only_false_does_not_waive_the_allowlist():
+    # Исключение снимает ТОЛЬКО проверку пометки — вне перечня инструмент всё равно
+    # не проходит, даже без пометки и с require_read_only=False.
+    session = _RecordingSession()
+    market = MarketTools(
+        session, [_tool(name="not_in_any_allowlist", read_only=False, annotated=False)],
+        timeout=5, max_result_chars=1000, allowlist=CBR_MODEL_TOOL_ALLOWLIST,
+        require_read_only=False,
+    )
+    assert market.openai_tools == []
+
+
+def test_is_model_tool_require_read_only_false_still_needs_the_allowlist():
+    outside = _tool(name="not_allowed", read_only=False, annotated=False)
+    assert is_model_tool(outside, CBR_MODEL_TOOL_ALLOWLIST, require_read_only=False) is False
+    inside = _tool(name="get_rate", read_only=False, annotated=False)
+    assert is_model_tool(inside, CBR_MODEL_TOOL_ALLOWLIST, require_read_only=False) is True
+    assert is_model_tool(inside, CBR_MODEL_TOOL_ALLOWLIST) is False
 
 
 def test_describe_launch_failure_recognizes_common_causes():
@@ -1250,6 +1316,56 @@ def test_no_source_with_analytics_needs_no_date():
     assert "Сегодня" not in message["content"]
 
 
+# --- CBR: справочные правила без цепочки анализа (add-smart-agent-cbr-tools) ---
+
+CBR_ONLY = [
+    market_tools.AvailableSource(id=SOURCE_CBR, analytics_available=False, has_reference_notes=True)
+]
+
+
+def test_cbr_notes_shown_without_analytics_available():
+    # У CBR нет инструментов анализа вовсе — показ не привязан к analytics_available
+    # (design.md изменения add-smart-agent-cbr-tools, решение 3), и не требует `today`.
+    message = market_tools.build_context_message(CBR_ONLY)
+    assert "СПРАВОЧНЫЕ ПРАВИЛА" in message["content"]
+    assert "ЦЕПОЧКА АНАЛИЗА" not in message["content"]
+
+
+def test_cbr_notes_explain_official_rate_is_not_a_market_price():
+    text = market_tools.build_context_message(CBR_ONLY)["content"]
+    lowered = text.lower()
+    assert "ОДИН РАЗ В ДЕНЬ" in text
+    assert "не рыночн" in lowered or "не текущая биржевая цена" in lowered
+    assert "дату" in text
+
+
+def test_cbr_notes_mention_the_history_range_cap():
+    text = market_tools.build_context_message(CBR_ONLY)["content"]
+    assert "не длиннее ГОДА" in text or "года за один вызов" in text
+
+
+def test_cbr_notes_do_not_override_the_system_prompt():
+    text = market_tools.build_context_message(CBR_ONLY)["content"]
+    assert "не отменяет и не ослабляет обязательные правила основной инструкции" in text
+
+
+def test_cbr_notes_absent_when_source_not_present():
+    message = market_tools.build_context_message(MOEX_ONLY)
+    assert "СПРАВОЧНЫЕ ПРАВИЛА" not in message["content"]
+
+
+def test_cbr_notes_alongside_a_source_with_analytics():
+    sources = [
+        market_tools.AvailableSource(id=SOURCE_MOEX, analytics_available=True),
+        market_tools.AvailableSource(
+            id=SOURCE_CBR, analytics_available=False, has_reference_notes=True
+        ),
+    ]
+    text = market_tools.build_context_message(sources, TODAY)["content"]
+    assert "ЦЕПОЧКА АНАЛИЗА (MOEX)" in text
+    assert "СПРАВОЧНЫЕ ПРАВИЛА" in text
+
+
 # --- сквозной цикл: фейковая модель + MarketTools + фейковая сессия ---
 
 
@@ -1473,3 +1589,38 @@ def test_multi_tools_analytics_available_per_source():
     assert multi.analytics_available_for(SOURCE_MOEX) is False
     assert multi.analytics_available_for(SOURCE_BYBIT) is True
     assert multi.analytics_available_for("unknown") is False
+
+
+# --- CBR: третий источник, без read_only_hint, без цепочки анализа
+# (design.md изменения add-smart-agent-cbr-tools) ---
+
+
+def _cbr_market(session=None):
+    session = session or _RecordingSession()
+    return MarketTools(
+        session, [_tool(name="get_rate", read_only=False, annotated=False)],
+        timeout=5, max_result_chars=1000,
+        allowlist=CBR_MODEL_TOOL_ALLOWLIST, require_read_only=False,
+    )
+
+
+def test_multi_tools_include_cbr_alongside_moex_and_bybit():
+    multi = MultiMarketTools(
+        {SOURCE_MOEX: _moex_market(), SOURCE_BYBIT: _bybit_market(), SOURCE_CBR: _cbr_market()}
+    )
+    names = {t["function"]["name"] for t in multi.openai_tools}
+    assert "cbr__get_rate" in names
+    assert "moex__get_current_price" in names and "bybit__get_current_price" in names
+
+
+def test_multi_tools_dispatches_to_cbr_despite_missing_annotation():
+    cbr_session = _RecordingSession()
+    multi = MultiMarketTools({SOURCE_MOEX: _moex_market(), SOURCE_CBR: _cbr_market(cbr_session)})
+    outcome = asyncio.run(multi.call("cbr__get_rate", '{"char_code": "USD"}'))
+    assert outcome.is_error is False
+    assert cbr_session.calls == [("get_rate", {"char_code": "USD"})]
+
+
+def test_multi_tools_cbr_has_no_analytics_available():
+    multi = MultiMarketTools({SOURCE_CBR: _cbr_market()})
+    assert multi.analytics_available_for(SOURCE_CBR) is False

@@ -2,7 +2,7 @@
 
 ## 1. Конфигурация
 
-- [ ] 1.1 Добавить в `src/config.py` `MCP_CBR_RATES_ENABLED` — булев флаг по образцу
+- [x] 1.1 Добавить в `src/config.py` `MCP_CBR_RATES_ENABLED` — булев флаг по образцу
       `RESEARCH`/`PRICE_WATCH` (`_TRUE_VALUES`/`_FALSE_VALUES`, по умолчанию `false`),
       с проверкой значения в `_validate_config()` (тот же паттерн, что `_RESEARCH_RAW`/
       `_PRICE_WATCH_RAW`). Никакого каталога/пути — у источника его нет. Проверить:
@@ -12,7 +12,7 @@
 
 ## 2. Механика запуска источника без каталога (`mcp_integration/market_session.py`)
 
-- [ ] 2.1 Заменить поля `MarketSource.directory: str`/`.program: str` на
+- [x] 2.1 Заменить поля `MarketSource.directory: str`/`.program: str` на
       `.params: StdioServerParameters` (design.md, решение 1). Обновить
       `open_market_tools()`: принимает `params: StdioServerParameters` вместо
       `(directory, program)`, остальная сигнатура (`timeout, max_result_chars,
@@ -23,13 +23,13 @@
       Проверить: существующие тесты `test_market_tools.py` на `MarketTools`/
       `MultiMarketTools`/`open_market_tools` (через прямые вызовы с явно
       сконструированными `params`) проходят без потери покрытия.
-- [ ] 2.2 Добавить `build_uvx_server_params(package: str) -> StdioServerParameters`
+- [x] 2.2 Добавить `build_uvx_server_params(package: str) -> StdioServerParameters`
       — `StdioServerParameters(command="uvx", args=[package])`, без shell. Проверить:
       юнит-тест на команду.
-- [ ] 2.3 Ввести `SOURCE_CBR = "cbr"`, `CBR_PACKAGE = "atomno-mcp-cbr-rates"`,
+- [x] 2.3 Ввести `SOURCE_CBR = "cbr"`, `CBR_PACKAGE = "atomno-mcp-cbr-rates"`,
       `CBR_MODEL_TOOL_ALLOWLIST = frozenset({"get_rate", "history_rates", "key_rate",
       "inflation", "statistics"})`. Проверить: тест на состав allowlist.
-- [ ] 2.4 Добавить `require_read_only: bool = True` в `MarketSource` (значение по
+- [x] 2.4 Добавить `require_read_only: bool = True` в `MarketSource` (значение по
       умолчанию сохраняет поведение MOEX/Bybit без изменений вызовов их
       конструктора). Обновить `is_model_tool(tool, allowlist, require_read_only=True)`
       — при `False` не проверяет `is_read_only(tool)`, оставляя проверку `allowlist`
@@ -44,11 +44,11 @@
 
 ## 3. Слой и правила (`agents/market_tools.py`)
 
-- [ ] 3.1 Добавить `SOURCE_CBR` в `SOURCE_LABELS` (короткая подпись, например «CBR»)
+- [x] 3.1 Добавить `SOURCE_CBR` в `SOURCE_LABELS` (короткая подпись, например «CBR»)
       и `SOURCE_DESCRIPTIONS` (например: «Банк России — официальные курсы валют,
       ключевая ставка, инфляция (справочные данные, не рыночные цены)»). Проверить:
       `_context_head()` включает CBR в перечисление, когда он в списке источников.
-- [ ] 3.2 Добавить в `AvailableSource` третье поле (например `has_reference_notes:
+- [x] 3.2 Добавить в `AvailableSource` третье поле (например `has_reference_notes:
       bool`, независимое от `analytics_available` — design.md, решение 3) и функцию
       `_cbr_notes_block()` — абзац CBR: курс не рыночный, называть дату курса из
       результата, предел `history_rates` (не более года за вызов, повторные вызовы
@@ -59,26 +59,26 @@
       `analytics_available`; абзац MOEX/Bybit не регрессировал (снапшот-тест текста);
       абзац не отменяет обязательные предупреждения (существующая проверка на всех
       абзацах).
-- [ ] 3.3 Проверить `describe_status()`/предупреждения (`build_unavailable_context_message`/
+- [x] 3.3 Проверить `describe_status()`/предупреждения (`build_unavailable_context_message`/
       `build_disabled_context_message`/`unavailable_warning`) работают с CBR без
       изменений сигнатур (они уже принимают список подписей — просто добавляется
       третья). Проверить: тест с CBR в списке недоступных/выключенных источников.
 
 ## 4. `SmartAgent` (`agents/smart_agent.py`)
 
-- [ ] 4.1 Добавить `self._cbr_enabled: bool` (из `MCP_CBR_RATES_ENABLED`, параметр
+- [x] 4.1 Добавить `self._cbr_enabled: bool` (из `MCP_CBR_RATES_ENABLED`, параметр
       конструктора по образцу `mcp_moex_dir`/`mcp_bybit_dir`, для тестируемости).
       Проверить: `py_compile` + конструирование `SmartAgent` с флагом true/false.
-- [ ] 4.2 `_configured_sources()`: добавить ветку CBR (design.md, решение 4) —
+- [x] 4.2 `_configured_sources()`: добавить ветку CBR (design.md, решение 4) —
       `MarketSource(SOURCE_CBR, label, build_uvx_server_params(CBR_PACKAGE),
       CBR_MODEL_TOOL_ALLOWLIST, require_read_only=False)`, добавляется в список ТОЛЬКО
       если `self._cbr_enabled`. Проверить: с флагом выключенным CBR отсутствует в
       списке; с флагом включённым присутствует наряду с настроенными MOEX/Bybit.
-- [ ] 4.3 `get_tools_status()`: добавить запись для CBR (`STATUS_NOT_CONFIGURED`, если
+- [x] 4.3 `get_tools_status()`: добавить запись для CBR (`STATUS_NOT_CONFIGURED`, если
       флаг выключен, иначе — последний известный статус, тот же принцип, что у
       MOEX/Bybit по `_source_dirs`). Проверить: живой прогон — с выключенным флагом
       статус CBR «не настроен», с включённым — обновляется после вопроса.
-- [ ] 4.4 Убедиться, что `_run_tool_loop()`/сборка `AvailableSource` для CBR передаёт
+- [x] 4.4 Убедиться, что `_run_tool_loop()`/сборка `AvailableSource` для CBR передаёт
       новое поле (`has_reference_notes=True` для CBR, `False` для MOEX/Bybit) и что
       это не требует данных про `analytics_available` источника CBR (у него его нет,
       `MultiMarketTools.analytics_available_for("cbr")` естественно вернёт `False`,
@@ -87,7 +87,7 @@
 
 ## 5. Тесты
 
-- [ ] 5.1 Добавить в `tests/test_market_tools.py` тесты на: `build_uvx_server_params`,
+- [x] 5.1 Добавить в `tests/test_market_tools.py` тесты на: `build_uvx_server_params`,
       `MarketSource.params`-based `open_market_tools`, `require_read_only=False`
       (позитивный и регрессионный негативный случай), `CBR_MODEL_TOOL_ALLOWLIST`,
       абзац CBR в `build_context_message` (показывается без `analytics_available`,
@@ -95,7 +95,7 @@
       (`MultiMarketTools.analytics_available_for` возвращает `False`, ссылки CBR не
       возникают, так как у него нет `get_price_history`-подобного инструмента).
       Проверить: `pytest tests/` проходит целиком.
-- [ ] 5.2 Убедиться, что рефакторинг `MarketSource`/`open_market_tools` (задача 2.1)
+- [x] 5.2 Убедиться, что рефакторинг `MarketSource`/`open_market_tools` (задача 2.1)
       не сломал существующие тесты MOEX/Bybit — обновить только те вызовы, что
       напрямую конструируют `MarketSource`/`open_market_tools` со старыми полями
       `directory`/`program`. Проверить: `pytest tests/test_market_tools.py -v` без
@@ -104,7 +104,7 @@
 
 ## 6. Проверка на живом сервере и ручной прогон
 
-- [ ] 6.1 Прогнать `uvx atomno-mcp-cbr-rates` вручную (уже проверено при подготовке
+- [x] 6.1 Прогнать `uvx atomno-mcp-cbr-rates` вручную (уже проверено при подготовке
       предложения — используется как smoke-проверка ПОСЛЕ реализации, а не только
       до неё): подключиться и вызвать `get_rate`/`history_rates`/`key_rate`/
       `inflation`/`statistics` на реальных данных, сверить, что: `get_rate` без
@@ -112,7 +112,7 @@
       сегодняшнюю, если сегодня выходной), `history_rates` действительно отклоняет
       диапазон длиннее ~366 дней (сверить точный текст ошибки сервера — он должен
       дойти до модели как есть, тем же принципом, что и ошибки MOEX/Bybit).
-- [ ] 6.2 Полный ручной прогон бота с CBR включённым (`MCP_CBR_RATES_ENABLED=true`)
+- [x] 6.2 Полный ручной прогон бота с CBR включённым (`MCP_CBR_RATES_ENABLED=true`)
       наряду с MOEX/Bybit: `/smart_agent` → вопрос про курс доллара (модель вызывает
       `cbr__get_rate`, называет дату курса, отличает её от рыночной цены), вопрос про
       ключевую ставку/инфляцию, вопрос, требующий данных сразу от CBR и MOEX/Bybit в
@@ -123,10 +123,10 @@
 
 ## 7. Документация
 
-- [ ] 7.1 Добавить `MCP_CBR_RATES_ENABLED` в `.env.example` рядом с `MCP_BYBIT_DIR` —
+- [x] 7.1 Добавить `MCP_CBR_RATES_ENABLED` в `.env.example` рядом с `MCP_BYBIT_DIR` —
       булев флаг, без каталога, с пояснением, что источник ставится и запускается
       автоматически через `uvx` при первом вопросе.
-- [ ] 7.2 Обновить `CLAUDE.md` (разделы «Конфигурация», список файлов
+- [x] 7.2 Обновить `CLAUDE.md` (разделы «Конфигурация», список файлов
       `mcp_integration/market_session.py`/`agents/market_tools.py`, «Инструменты
       рыночных данных smart-агента» в «Архитектура»): третий источник без каталога,
       обобщение `MarketSource` на `params`, исключение из `read_only_hint` (явно, с
