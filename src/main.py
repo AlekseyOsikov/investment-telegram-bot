@@ -108,6 +108,8 @@ from mcp_integration.tools_command import build_mcp_tools_handler
 from price_watch.commands import build_price_watch_handlers
 from price_watch.scheduler import start_scheduler, stop_scheduler
 from providers.main_client import main_client
+from research.chunking_compare import build_chunking_compare_conversation_handler
+from research.chunking_stats import build_chunking_stats_handler
 from research.constraints import build_constraints_conversation_handler
 from research.models import build_models_conversation_handler
 from research.reasoning import build_reasoning_conversation_handler
@@ -211,6 +213,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "(технический эксперимент, не для обычных вопросов)",
             "/mcp_tools — подключиться к MCP-серверу и показать список его инструментов "
             "(технический эксперимент, не для обычных вопросов)",
+            "/research_chunking_stats — статистика по количеству и размеру чанков "
+            "обеих стратегий разбиения документов (нужен предварительно построенный "
+            "индекс, `make index`)",
+            "/research_chunking_compare — сравнить, что находит поиск по запросу в "
+            "каждой из двух стратегий разбиения документов (технический эксперимент, "
+            "нужен предварительно построенный индекс)",
         ]
     command_lines += [
         "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
@@ -423,6 +431,8 @@ def main() -> None:
         application.add_handler(build_temperature_conversation_handler())
         application.add_handler(build_models_conversation_handler())
         application.add_handler(build_mcp_tools_handler())
+        application.add_handler(build_chunking_stats_handler())
+        application.add_handler(build_chunking_compare_conversation_handler())
     application.add_handler(build_agent_conversation_handler())
     application.add_handler(build_agent_reset_handler())
     application.add_handler(build_agent_history_handler())

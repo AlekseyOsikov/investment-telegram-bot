@@ -471,6 +471,43 @@ PRICE_WATCH_DB = os.path.abspath(
 PRICE_WATCH_TIMEOUT_SECONDS = float(os.getenv("PRICE_WATCH_TIMEOUT_SECONDS", "90"))
 PRICE_WATCH_ACTIVE = PRICE_WATCH and bool(MCP_MOEX_DIR)
 
+# --- Индексация документов и эмбеддинги (rag/, providers/embeddings_client.py) ---
+# Офлайн-пайплайн (rag/cli.py, `make index`) разбивает локальный корпус документов
+# (data/source/pdf/, data/source/txt/) на чанки двумя независимыми стратегиями и
+# строит по отдельному индексу FAISS+SQLite на каждую — см. capability «rag-indexing»
+# в CLAUDE.md. Сам пайплайн не привязан к RESEARCH и запускается только вручную из
+# командной строки; RESEARCH_ENABLED управляет только двумя командами бота, которые
+# ЧИТАЮТ уже построенный индекс (/research_chunking_stats, /research_chunking_compare).
+
+# Эндпоинт эмбеддингов — локальный сервер Ollama (OpenAI-совместимый /v1/embeddings),
+# а не DeepSeek/Kimi: у DeepSeek эндпоинта эмбеддингов нет вовсе, а Kimi потребовал бы
+# KIMI_API_KEY независимо от MAIN_CLIENT и сетевого вызова на каждый чанк корпуса
+# (design.md изменения add-rag-indexing-pipeline, решение «Эмбеддинги»). В отличие от
+# MCP_MOEX_DIR здесь нет дешёвой файловой проверки при загрузке конфигурации — только
+# сетевой запрос, поэтому конфигурация НЕ проверяет доступность Ollama при старте бота
+# (не добавляем сетевой вызов и связанную с ним задержку в каждый запуск бота, даже
+# если пайплайном и двумя командами RESEARCH никто не пользуется). Недоступность
+# Ollama не должна ронять бота — CLI и обе команды сами обрабатывают сбой на каждый
+# вызов и отвечают понятным сообщением (research/chunking_stats.py,
+# research/chunking_compare.py).
+EMBEDDINGS_BASE_URL = os.getenv("EMBEDDINGS_BASE_URL", "http://localhost:11434/v1")
+EMBEDDINGS_MODEL = os.getenv("EMBEDDINGS_MODEL", "bge-m3")
+
+# Каталог с индексами FAISS+SQLite — по одной паре файлов на стратегию чанкинга
+# (RAG_INDEX_DIR/fixed/, RAG_INDEX_DIR/structural/), полностью пересобираемых каждым
+# запуском rag/cli.py. В .gitignore, как и остальной data/.
+RAG_INDEX_DIR = os.getenv("RAG_INDEX_DIR", "data/rag_index")
+
+# Стратегия фиксированного размера (rag/chunking.py): длина окна и перекрытие в
+# символах, а не в токенах — чанкинг не должен зависеть от конкретной модели
+# эмбеддингов и её токенизатора.
+RAG_FIXED_CHUNK_CHARS = int(os.getenv("RAG_FIXED_CHUNK_CHARS", "1200"))
+RAG_FIXED_CHUNK_OVERLAP = int(os.getenv("RAG_FIXED_CHUNK_OVERLAP", "200"))
+
+# Сколько чанков от КАЖДОЙ стратегии показывает /research_chunking_compare на один
+# запрос пользователя.
+RAG_COMPARE_TOP_K = int(os.getenv("RAG_COMPARE_TOP_K", "3"))
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 
@@ -618,6 +655,30 @@ def _validate_config() -> None:
         logger.error(
             "Недопустимое значение PRICE_WATCH_TIMEOUT_SECONDS=%r: нужно число больше 0.",
             PRICE_WATCH_TIMEOUT_SECONDS,
+        )
+        sys.exit(1)
+
+    if RAG_FIXED_CHUNK_CHARS < 1:
+        logger.error(
+            "Недопустимое значение RAG_FIXED_CHUNK_CHARS=%r: нужно целое число не "
+            "меньше 1.",
+            RAG_FIXED_CHUNK_CHARS,
+        )
+        sys.exit(1)
+
+    if RAG_FIXED_CHUNK_OVERLAP < 0 or RAG_FIXED_CHUNK_OVERLAP >= RAG_FIXED_CHUNK_CHARS:
+        logger.error(
+            "Недопустимое значение RAG_FIXED_CHUNK_OVERLAP=%r: нужно целое число от 0 "
+            "до RAG_FIXED_CHUNK_CHARS=%r не включительно.",
+            RAG_FIXED_CHUNK_OVERLAP,
+            RAG_FIXED_CHUNK_CHARS,
+        )
+        sys.exit(1)
+
+    if RAG_COMPARE_TOP_K < 1:
+        logger.error(
+            "Недопустимое значение RAG_COMPARE_TOP_K=%r: нужно целое число не меньше 1.",
+            RAG_COMPARE_TOP_K,
         )
         sys.exit(1)
 

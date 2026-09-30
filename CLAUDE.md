@@ -25,6 +25,14 @@ stateless-прокси без истории диалога и без админ
     `MAIN_CLIENT` и экспортирует результат как `main_client`; основной поток и три
     research-режима без собственного выбора модели импортируют клиента отсюда, а не
     из `providers/deepseek_client.py` напрямую (см. "Конфигурация" и "Архитектура").
+  - `providers/embeddings_client.py` — подключение к локальному серверу Ollama для
+    эмбеддингов (`EMBEDDINGS_BASE_URL`/`EMBEDDINGS_MODEL`, клиент
+    `embeddings_client`, функция `embed_texts()`) — используется офлайн-пайплайном
+    индексации (`rag/`) и командами `/research_chunking_stats`/
+    `/research_chunking_compare`, а не основным потоком бота; НЕ связан с
+    `MAIN_CLIENT`/DeepSeek/Kimi — ни у DeepSeek, ни (в этом проекте) у выбранного
+    здесь провайдера эмбеддингов нет отношения к тому, какой провайдер обслуживает
+    чат, см. «rag-indexing» ниже и в разделе «Конфигурация».
 - `research/` — технические режимы исследования API, каждый — не используется в
   обычном потоке сообщений:
   - `research/_shared.py` — общий каркас нескольких режимов: перехват ошибок OpenAI
@@ -37,6 +45,22 @@ stateless-прокси без истории диалога и без админ
   - `research/reasoning.py` — режим `/research_reasoning`, исследование способов рассуждения DeepSeek API.
   - `research/temperature.py` — режим `/research_temperature`, исследование влияния параметра `temperature` на ответ DeepSeek API.
   - `research/models.py` — режим `/research_models`, сравнение четырёх моделей DeepSeek и Kimi по качеству, скорости и стоимости ответа.
+  - `research/chunking_stats.py` — режим `/research_chunking_stats`: статистика
+    (количество чанков, средний/мин/макс размер) по обеим стратегиям чанкинга из
+    уже построенного офлайн-пайплайном (`rag/`) индекса — обычный `CommandHandler`
+    без диалога, как `/mcp_tools`, только читает `rag/index_store.py`, эмбеддинги
+    не вызывает.
+  - `research/chunking_compare.py` — режим `/research_chunking_compare`:
+    `ConversationHandler` с одним зацикленным до `/cancel` состоянием — на каждый
+    текстовый запрос строит его эмбеддинг (`providers/embeddings_client.py`) и
+    показывает топ-`RAG_COMPARE_TOP_K` чанков от каждой стратегии ОТДЕЛЬНЫМ
+    сообщением на стратегию (не одним общим), для каждого чанка — оценку
+    похожести, заголовок, метаданные (исходный файл, автор/дата из имени файла,
+    номер чанка в документе, `chunk_id`) и сам текст чанка, отделённый от
+    метаданных строкой-разделителем (`--------`) для читаемости. Оба
+    режима читают, но НЕ строят индекс — если `rag/cli.py` ещё не запускали,
+    отвечают понятным сообщением, а не падают; см. capability «rag-indexing» (`rag/`
+    ниже) про сам пайплайн.
 - `agents/` — агенты: сущности, инкапсулирующие цикл «вопрос пользователя -> вызов
   LLM -> разбор ответа» отдельно от Telegram-обработчиков:
   - `agents/agent.py` — класс `Agent`, использует `main_client`/`MAIN_MODEL` (как и
@@ -337,11 +361,74 @@ stateless-прокси без истории диалога и без админ
     `/watch_stop` (только личные чаты; `chat_id` из `update.effective_chat.id`, не из
     аргументов; ошибки сервера переводятся по образцу `tools_command.py`); собираются
     через `build_price_watch_handlers()`. Модель в них не участвует.
+- `rag/` — офлайн-пайплайн индексации локального корпуса документов (`data/source/pdf/`,
+  `data/source/txt/`), точка входа — `python -m rag.cli` (`make index`). Не связан с
+  Telegram и не привязан к `RESEARCH` — сам пайплайн запускается только вручную;
+  RESEARCH-командам (`research/chunking_stats.py`/`research/chunking_compare.py`
+  выше) он только ПОСТАВЛЯЕТ индекс на диске, не более. Про весь механизм целиком
+  см. capability `rag-indexing` (`openspec/specs/rag-indexing/spec.md` после
+  архивации изменения `add-rag-indexing-pipeline`, а до этого —
+  `openspec/changes/add-rag-indexing-pipeline/`), а здесь — только состав файлов:
+  - `rag/filenames.py` — `parse_filename()`/`FileMetadata`: разбор имени файла вида
+    `<Title>(<author>, <date>).<ext>` в `title`/`author`/`date` (оба необязательны
+    по отдельности) регэкспом по СКОБОЧНОМУ СУФФИКСУ в конце имени; единственное
+    значение внутри скобок без запятой различается по формату даты (`ДД.ММ.ГГГГ`).
+    Файл на диске не читается и не изменяется — см. «Правила предметной области» про
+    то, почему это разбор метаданных, а не переименование.
+  - `rag/extraction.py` — `clean_text()` (общая для обеих стратегий очистка: обрезка
+    пробелов по краям строк, схлопывание подряд идущих пустых строк в одну границу
+    абзаца, срез пустых строк по краям текста) и `extract_pdf_text()`/
+    `extract_txt_text()`/`extract_text()` — извлечение СЫРОГО (неочищенного) текста:
+    PDF — через `subprocess` вызов системной утилиты `pdftotext -layout` (требует
+    poppler-utils на хосте, где запускается CLI; не Python-зависимость), txt —
+    обычным чтением файла. Текст остаётся сырым специально: PDF сохраняет
+    form-feed-символы (`\f`) между страницами, которые `rag/chunking.py` использует
+    для разбиения по страницам ДО очистки — если бы очистка прошла раньше, граница
+    страницы стала бы неотличима от обычной пустой строки в исходнике.
+  - `rag/chunking.py` — обе стратегии чанкинга: `chunk_fixed_size()` (символьное
+    окно `RAG_FIXED_CHUNK_CHARS` с перекрытием `RAG_FIXED_CHUNK_OVERLAP`, без учёта
+    границ слов, ожидает УЖЕ очищенный текст) и `chunk_structural()` (ожидает СЫРОЙ
+    текст: сам делит его по `\f` на страницы, очищает каждую отдельно, затем внутри
+    страницы применяет эвристику заголовков — короткая самостоятельная строка без
+    завершающего `.`/`!`/`?`/`:`, за которой следует ещё один абзац, — и откатывается
+    к целой странице, если заголовков не найдено). На реальных PDF этого корпуса
+    (слайд-подобные экспорты без данных о размере шрифта) эвристика неизбежно даёт
+    ложные срабатывания (например, на строках маркированных списков) — текст при
+    этом не теряется, просто чанк получается мельче, чем «настоящая» секция; это
+    осознанный компромисс, см. design.md изменения `add-rag-indexing-pipeline`.
+  - `rag/index_store.py` — хранение индекса ОДНОЙ стратегии: `build_index()`
+    собирает `IndexFlatIP` (косинусная близость по L2-нормализованным векторам —
+    точный поиск, оправданный масштабом корпуса) и таблицу `chunks` в SQLite
+    (`chunk_id`, `source`, `title`, `author`, `date`, `strategy`, `chunk_index`,
+    `text`, `faiss_row_id`) в ОТДЕЛЬНОМ временном каталоге `<strategy>.tmp/`, затем
+    удаляет прежнюю директорию стратегии целиком и переименовывает `<strategy>.tmp/`
+    на её место — `os.rename` каталога делается ТОЛЬКО на несуществующий путь
+    (переименование поверх уже существующего каталога-назначения ненадёжно на
+    смонтированных через FUSE файловых системах вроде NTFS/ntfs-3g — `fuseblk`,
+    падает с `Directory not empty`, проверено на реальной ошибке при первой
+    эксплуатации). Крах посреди построения эмбеддингов (см. ниже) никогда не
+    оставляет прежний индекс наполовину переписанным.
+    `search()`/`get_stats()`/`index_exists()` — сторона чтения, используемая
+    `research/chunking_stats.py`/`research/chunking_compare.py`.
+  - `rag/cli.py` — точка входа `python -m rag.cli`: обходит `data/source/pdf/*.pdf`
+    и `data/source/txt/*.txt`, для каждого файла строит чанки ОБЕИМИ стратегиями,
+    получает эмбеддинги (`providers/embeddings_client.py`, пачками по 32 текста) и
+    вызывает `build_index()` для каждой стратегии ПОСЛЕДОВАТЕЛЬНО и НЕЗАВИСИМО: если
+    эмбеддинги для одной стратегии не удались (например, Ollama недоступна), CLI
+    останавливается с понятным сообщением ДО вызова `build_index()` для неё — индекс
+    другой стратегии, уже успешно обработанной к этому моменту, при этом остаётся
+    обновлённым. Полностью пересобирает оба индекса с нуля при каждом запуске —
+    инкрементальной индексации нет (небольшой корпус, локальный бесплатный бэкенд
+    эмбеддингов делают полную пересборку дешёвой).
 - `main.py` — обычный прокси-поток (`/start`, `/help`, `handle_message`) и точка входа
   приложения; подключает четыре режима исследования через `build_constraints_conversation_handler()`,
   `build_reasoning_conversation_handler()`, `build_temperature_conversation_handler()`,
   `build_models_conversation_handler()`, подключение к MCP-серверу через
-  `build_mcp_tools_handler()` (`mcp_integration/tools_command.py`), опрос цен через
+  `build_mcp_tools_handler()` (`mcp_integration/tools_command.py`), статистику и
+  сравнение стратегий чанкинга через `build_chunking_stats_handler()`/
+  `build_chunking_compare_conversation_handler()` (`research/chunking_stats.py`/
+  `research/chunking_compare.py` — читают индекс, построенный `rag/cli.py`
+  отдельно, вручную), опрос цен через
   `build_price_watch_handlers()` (`price_watch/commands.py`, только при
   `PRICE_WATCH_ACTIVE`, вместе с хуками планировщика `post_init`/`post_stop`),
   агента через все
@@ -359,6 +446,8 @@ stateless-прокси без истории диалога и без админ
 make install   # pip install -r requirements.txt
 make run       # python src/main.py
 make test      # pytest tests/ — юнит-тесты конечного автомата задачи
+make index     # python -m rag.cli — индексация data/source/pdf|txt (требует локальный
+               # Ollama с моделью EMBEDDINGS_MODEL, см. «Конфигурация»)
 make clean     # удаляет __pycache__, .pytest_cache, .ruff_cache, артефакты build/dist
 ```
 
@@ -385,7 +474,7 @@ pytest tests/
 Проверка синтаксиса без запуска:
 
 ```bash
-python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/agents/agent.py src/agents/agent_command.py src/agents/context_strategies.py src/agents/active_mode.py src/agents/compare_command.py src/agents/smart_agent.py src/agents/smart_agent_command.py src/agents/task_state.py src/agents/invariants.py src/agents/market_tools.py src/mcp_integration/client.py src/mcp_integration/market_session.py src/mcp_integration/tools_command.py src/mcp_integration/watch_session.py src/price_watch/parse.py src/price_watch/texts.py src/price_watch/scheduler.py src/price_watch/commands.py src/main.py
+python3 -m py_compile src/config.py src/providers/deepseek_client.py src/providers/kimi_client.py src/providers/main_client.py src/providers/embeddings_client.py src/research/_shared.py src/research/constraints.py src/research/reasoning.py src/research/temperature.py src/research/models.py src/research/chunking_stats.py src/research/chunking_compare.py src/agents/agent.py src/agents/agent_command.py src/agents/context_strategies.py src/agents/active_mode.py src/agents/compare_command.py src/agents/smart_agent.py src/agents/smart_agent_command.py src/agents/task_state.py src/agents/invariants.py src/agents/market_tools.py src/mcp_integration/client.py src/mcp_integration/market_session.py src/mcp_integration/tools_command.py src/mcp_integration/watch_session.py src/price_watch/parse.py src/price_watch/texts.py src/price_watch/scheduler.py src/price_watch/commands.py src/rag/filenames.py src/rag/extraction.py src/rag/chunking.py src/rag/index_store.py src/rag/cli.py src/main.py
 ```
 
 `tests/` — юнит-тесты правил конечного автомата рабочей задачи
@@ -422,6 +511,20 @@ add-smart-agent-bybit-tools/add-smart-agent-cbr-tools): чистые функц�
 фейках вызова сервера, отправки, часов и ожидания, на настоящих классах ошибок
 Telegram) — без сети и процессов; обработчики команд и обмен с настоящим сервером
 проверяются вручную.
+Тот же принцип у пайплайна индексации документов (`rag/`, design.md изменения
+add-rag-indexing-pipeline): `tests/test_rag_filenames.py` (разбор метаданных из
+имени файла — все четыре сочетания author/date плюс реальные имена из
+`data/source/`), `tests/test_rag_extraction.py` (`clean_text()` — пустые
+строки/абзацы, вход только из пробелов; сам вызов `pdftotext` не мокается и не
+тестируется — проверяется вручную), `tests/test_rag_chunking.py` (обе стратегии
+чанкинга на синтетическом тексте, включая разбиение по `\f` и эвристику
+заголовков) и `tests/test_rag_index_store.py` (FAISS+SQLite на небольших
+синтетических векторах — независимость файлов по стратегиям, полная пересборка,
+уникальность `chunk_id`, топ-k поиск, статистика — без реальных эмбеддингов и без
+сети). `providers/embeddings_client.py`, `rag/cli.py` целиком и обе команды бота
+(`research/chunking_stats.py`/`research/chunking_compare.py`) тестами не
+покрываются (нужны либо реальный Ollama, либо импорт `config.py`/Telegram) —
+проверяются вручную на живом индексе, тем же принципом, что `SmartAgent` выше.
 
 ## Процесс работы: OpenSpec
 
@@ -541,7 +644,8 @@ research-режимов, которые сами не выбирают конк�
 `yes`/`no`, `on`/`off`, по умолчанию `true`; допустимость значения проверяется в
 `_validate_config()` как и `MAIN_CLIENT`) — включает или выключает исследовательские
 и служебные команды: `/research_constraints`, `/research_reasoning`,
-`/research_temperature`, `/research_models`, `/agent_compare`,
+`/research_temperature`, `/research_models`, `/research_chunking_stats`,
+`/research_chunking_compare`, `/agent_compare`,
 `/agent_compare_report`, `/agent_compare_reset`, `/agent_mode`, `/agent_context`,
 `/mcp_tools`. Это
 решение оператора бота (например, скрыть технические эксперименты на проде), а не

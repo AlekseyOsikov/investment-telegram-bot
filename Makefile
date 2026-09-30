@@ -1,10 +1,13 @@
-.PHONY: install run test clean
+.PHONY: install run test clean index
 
 install:
 	pip install -r requirements.txt
 
 run:
 	python src/main.py
+
+index:
+	PYTHONPATH=src python -m rag.cli
 
 test:
 	@command -v pytest >/dev/null 2>&1 || { \
