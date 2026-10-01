@@ -261,6 +261,24 @@ def search(
         conn.close()
 
 
+def list_titles(strategy: str, index_dir: str) -> list[str]:
+    """Заголовки документов, которые есть в индексе стратегии (по одному на документ,
+    по алфавиту) — для проверки покрытия индекса командой /research_rag_compare: так
+    видно, что документ пропущен при индексации (например, PDF без текстового слоя), а
+    не просто плохо находится. Пустой список для пустого индекса и для стратегии, у
+    которой индекс ещё не построен."""
+    if not index_exists(strategy, index_dir):
+        return []
+
+    db_path = os.path.join(_strategy_dir(strategy, index_dir), "meta.sqlite3")
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute("SELECT DISTINCT title FROM chunks ORDER BY title").fetchall()
+    finally:
+        conn.close()
+    return [row[0] for row in rows]
+
+
 def get_stats(strategy: str, index_dir: str) -> IndexStats | None:
     """Статистика по чанкам стратегии из meta.sqlite3 — `None`, если индекс этой
     стратегии ещё не построен вовсе (см. index_exists)."""

@@ -527,6 +527,57 @@ RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.60"))
 RAG_SEARCH_TIMEOUT_SECONDS = float(os.getenv("RAG_SEARCH_TIMEOUT_SECONDS", "5"))
 
+# /research_rag_compare (research/rag_compare.py, design.md изменения add-rag-compare-command):
+# RAG_COMPARE_REPORT_DIR — каталог сохранённых отчётов прогонов (по одному JSON на прогон;
+# в .gitignore вместе с остальным data/; отчёты не содержат данных пользователей).
+# RAG_COMPARE_JUDGE_SYSTEM_PROMPT/RAG_COMPARE_JUDGE_MAX_TOKENS — служебный вызов-оценщик
+# ответа по чек-листу ожидаемых фактов; промпт нейтральный (не инвестиционный совет,
+# дисклеймеры из SYSTEM_PROMPT не нужны — как у AGENT_SUMMARY_SYSTEM_PROMPT/
+# AGENT_INVARIANTS_SYSTEM_PROMPT) и, как они, не вынесен в .env. Оценщик не получает
+# сведений о том, с материалами или без них получен ответ.
+RAG_COMPARE_REPORT_DIR = os.getenv("RAG_COMPARE_REPORT_DIR", "data/rag_eval")
+# Файл контрольного набора вопросов. Лежит в data/ (не коммитится): вопросы и ожидаемые факты
+# ссылаются на ВАШ корпус документов, который в репозиторий не входит; формат — в README.
+RAG_COMPARE_QUESTIONS_FILE = os.getenv(
+    "RAG_COMPARE_QUESTIONS_FILE", "data/rag_eval/questions.json"
+)
+RAG_COMPARE_JUDGE_SYSTEM_PROMPT = (
+    "Ты — СЛУЖЕБНЫЙ оценщик ответов в исследовательском эксперименте. Твой ответ "
+    "пользователю не показывается — его разбирает код.\n\n"
+    "Тебе дают вопрос, пронумерованный список ОЖИДАЕМЫХ ФАКТОВ и ответ ассистента. "
+    "Определи, какие из ожидаемых фактов присутствуют в ответе, и верни ОДИН "
+    "JSON-объект с полями:\n"
+    "- \"facts\" — массив объектов {\"index\": номер факта из списка, \"present\": "
+    "true или false}, по одному на КАЖДЫЙ факт списка;\n"
+    "- \"contradicts\" — true, если в ответе есть утверждение, ПРЯМО противоречащее "
+    "какому-либо ожидаемому факту, иначе false;\n"
+    "- \"note\" — одна короткая фраза на русском о главном расхождении (или пустая "
+    "строка).\n\n"
+    "Правила:\n"
+    "1. Факт присутствует, если ответ сообщает ту же информацию, пусть другими "
+    "словами. Числа, даты и названия должны совпадать: другое число или другая дата "
+    "— факт отсутствует.\n"
+    "2. Факт не присутствует, если ответ о нём молчит, говорит слишком общо или "
+    "частично: оценивай только то, что реально написано в ответе.\n"
+    "3. Не оценивай стиль, полноту сверх списка и общую правильность — только "
+    "наличие перечисленных фактов и прямые противоречия им.\n"
+    "4. В \"index\" используй только номера из присланного списка.\n"
+    "5. Верни ТОЛЬКО JSON-объект, без пояснений и без markdown-разметки."
+)
+RAG_COMPARE_JUDGE_MAX_TOKENS = int(os.getenv("RAG_COMPARE_JUDGE_MAX_TOKENS", "600"))
+# Быстрый отказ и остановка прогона (design.md изменения add-rag-compare-command, решения 8, 9):
+# RAG_COMPARE_QUESTION_TIMEOUT_SECONDS — предел времени на ОДИН вопрос (ответ и оценка в обоих
+# режимах; обычно 15–25 с): каждое обращение к модели ждёт не дольше остатка этого времени и
+# не повторяется автоматически, так что при «зависшем» провайдере вопрос не идёт минутами.
+# RAG_COMPARE_MAX_CONSECUTIVE_FAILURES — сколько вопросов подряд могут провалиться (сбой
+# провайдера или превышение времени), прежде чем прогон остановится сам.
+RAG_COMPARE_QUESTION_TIMEOUT_SECONDS = float(
+    os.getenv("RAG_COMPARE_QUESTION_TIMEOUT_SECONDS", "120")
+)
+RAG_COMPARE_MAX_CONSECUTIVE_FAILURES = int(
+    os.getenv("RAG_COMPARE_MAX_CONSECUTIVE_FAILURES", "3")
+)
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 
@@ -720,6 +771,30 @@ def _validate_config() -> None:
         logger.error(
             "Недопустимое значение RAG_MIN_SCORE=%r: нужно число от 0 до 1 включительно.",
             RAG_MIN_SCORE,
+        )
+        sys.exit(1)
+
+    if RAG_COMPARE_QUESTION_TIMEOUT_SECONDS <= 0:
+        logger.error(
+            "Недопустимое значение RAG_COMPARE_QUESTION_TIMEOUT_SECONDS=%r: нужно число "
+            "больше 0.",
+            RAG_COMPARE_QUESTION_TIMEOUT_SECONDS,
+        )
+        sys.exit(1)
+
+    if RAG_COMPARE_MAX_CONSECUTIVE_FAILURES < 1:
+        logger.error(
+            "Недопустимое значение RAG_COMPARE_MAX_CONSECUTIVE_FAILURES=%r: нужно целое число "
+            "не меньше 1.",
+            RAG_COMPARE_MAX_CONSECUTIVE_FAILURES,
+        )
+        sys.exit(1)
+
+    if RAG_COMPARE_JUDGE_MAX_TOKENS < 1:
+        logger.error(
+            "Недопустимое значение RAG_COMPARE_JUDGE_MAX_TOKENS=%r: нужно целое число "
+            "не меньше 1.",
+            RAG_COMPARE_JUDGE_MAX_TOKENS,
         )
         sys.exit(1)
 

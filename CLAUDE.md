@@ -30,7 +30,7 @@ MCP-инструменты, опрос цен, RAG-индексация). Про
 - `price_watch/` — `/watch*`, опрос цен и сводки по расписанию.
 - `rag/` — офлайн-индексация документов (`make index`); индекс читают research-команды и слой `rag`
   у `/smart_agent`.
-- `scripts/` — одноразовая оснастка (не часть бота): `rag_calibrate.py` — калибровка `RAG_MIN_SCORE`.
+- `scripts/` — одноразовая оснастка (не часть бота): `rag_calibrate.py` — калибровка `RAG_MIN_SCORE` (запросы — в `data/rag_eval/`, не коммитятся).
 
 ## Команды
 
@@ -102,15 +102,20 @@ src/main.py`) покрывают только чистые функции без
   Новые провайдер-специфичные переменные — в `providers/*_client.py`, общие — в `config.py`.
 - `RESEARCH` (булево, по умолчанию `true`) — решение ОПЕРАТОРА, не пользователя. При `false` не
   регистрируются и не упоминаются в `/help`: `/research_constraints|reasoning|temperature|models|
-  chunking_stats|chunking_compare`, `/agent_compare`, `/agent_compare_report`,
+  chunking_stats|chunking_compare|rag_compare|rag_compare_stop|rag_compare_report`,
+  `/agent_compare`, `/agent_compare_report`,
   `/agent_compare_reset`, `/agent_mode`, `/agent_context`, `/mcp_tools` (`RESEARCH_ENABLED` в
   `main.py`); команда при этом молча игнорируется, как любая незарегистрированная. Не затрагивает
   `/agent`, `/agent_reset`, `/agent_history`, `/agent_checkpoint|branch|switch_branch`. Новую
   research-команду добавляй в этот же список (регистрация + `/help`), отдельный флаг не заводи.
 - Параметры сценариев `/research_constraints`/`/research_temperature` — константы в модулях
   (предмет исследования). Идентификаторы моделей `/research_models` — в `.env` (меняются чаще кода).
-- Каталоги данных (`AGENT_HISTORY_DIR`, `AGENT_MEMORY_DIR`, `PRICE_WATCH_DB`, `data/`) не
-  коммитятся. Переменные `AGENT_*`, `MCP_*`, `PRICE_WATCH_*` описаны во вложенных `CLAUDE.md`
+- Каталоги данных (`AGENT_HISTORY_DIR`, `AGENT_MEMORY_DIR`, `PRICE_WATCH_DB`,
+  `RAG_COMPARE_REPORT_DIR`, `data/`) не коммитятся. **Корпус документов в репозиторий не входит, и
+  всё, что его содержит или на него ссылается, — тоже**: контрольные вопросы
+  (`RAG_COMPARE_QUESTIONS_FILE`), калибровочные запросы, отчёты прогонов лежат в `data/`. Не
+  копируй в код, тесты, документацию и артефакты OpenSpec названия документов, ники авторов и
+  цитаты из них — в примерах используй вымышленные. Переменные `AGENT_*`, `MCP_*`, `PRICE_WATCH_*` описаны во вложенных `CLAUDE.md`
   соответствующих подсистем. Слой `rag` у `/smart_agent` настраивает оператор:
   `RAG_SMART_AGENT_STRATEGY` (по умолчанию `structural`), `RAG_TOP_K`, `RAG_MIN_SCORE` (порог
   откалиброван под `bge-m3` + `structural`, при смене модели/стратегии пересчитывать),

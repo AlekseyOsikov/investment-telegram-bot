@@ -112,6 +112,7 @@ from research.chunking_compare import build_chunking_compare_conversation_handle
 from research.chunking_stats import build_chunking_stats_handler
 from research.constraints import build_constraints_conversation_handler
 from research.models import build_models_conversation_handler
+from research.rag_compare import build_rag_compare_handlers
 from research.reasoning import build_reasoning_conversation_handler
 from research.temperature import build_temperature_conversation_handler
 
@@ -219,6 +220,13 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/research_chunking_compare — сравнить, что находит поиск по запросу в "
             "каждой из двух стратегий разбиения документов (технический эксперимент, "
             "нужен предварительно построенный индекс)",
+            "/research_rag_compare — в фоне прогнать 10 контрольных вопросов с выключенным "
+            "и включённым RAG у /smart_agent и прислать итог сравнения (нужен построенный "
+            "индекс; прогон идёт несколько минут и тратит токены)",
+            "/research_rag_compare_stop — остановить идущий прогон сравнения (частичный итог "
+            "придёт в чат запуска)",
+            "/research_rag_compare_report [номер] — показать последний отчёт сравнения или "
+            "детали вопроса с этим номером (оба ответа, оценка, источники)",
         ]
     command_lines += [
         "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
@@ -434,6 +442,8 @@ def main() -> None:
         application.add_handler(build_mcp_tools_handler())
         application.add_handler(build_chunking_stats_handler())
         application.add_handler(build_chunking_compare_conversation_handler())
+        for handler in build_rag_compare_handlers():
+            application.add_handler(handler)
     application.add_handler(build_agent_conversation_handler())
     application.add_handler(build_agent_reset_handler())
     application.add_handler(build_agent_history_handler())

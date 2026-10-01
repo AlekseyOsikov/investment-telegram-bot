@@ -18,8 +18,11 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
+# Файл запросов НЕ входит в репозиторий: запросы привязаны к корпусу документов оператора,
+# поэтому он лежит в data/ (в .gitignore). Формат — строки `<группа><TAB><запрос>`, группа A (по
+# теме корпуса), B (пограничные) или C (не по теме); пустые строки и строки с # пропускаются.
 DEFAULT_QUERIES_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)), "rag_calibration_queries.txt"
+    os.path.dirname(os.path.abspath(__file__)), "..", "data", "rag_eval", "calibration_queries.txt"
 )
 GROUPS = ("A", "B", "C")
 SNIPPET_CHARS = 200
@@ -81,6 +84,15 @@ def main() -> int:
     parser.add_argument("--snippets", action="store_true", help="печатать начало текста top-1")
     args = parser.parse_args()
 
+    if not os.path.isfile(args.queries):
+        print(
+            f"Файл запросов не найден: {os.path.normpath(args.queries)}.\n"
+            "Создайте его (он не входит в репозиторий) или укажите путь через --queries. Формат: "
+            "строки `<A|B|C><TAB><запрос>`, где A — запросы по теме вашего корпуса, B — "
+            "пограничные, C — не по теме; пустые строки и строки с # пропускаются.",
+            file=sys.stderr,
+        )
+        return 2
     queries = load_queries(args.queries)
 
     # config.py читает .env и настраивает логирование — импорт после разбора аргументов,

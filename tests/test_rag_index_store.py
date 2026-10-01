@@ -7,6 +7,7 @@ from rag.index_store import (
     build_index,
     get_stats,
     index_exists,
+    list_titles,
     search,
 )
 
@@ -121,3 +122,23 @@ def test_build_with_empty_records_is_valid_empty_index(tmp_path):
     stats = get_stats("fixed", index_dir)
     assert stats.total_chunks == 0
     assert search("fixed", index_dir, [1.0], top_k=5) == []
+
+
+def test_list_titles_returns_one_title_per_document(tmp_path):
+    index_dir = str(tmp_path)
+    records = [
+        _record("b.txt", 0, "первый чанк b", [1.0, 0.0]),
+        _record("b.txt", 1, "второй чанк b", [0.9, 0.1]),
+        _record("a.txt", 0, "единственный чанк a", [0.0, 1.0]),
+    ]
+    build_index("fixed", records, index_dir)
+
+    # один заголовок на документ (несколько чанков b.txt не дублируются), по алфавиту
+    assert list_titles("fixed", index_dir) == ["a", "b"]
+
+
+def test_list_titles_empty_when_index_missing_or_empty(tmp_path):
+    index_dir = str(tmp_path)
+    assert list_titles("fixed", index_dir) == []
+    build_index("fixed", [], index_dir)
+    assert list_titles("fixed", index_dir) == []
