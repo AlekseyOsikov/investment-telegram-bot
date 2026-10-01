@@ -62,7 +62,7 @@ embeddings_client = OpenAI(
 _RETRY_DELAYS_SECONDS = (2.0, 4.0, 6.0)
 
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
+def embed_texts(texts: list[str], budget_seconds: float | None = None) -> list[list[float]]:
     """Строит эмбеддинги для списка текстов ОДНИМ запросом к EMBEDDINGS_MODEL и
     возвращает векторы в ТОМ ЖЕ порядке, что и `texts` (сортировка по `item.index`
     ответа — не полагаемся на порядок `response.data` как таковой).
@@ -75,21 +75,42 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     его обрабатывает вызывающий код: rag/cli.py печатает ошибку и останавливается,
     не сохраняя частичный индекс; research/chunking_compare.py переводит исключение
     в сообщение на русском тем же хелпером.
+
+    budget_seconds — необязательный предел СУММАРНОГО времени ожидания (попытки плюс
+    паузы между ними; design.md изменения add-smart-agent-rag, решение 10) для
+    интерактивного пути (поиск по вопросу пользователя в /smart_agent). Без него
+    (None) поведение прежнее — так работают индексация и команды исследования, которым
+    важнее дождаться результата, чем ответить быстро. С бюджетом: дедлайн считается один
+    раз; таймаут каждой попытки — остаток бюджета, а собственные повторы SDK на запрос
+    отключены (иначе они складывались бы с нашими повторами); пауза расписания берётся
+    только если после неё остаётся время на ещё одну попытку, иначе ожидание
+    прекращается и поднимается последнее исключение (обычно APITimeoutError или
+    APIConnectionError).
     """
     if not texts:
         return []
 
+    deadline = time.monotonic() + budget_seconds if budget_seconds is not None else None
     max_attempts = len(_RETRY_DELAYS_SECONDS) + 1
     last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
+        client = embeddings_client
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            client = embeddings_client.with_options(timeout=remaining, max_retries=0)
         try:
-            response = embeddings_client.embeddings.create(model=EMBEDDINGS_MODEL, input=texts)
+            response = client.embeddings.create(model=EMBEDDINGS_MODEL, input=texts)
             ordered = sorted(response.data, key=lambda item: item.index)
             return [item.embedding for item in ordered]
         except Exception as exc:  # noqa: BLE001 — повторяем перед тем, как отдать исключение дальше
             last_exc = exc
             if attempt < max_attempts:
                 delay = _RETRY_DELAYS_SECONDS[attempt - 1]
+                if deadline is not None and deadline - time.monotonic() <= delay:
+                    # Пауза съела бы остаток бюджета — на следующую попытку времени не будет.
+                    break
                 logger.warning(
                     "Сбой запроса эмбеддингов к Ollama (попытка %d/%d): %s. Повтор через %.0f с.",
                     attempt,
@@ -99,4 +120,6 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
                 )
                 time.sleep(delay)
 
+    if last_exc is None:
+        raise TimeoutError(f"Бюджет ожидания эмбеддингов ({budget_seconds} с) исчерпан.")
     raise last_exc

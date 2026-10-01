@@ -121,6 +121,11 @@ from config import (
     MCP_MOEX_DIR,
     MCP_TIMEOUT_SECONDS,
     MCP_TOOL_RESULT_MAX_CHARS,
+    RAG_INDEX_DIR,
+    RAG_MIN_SCORE,
+    RAG_SEARCH_TIMEOUT_SECONDS,
+    RAG_SMART_AGENT_STRATEGY,
+    RAG_TOP_K,
     REQUEST_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
 )
@@ -138,9 +143,11 @@ from mcp_integration.market_session import (
     build_uvx_server_params,
     open_multi_market_tools,
 )
+from providers.embeddings_client import embed_texts
 from providers.main_client import main_client
+from rag import index_store
 
-from . import invariants, market_tools, task_state
+from . import invariants, market_tools, rag_context, task_state
 
 # Постоянные данные источников рыночных данных с ЛОКАЛЬНЫМ каталогом проекта (MOEX,
 # Bybit) — программа запуска и перечень разрешённых инструментов у каждого свои (см.
@@ -174,6 +181,13 @@ LAYER_TASK_AUTOSTART = "task_autostart"
 # решение 1. Добавлен в конец по тому же принципу, что и tools: не менять порядок
 # прежних ключей. Старые файлы памяти без этого ключа читаются как «включён» (см.
 # _load_state) — миграция не нужна.
+LAYER_RAG = "rag"
+# Слой rag — справочные материалы из индекса rag/ в основном ответе (design.md изменения
+# add-smart-agent-rag, решение 5). Настоящий СЛОЙ контекста (добавляет сообщения),
+# в отличие от task_autostart. Добавлен в конец по тому же принципу, что tools и
+# task_autostart: порядок прежних ключей не меняется, а место сообщения слоя в
+# контексте (после tools, до долговременной памяти) определяет _build_context_messages.
+# Старые файлы памяти без ключа "rag" читаются как «включён» (см. _load_state).
 ALL_LAYERS = (
     LAYER_PROFILE,
     LAYER_INVARIANTS,
@@ -182,6 +196,7 @@ ALL_LAYERS = (
     LAYER_LONG_TERM,
     LAYER_TOOLS,
     LAYER_TASK_AUTOSTART,
+    LAYER_RAG,
 )
 
 # Поля профиля персонализации (анкета при создании, /smart_agent_profile_set для
@@ -275,6 +290,9 @@ class SmartAgentAnswer:
     tool_calls: list[market_tools.ToolCallRecord] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     llm_calls: int = 1
+    # Слой rag: фрагменты, реально попавшие в запрос (документ, номер, оценка) — командный
+    # слой печатает их строкой «📚» отдельно от ответа; пусто, если материалов не было.
+    rag_sources: list[rag_context.RagSource] = field(default_factory=list)
 
 
 def _empty_profile() -> dict:
@@ -327,6 +345,11 @@ class SmartAgent:
         max_tool_steps: int = MCP_MAX_TOOL_STEPS,
         tool_result_max_chars: int = MCP_TOOL_RESULT_MAX_CHARS,
         today: Callable[[], date] = _moscow_today,
+        rag_strategy: str = RAG_SMART_AGENT_STRATEGY,
+        rag_index_dir: str = RAG_INDEX_DIR,
+        rag_top_k: int = RAG_TOP_K,
+        rag_min_score: float = RAG_MIN_SCORE,
+        rag_search_timeout: float = RAG_SEARCH_TIMEOUT_SECONDS,
     ) -> None:
         self._client = client
         self._model = model
@@ -353,6 +376,11 @@ class SmartAgent:
         self._max_tool_steps = max_tool_steps
         self._tool_result_max_chars = tool_result_max_chars
         self._today = today
+        self._rag_strategy = rag_strategy
+        self._rag_index_dir = rag_index_dir
+        self._rag_top_k = rag_top_k
+        self._rag_min_score = rag_min_score
+        self._rag_search_timeout = rag_search_timeout
         (
             self._profiles,
             self._active_profile,
@@ -364,6 +392,11 @@ class SmartAgent:
         # не пишется — это диагностика для /smart_agent_show, а не настройка).
         self._tools_status: dict[str, tuple[str, str | None]] = {}
         self._last_tool_calls: list[market_tools.ToolCallRecord] = []
+        # Слой rag: итог поиска на последний вопрос (в памяти, на диск не пишется) — для
+        # /smart_agent_show: блок фрагментов (он уходит в последнее user-сообщение, которое
+        # в _last_context_messages не входит) и причина сбоя, если поиск не удался.
+        self._last_rag_block: str | None = None
+        self._last_rag_failure: str | None = None
 
     @staticmethod
     def _default_enabled_layers() -> dict[str, bool]:
@@ -864,7 +897,9 @@ class SmartAgent:
         }
 
     def _build_context_messages(
-        self, tools_messages: list[dict[str, str]] | None = None
+        self,
+        tools_messages: list[dict[str, str]] | None = None,
+        rag_messages: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         """Собирает контекст LLM из явно ВКЛЮЧЁННЫХ слоёв (self._enabled_layers)
         активного профиля — в отличие от Agent, здесь нет автоматического выбора
@@ -881,6 +916,12 @@ class SmartAgent:
         когда слой включён и хотя бы один источник настроен, поэтому здесь проверка
         слоя не повторяется. Инварианты остаются первыми и прямо получают приоритет
         над этими сообщениями.
+
+        rag_messages — правила обращения со справочными материалами (rag_context.
+        build_rules_message); ask() передаёт их только когда фрагменты в запрос
+        действительно попали, поэтому проверка слоя здесь не повторяется. Идут сразу
+        после сообщений tools, до долговременной памяти; сами фрагменты — в последнем
+        user-сообщении (см. _question_message).
         """
         messages = [{"role": "system", "content": self._system_prompt}]
         if self._active_profile is None:
@@ -900,6 +941,9 @@ class SmartAgent:
 
         if tools_messages:
             messages.extend(tools_messages)
+
+        if rag_messages:
+            messages.extend(rag_messages)
 
         if self._enabled_layers[LAYER_LONG_TERM] and profile["long_term"]:
             facts_text = "\n".join(f"- {fact['text']}" for fact in profile["long_term"])
@@ -956,15 +1000,32 @@ class SmartAgent:
             **kwargs,
         )
 
+    @staticmethod
+    def _rag_messages(materials: rag_context.Materials) -> list[dict[str, str]] | None:
+        """Правила обращения с материалами — только когда фрагменты в запросе есть."""
+        return [rag_context.build_rules_message()] if materials.chunks else None
+
+    @staticmethod
+    def _question_message(user_text: str, materials: rag_context.Materials) -> dict[str, str]:
+        """Последнее user-сообщение: фрагменты и затем исходный вопрос. В short_term
+        при этом пишется ИСХОДНЫЙ user_text (см. ask()) — тексты чанков в память не
+        попадают."""
+        return rag_context.build_user_message(user_text, materials.chunks)
+
     def _plain_completion(
-        self, user_text: str, tools_messages: list[dict[str, str]] | None = None
+        self,
+        user_text: str,
+        tools_messages: list[dict[str, str]] | None = None,
+        materials: rag_context.Materials | None = None,
     ) -> market_tools.ToolLoopResult:
         """Обычный ответ одним вызовом модели, без инструментов. tools_messages —
         только вариант «данные источника(ов) выключены» (см. ask()); без него это
-        ровно прежнее поведение ask() до появления слоя tools."""
-        messages = self._build_context_messages(tools_messages)
+        ровно прежнее поведение ask() до появления слоя tools. materials — результат
+        поиска слоя rag на этот вопрос (None — как пустой)."""
+        materials = materials or rag_context.Materials()
+        messages = self._build_context_messages(tools_messages, self._rag_messages(materials))
         self._last_context_messages = list(messages)
-        messages.append({"role": "user", "content": user_text})
+        messages.append(self._question_message(user_text, materials))
 
         response = self._chat(messages)
         usage = self._extract_usage(response)
@@ -988,7 +1049,11 @@ class SmartAgent:
         return market_tools.STATUS_OK
 
     async def _run_tool_loop(
-        self, tools: MultiMarketTools, unavailable: dict[str, str], user_text: str
+        self,
+        tools: MultiMarketTools,
+        unavailable: dict[str, str],
+        user_text: str,
+        materials: rag_context.Materials,
     ) -> market_tools.ToolLoopResult:
         """Цикл вызовов внутри открытых сессий MCP: контекст со слоем tools (доступные
         источники + недоступные, если такие есть — design.md изменения
@@ -1015,9 +1080,9 @@ class SmartAgent:
             labels = [market_tools.SOURCE_LABELS[source_id] for source_id in unavailable]
             tools_messages.append(market_tools.build_unavailable_context_message(labels))
 
-        messages = self._build_context_messages(tools_messages)
+        messages = self._build_context_messages(tools_messages, self._rag_messages(materials))
         self._last_context_messages = list(messages)
-        messages.append({"role": "user", "content": user_text})
+        messages.append(self._question_message(user_text, materials))
 
         def complete(history: list[dict], with_tools: bool):
             return self._chat(history, tools.openai_tools if with_tools else None)
@@ -1027,7 +1092,7 @@ class SmartAgent:
         )
 
     async def _tool_completion_async(
-        self, user_text: str
+        self, user_text: str, materials: rag_context.Materials
     ) -> tuple[market_tools.ToolLoopResult, dict[str, str]]:
         """Ответ с инструментами доступных источников: (результат, {source_id: причина
         недоступности} для источников, которые в этом вопросе не поднялись). Каждый
@@ -1055,7 +1120,7 @@ class SmartAgent:
             ) as (tools, failures):
                 unavailable = failures
                 try:
-                    result = await self._run_tool_loop(tools, unavailable, user_text)
+                    result = await self._run_tool_loop(tools, unavailable, user_text, materials)
                 except Exception as exc:  # noqa: BLE001 — возбуждается ниже, см. докстринг
                     body_error = exc
         except Exception:  # noqa: BLE001 — сбой закрытия сессий (тело уже отработало выше)
@@ -1066,6 +1131,56 @@ class SmartAgent:
         if body_error is not None:
             raise body_error
         return result, unavailable
+
+    def _retrieve_materials(self, user_text: str) -> rag_context.Materials:
+        """Поиск справочных материалов для ОДНОГО вопроса (слой rag, design.md изменения
+        add-smart-agent-rag, решения 2, 6, 7, 10). Пустой результат без предупреждения —
+        слой выключен или индекс выбранной стратегии не построен (это не сбой: иначе
+        окружение без индекса сопровождалось бы служебным шумом на каждом вопросе).
+        Любой сбой самого поиска — сервер эмбеддингов недоступен или не уложился в
+        бюджет RAG_SEARCH_TIMEOUT_SECONDS, повреждённые файлы индекса — не роняет ответ:
+        возвращается пустой результат с предупреждением, причина сохраняется для
+        /smart_agent_show, следующий вопрос пробует снова. Порог применяется к каждому
+        чанку после search(top_k). В эмбеддинг уходит только текст вопроса."""
+        self._last_rag_failure = None
+        if not self._enabled_layers[LAYER_RAG]:
+            return rag_context.Materials()
+        try:
+            if not index_store.index_exists(self._rag_strategy, self._rag_index_dir):
+                return rag_context.Materials()
+            vector = embed_texts([user_text], budget_seconds=self._rag_search_timeout)[0]
+            found = index_store.search(
+                self._rag_strategy, self._rag_index_dir, vector, self._rag_top_k
+            )
+        except Exception as exc:  # noqa: BLE001 — сбой поиска не должен ронять ответ
+            logger.warning("Сбой поиска справочных материалов.", exc_info=True)
+            reason = f"{type(exc).__name__}: {exc}".strip()
+            self._last_rag_failure = reason[:200]
+            return rag_context.Materials(warning=rag_context.FAILURE_WARNING)
+        return rag_context.Materials(
+            chunks=rag_context.filter_by_score(found, self._rag_min_score)
+        )
+
+    def get_rag_status(self) -> tuple[str, str | None]:
+        """Статус слоя rag для /smart_agent_show — (STATUS_*, причина сбоя). Выключенный
+        слой и отсутствие индекса определяются по ТЕКУЩЕМУ состоянию (настройка, диск);
+        сбой — по итогу последнего вопроса с момента запуска бота (в памяти)."""
+        if not self._enabled_layers[LAYER_RAG]:
+            return rag_context.STATUS_OFF, None
+        try:
+            index_present = index_store.index_exists(self._rag_strategy, self._rag_index_dir)
+        except Exception:  # noqa: BLE001 — статус для показа не должен падать
+            index_present = False
+        if not index_present:
+            return rag_context.STATUS_NO_INDEX, None
+        if self._last_rag_failure:
+            return rag_context.STATUS_UNAVAILABLE, self._last_rag_failure
+        return rag_context.STATUS_OK, None
+
+    def get_last_rag_block(self) -> str | None:
+        """Блок фрагментов, ушедший в последнее user-сообщение на последний ask() (для
+        /smart_agent_show); None — материалов не было."""
+        return self._last_rag_block
 
     def ask(self, user_text: str) -> SmartAgentAnswer:
         """Отправляет вопрос в LLM вместе с контекстом активного профиля, собранным
@@ -1091,6 +1206,13 @@ class SmartAgent:
         процессов и без asyncio, но если хотя бы один источник настроен, в контексте
         одно сообщение «данные <источники> выключены» (market_tools.build_disabled_context_message).
 
+        Слой rag. Если он включён и индекс выбранной стратегии построен, по тексту
+        вопроса ищутся ближайшие чанки (_retrieve_materials — один поиск на вопрос, до
+        ветвления на пути ответа); прошедшие порог идут в последнем user-сообщении перед
+        самим вопросом, правила обращения с ними — отдельным system-сообщением. В
+        short_term пишется исходный вопрос без чанков. Сбой поиска не роняет ответ:
+        вопрос уходит без материалов, а SmartAgentAnswer.warnings получает предупреждение.
+
         МЕТОД СИНХРОННЫЙ, но внутри путь с инструментами вызывает asyncio.run() — он
         бросит RuntimeError, если вызвать ask() в потоке с уже работающим циклом
         событий. Единственный вызывающий (agents/smart_agent_command.py) оборачивает
@@ -1111,11 +1233,18 @@ class SmartAgent:
         # Agent.ask(), см. докстринг agents/agent.py про кириллицу в BPE-токенайзерах.
         request_tokens_approx = len(user_text) // 2
 
+        # Слой rag: ОДИН поиск на вопрос, до выбора пути ответа и до запуска процессов
+        # MCP — оба пути используют один и тот же результат (design.md, решение 2).
+        materials = self._retrieve_materials(user_text)
+        self._last_rag_block = (
+            rag_context.build_materials_block(materials.chunks) if materials.chunks else None
+        )
+
         mode = self._market_tools_mode()
-        warnings: list[str] = []
+        warnings: list[str] = [materials.warning] if materials.warning else []
         unavailable: dict[str, str] = {}
         if mode == market_tools.STATUS_OK:
-            outcome, unavailable = asyncio.run(self._tool_completion_async(user_text))
+            outcome, unavailable = asyncio.run(self._tool_completion_async(user_text, materials))
             if unavailable:
                 labels = [market_tools.SOURCE_LABELS[source_id] for source_id in unavailable]
                 warnings.append(market_tools.unavailable_warning(labels))
@@ -1130,7 +1259,7 @@ class SmartAgent:
                 if mode == market_tools.STATUS_OFF and configured
                 else None
             )
-            outcome = self._plain_completion(user_text, disabled_message)
+            outcome = self._plain_completion(user_text, disabled_message, materials)
 
         if outcome.transport_failure:
             warnings.append(market_tools.PARTIAL_DATA_WARNING)
@@ -1167,6 +1296,7 @@ class SmartAgent:
             tool_calls=list(outcome.calls),
             warnings=warnings,
             llm_calls=outcome.llm_calls,
+            rag_sources=rag_context.source_records(materials.chunks),
         )
 
     def get_tools_status(self) -> dict[str, tuple[str, str | None]]:

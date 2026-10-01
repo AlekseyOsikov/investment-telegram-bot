@@ -277,9 +277,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/smart_agent_task_done — завершить и очистить текущую рабочую задачу",
         "/smart_agent_show — показать профиль, инварианты, все три слоя памяти и что "
         "из них ушло в LLM",
-        "/smart_agent_toggle &lt;profile|invariants|short|working|long|tools|autostart&gt; — "
+        "/smart_agent_toggle &lt;profile|invariants|short|working|long|tools|rag|autostart&gt; — "
         "включить/выключить слой в контексте (tools — данные биржи, если настроены "
-        "оператором; autostart — не слой, а флаг автоматического старта задачи по "
+        "оператором; rag — справочные материалы из индекса документов, если он "
+        "построен; autostart — не слой, а флаг автоматического старта задачи по "
         "намерению в разговоре, не влияет на уже идущую задачу)",
         "/smart_agent_reset — очистить память активного профиля (все три слоя)",
     ]

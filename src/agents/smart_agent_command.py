@@ -90,8 +90,8 @@ point своего ConversationHandler-а — это позволяет ему �
   реально ушедшие в LLM на последний вопрос (см.
   SmartAgent.get_last_context_messages) — способ проверить, что попадает в каждый
   слой и как это влияет на ответ.
-- /smart_agent_toggle <profile|invariants|short|working|long|tools|autostart> —
-  включает/выключает шесть слоёв контекста без удаления данных (общая настройка на
+- /smart_agent_toggle <profile|invariants|short|working|long|tools|rag|autostart> —
+  включает/выключает семь слоёв контекста без удаления данных (общая настройка на
   чат, не per-profile) — так можно сравнить ответ на один и тот же вопрос с разными
   слоями включёнными/выключенными. Для инвариантов выключение снимает и проверку
   результата задачи, поэтому, пока слой выключен, об этом напоминает служебная строка
@@ -102,12 +102,16 @@ point своего ConversationHandler-а — это позволяет ему �
   пользователю каждый ход не нужно (о выключении сообщает сама эта команда). Модели
   о нём говорит сообщение в контексте — только если хотя бы один источник настроен
   (market_tools.build_disabled_context_message): без него она выдаёт цену из прежнего
-  ответа за текущую. Седьмой пункт, autostart, — НЕ слой контекста, а флаг автомата
+  ответа за текущую. Слой rag — справочные материалы из индекса документов
+  (agents/rag_context.py, design.md изменения add-smart-agent-rag): выключение
+  останавливает и эмбеддинг вопроса, и чтение индекса; без построенного индекса слой
+  ничего не делает. Восьмой пункт, autostart, — НЕ слой контекста, а флаг автомата
   рабочей задачи: выключает только автоматическое обнаружение НОВОЙ задачи, не
   затрагивая слой working, автопродвижение уже идущей задачи и команды
   /smart_agent_task_*.
 - Вызовы инструментов и предупреждения слоя tools (недоступный сервер, сбой обмена,
-  исчерпанный лимит шагов) уходят в ту же служебную строку после ответа, что и строка
+  исчерпанный лимит шагов), источники слоя rag (строки «📚») и предупреждение о сбое
+  поиска материалов уходят в ту же служебную строку после ответа, что и строка
   состояния задачи и статистика токенов.
 - /smart_agent_reset — очищает три слоя памяти АКТИВНОГО ПРОФИЛЯ (не трогает сам
   профиль, его meta, его инварианты, другие профили и enabled_layers).
@@ -164,7 +168,7 @@ from config import (
     TELEGRAM_MESSAGE_LIMIT,
 )
 
-from . import invariants, market_tools, task_state
+from . import invariants, market_tools, rag_context, task_state
 from .active_mode import (
     AGENT_MODE,
     COMPARE_MODE,
@@ -176,6 +180,7 @@ from .active_mode import (
 from .smart_agent import (
     FACT_SOURCE_AUTO,
     LAYER_INVARIANTS,
+    LAYER_RAG,
     LAYER_TASK_AUTOSTART,
     LAYER_TOOLS,
     PROFILE_FIELD_LABELS,
@@ -205,6 +210,7 @@ LAYER_LABELS = {
     "working": "Рабочая (данные текущей задачи)",
     "long_term": "Долговременная (факты)",
     "tools": "Инструменты (данные биржи)",
+    "rag": "Материалы (справочные документы)",
     "task_autostart": "Автостарт задач (детектор)",
 }
 # Короткие алиасы для /smart_agent_toggle — вводить "long_term" в Telegram неудобно.
@@ -216,9 +222,10 @@ LAYER_ALIASES = {
     "working": "working",
     "long": "long_term",
     "tools": "tools",
+    "rag": "rag",
     "autostart": "task_autostart",
 }
-LAYER_TOGGLE_HINT = "<profile|invariants|short|working|long|tools|autostart>"
+LAYER_TOGGLE_HINT = "<profile|invariants|short|working|long|tools|rag|autostart>"
 
 # Подсказка к /smart_agent_invariant_add: категория необязательна, поэтому в тексте
 # команды она показана как пример, а не как требование (см. invariants.parse_input).
@@ -696,7 +703,9 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
 
     # Состояние задачи обновляется уже после отправки ответа (см. _task_service_lines),
     # а служебная информация уходит одним сообщением, а не двумя.
-    service_lines = market_tools.format_call_lines(result.tool_calls) + result.warnings
+    service_lines = market_tools.format_call_lines(result.tool_calls)
+    service_lines += rag_context.format_source_lines(result.rag_sources)
+    service_lines += result.warnings
     service_lines += _task_service_lines(agent)
     service_lines.append(_format_token_stats(result))
     await update.message.reply_text("\n".join(service_lines), reply_markup=SMART_AGENT_KEYBOARD)
@@ -1354,6 +1363,12 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
         tools_line += f"\nВызовы последнего вопроса:\n{call_lines}"
     lines.append(tools_line)
 
+    rag_status, rag_reason = agent.get_rag_status()
+    lines.append(f"📚 Материалы: {rag_context.describe_status(rag_status, rag_reason)}.")
+    last_rag_block = agent.get_last_rag_block()
+    if last_rag_block:
+        lines.append(f"Материалы последнего вопроса:\n{last_rag_block}")
+
     last_context = agent.get_last_context_messages()
     if last_context:
         rendered = "\n".join(f"— {m['content']}" for m in last_context if m["role"] == "system")
@@ -1375,13 +1390,16 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
 
 
 async def smart_agent_toggle_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /smart_agent_toggle — шесть слоёв контекста
-    (profile|invariants|short|working|long|tools) включаются/выключаются в СБОРКЕ
+    """Команда /smart_agent_toggle — семь слоёв контекста
+    (profile|invariants|short|working|long|tools|rag) включаются/выключаются в СБОРКЕ
     контекста без удаления данных (см. SmartAgent.set_layer_enabled) — так можно
     сравнить ответ на один и тот же вопрос с разным набором включённых слоёв. Общая
     настройка на весь чат, не per-profile — не требует активного профиля.
 
-    Седьмой пункт, autostart, — НЕ слой контекста, а флаг автомата рабочей задачи
+    Слой rag (справочные материалы из индекса документов) при выключении останавливает
+    и эмбеддинг вопроса, и чтение индекса — см. design.md изменения add-smart-agent-rag.
+
+    Восьмой пункт, autostart, — НЕ слой контекста, а флаг автомата рабочей задачи
     (LAYER_TASK_AUTOSTART): выключает только автоматическое обнаружение НОВОЙ задачи
     (SmartAgent._maybe_start_task), не затрагивая ни сборку контекста, ни
     автопродвижение уже идущей задачи, ни команды /smart_agent_task_* — см. design.md
@@ -1425,6 +1443,16 @@ async def smart_agent_toggle_command(update: Update, context: ContextTypes.DEFAU
                 "нужно задать MCP_MOEX_DIR и/или MCP_BYBIT_DIR) — пока агент отвечает "
                 "без данных рынков."
             )
+    if layer == LAYER_RAG:
+        if not new_value:
+            text += "\nОтвет строится без справочных материалов, индекс не читается."
+        elif agent.get_rag_status()[0] == rag_context.STATUS_NO_INDEX:
+            text += (
+                "\n⚠️ Но индекс документов не построен (оператору бота нужно выполнить "
+                "`make index`) — пока агент отвечает без справочных материалов."
+            )
+        else:
+            text += "\nВопросы снова ищут релевантные фрагменты в индексе документов."
     if layer == LAYER_TASK_AUTOSTART:
         # Это не слой контекста, а флаг автомата — оговорка обязательна в обе стороны,
         # иначе пользователь решит, что выключение останавливает и уже идущую задачу

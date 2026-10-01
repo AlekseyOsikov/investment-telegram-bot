@@ -19,7 +19,7 @@
 - `compare_command.py` — `/agent_compare`, `/agent_compare_report`, `/agent_compare_reset`.
 - `smart_agent.py` (`SmartAgent`) — владение состоянием, диск, вызовы LLM; правила вынесены в
   `task_state.py` (автомат), `invariants.py` (инварианты), `market_tools.py` (тексты и цикл слоя
-  `tools`). Принцип разделения везде один: правила и тексты — в отдельном модуле, владение
+  `tools`), `rag_context.py` (правила и тексты слоя `rag`). Принцип разделения везде один: правила и тексты — в отдельном модуле, владение
   состоянием и вызовы LLM — в `SmartAgent`/`Agent`.
 - `smart_agent_command.py` — `/smart_agent`, `/smart_agent_profile*`, `/smart_agent_remember|forget|
   long_show`, `/smart_agent_task_*`, `/smart_agent_invariant_*`, `/smart_agent_show|toggle|reset`;
@@ -113,13 +113,44 @@
 - `get_last_context_messages()` — ровно те сообщения, что ушли в LLM (для `/smart_agent_show`).
 - `enabled_layers` (на весь чат, не per-profile; все `True`; `_load_state()` стартует с «все
   включены» и накладывает сохранённое): `profile`, `invariants`, `short_term`, `working`,
-  `long_term`, `tools`, `task_autostart`; переключатель `/smart_agent_toggle
-  <profile|invariants|short|working|long|tools|autostart>` БЕЗ удаления данных — инструмент проверки
-  влияния слоя. `task_autostart` НЕ слой контекста — управляет только вызовом `_maybe_start_task()`.
+  `long_term`, `tools`, `rag`, `task_autostart`; переключатель `/smart_agent_toggle
+  <profile|invariants|short|working|long|tools|rag|autostart>` БЕЗ удаления данных — инструмент
+  проверки влияния слоя. `task_autostart` НЕ слой контекста — управляет только вызовом `_maybe_start_task()`.
   Выключение `working` замораживает автомат целиком. `/smart_agent_reset` очищает три слоя
   активного профиля (не профиль, `meta`, инварианты, другие профили, `enabled_layers`).
-- Порядок сборки контекста: инварианты → профиль → инструменты → долговременная → задача →
-  краткосрочный диалог (от общего/стабильного к свежему).
+- Порядок сборки контекста: инварианты → профиль → инструменты → материалы (`rag`, только правила) →
+  долговременная → задача → краткосрочный диалог (от общего/стабильного к свежему).
+
+## `/smart_agent`: справочные материалы (слой `rag`)
+
+Спека — `openspec/specs/smart-agent-rag/spec.md` (после архивации изменения `add-smart-agent-rag`,
+до того — `openspec/changes/add-smart-agent-rag/`). Использует индекс `rag/` (см. `src/rag/CLAUDE.md`).
+Правила и тексты — `rag_context.py` (чистый модуль, тесты `tests/test_rag_context.py`); поиск и
+состояние — `SmartAgent._retrieve_materials()`.
+
+- **Один поиск на вопрос, до ветвления на пути ответа** (в `ask()`, до `_market_tools_mode()` и до
+  запуска MCP-процессов): эмбеддинг ТОЛЬКО текста вопроса (`embed_texts(..., budget_seconds=
+  RAG_SEARCH_TIMEOUT_SECONDS)`) → `index_store.search(RAG_SMART_AGENT_STRATEGY, ..., RAG_TOP_K)` →
+  фильтр `score >= RAG_MIN_SCORE` по КАЖДОМУ чанку. Результат (`Materials`) одинаково идёт в
+  `_plain_completion` и в `_run_tool_loop`: фрагменты присутствуют во всех обращениях цикла.
+- **Правила — system, фрагменты — последнее `user`-сообщение.** `build_rules_message()` (данные, не
+  инструкции; образовательный материал, не рекомендация и не гарантия; НЕ ослабляет `SYSTEM_PROMPT`;
+  инварианты приоритетнее) добавляется только когда фрагменты есть; `build_user_message()` ставит
+  блок фрагментов ПЕРЕД отделённым вопросом. Оговорки в тексте правил не убирать (тест проверяет).
+- **В `short_term` пишется исходный вопрос без чанков**; тексты чанков на диск не попадают. Блок
+  фрагментов хранится только в памяти (`_last_rag_block`) — последнее `user`-сообщение в
+  `get_last_context_messages()` не входит. Служебные вызовы LLM (автомат, детектор, ревизор)
+  материалов не получают.
+- **Молчаливый пропуск**: слой выключен или индекс выбранной стратегии не построен — пустой результат
+  без предупреждения. **Сбой поиска** (Ollama недоступна/бюджет исчерпан, повреждённый индекс) не
+  роняет ответ: пустой результат + `rag_context.FAILURE_WARNING` в `SmartAgentAnswer.warnings`;
+  причина — в `_last_rag_failure` для `/smart_agent_show`; следующий вопрос пробует снова.
+- **Видимость**: строки `📚 <документ> — фрагмент N, близость X` (`SmartAgentAnswer.rag_sources`) идут
+  в служебное сообщение после ответа; `/smart_agent_show` — статус слоя (`get_rag_status()`: выключен /
+  индекс не построен / включён / недоступен) и блок материалов последнего вопроса.
+- Порог зависит от связки «модель эмбеддингов + стратегия + чанкинг» — при смене повторить калибровку
+  (`scripts/rag_calibrate.py`, результаты — в `design.md` изменения, раздел «Калибровка»). Первый
+  вопрос после простоя Ollama может не уложиться в бюджет (холодный старт) — ответ без материалов.
 
 Конфигурация (значения по умолчанию — в `config.py`): `AGENT_TASK_STATE_*` и `AGENT_TASK_START_*`
 — ДВА промпта технического вызова (когда задачи нет, нужен лишь короткий детектор старта — не

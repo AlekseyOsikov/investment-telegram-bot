@@ -508,6 +508,25 @@ RAG_FIXED_CHUNK_OVERLAP = int(os.getenv("RAG_FIXED_CHUNK_OVERLAP", "200"))
 # запрос пользователя.
 RAG_COMPARE_TOP_K = int(os.getenv("RAG_COMPARE_TOP_K", "3"))
 
+# Использование индекса в ответах /smart_agent (слой rag, design.md изменения
+# add-smart-agent-rag). Всё — настройки ОПЕРАТОРА: пользователь чата стратегию, число
+# чанков, порог и время ожидания не выбирает.
+# RAG_SMART_AGENT_STRATEGY — по индексу какой стратегии чанкинга идёт поиск
+# (по умолчанию structural; допустимые значения — _SUPPORTED_RAG_STRATEGIES).
+# RAG_TOP_K — сколько ближайших чанков искать на вопрос (отдельно от RAG_COMPARE_TOP_K:
+# тот — параметр экспериментальной команды, этот — продакшн-ответа).
+# RAG_MIN_SCORE — порог косинусной близости, ниже которого чанк в запрос не попадает.
+# Значение по умолчанию получено калибровкой (design.md, раздел «Калибровка») и привязано
+# к связке «EMBEDDINGS_MODEL + стратегия»: при их смене калибровку нужно повторить
+# (scripts/rag_calibrate.py).
+# RAG_SEARCH_TIMEOUT_SECONDS — предельное суммарное время ожидания вектора вопроса от
+# сервера эмбеддингов (включая повторы и паузы); дольше — ответ без материалов.
+_SUPPORTED_RAG_STRATEGIES = ("fixed", "structural")
+RAG_SMART_AGENT_STRATEGY = os.getenv("RAG_SMART_AGENT_STRATEGY", "structural")
+RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
+RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.60"))
+RAG_SEARCH_TIMEOUT_SECONDS = float(os.getenv("RAG_SEARCH_TIMEOUT_SECONDS", "5"))
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 
@@ -679,6 +698,35 @@ def _validate_config() -> None:
         logger.error(
             "Недопустимое значение RAG_COMPARE_TOP_K=%r: нужно целое число не меньше 1.",
             RAG_COMPARE_TOP_K,
+        )
+        sys.exit(1)
+
+    if RAG_SMART_AGENT_STRATEGY not in _SUPPORTED_RAG_STRATEGIES:
+        logger.error(
+            "Недопустимое значение RAG_SMART_AGENT_STRATEGY=%r. Допустимо: %s.",
+            RAG_SMART_AGENT_STRATEGY,
+            ", ".join(_SUPPORTED_RAG_STRATEGIES),
+        )
+        sys.exit(1)
+
+    if RAG_TOP_K < 1:
+        logger.error(
+            "Недопустимое значение RAG_TOP_K=%r: нужно целое число не меньше 1.",
+            RAG_TOP_K,
+        )
+        sys.exit(1)
+
+    if not 0.0 <= RAG_MIN_SCORE <= 1.0:
+        logger.error(
+            "Недопустимое значение RAG_MIN_SCORE=%r: нужно число от 0 до 1 включительно.",
+            RAG_MIN_SCORE,
+        )
+        sys.exit(1)
+
+    if RAG_SEARCH_TIMEOUT_SECONDS <= 0:
+        logger.error(
+            "Недопустимое значение RAG_SEARCH_TIMEOUT_SECONDS=%r: нужно число больше 0.",
+            RAG_SEARCH_TIMEOUT_SECONDS,
         )
         sys.exit(1)
 
