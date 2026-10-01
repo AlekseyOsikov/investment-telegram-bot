@@ -123,8 +123,8 @@
 
 ## `/smart_agent`: справочные материалы (слой `rag`)
 
-Спека — `openspec/specs/smart-agent-rag/spec.md` (после архивации изменения `add-smart-agent-rag`,
-до того — `openspec/changes/add-smart-agent-rag/`). Использует индекс `rag/` (см. `src/rag/CLAUDE.md`).
+Спека — `openspec/specs/smart-agent-rag/spec.md`; обоснования и калибровка порога —
+`openspec/changes/archive/*add-smart-agent-rag/design.md`. Использует индекс `rag/` (см. `src/rag/CLAUDE.md`).
 Правила и тексты — `rag_context.py` (чистый модуль, тесты `tests/test_rag_context.py`); поиск и
 состояние — `SmartAgent._retrieve_materials()`.
 
