@@ -1365,6 +1365,9 @@ async def smart_agent_show_command(update: Update, context: ContextTypes.DEFAULT
 
     rag_status, rag_reason = agent.get_rag_status()
     lines.append(f"📚 Материалы: {rag_context.describe_status(rag_status, rag_reason)}.")
+    last_rag_search = agent.get_last_rag_search()
+    if last_rag_search:
+        lines.extend(rag_context.describe_search(last_rag_search))
     last_rag_block = agent.get_last_rag_block()
     if last_rag_block:
         lines.append(f"Материалы последнего вопроса:\n{last_rag_block}")

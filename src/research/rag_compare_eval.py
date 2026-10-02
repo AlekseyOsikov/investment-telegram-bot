@@ -245,6 +245,9 @@ class QuestionResult:
     off: ModeResult
     on: ModeResult
     missing_sources: list[str] = field(default_factory=list)  # ожидаемые, которых нет в индексе
+    # Дополнительные режимы поиска (research/rag_modes_eval.py, уровень answers): ключ режима →
+    # ответ и оценка в этом режиме. Пусто — прогон «без RAG / с RAG», как до этого поля.
+    variants: dict[str, ModeResult] = field(default_factory=dict)
 
     @property
     def source_missing(self) -> bool:
@@ -261,6 +264,7 @@ class QuestionResult:
             "missing_sources": list(self.missing_sources),
             "off": self.off.to_dict(),
             "on": self.on.to_dict(),
+            "variants": {key: mode.to_dict() for key, mode in self.variants.items()},
         }
 
     @staticmethod
@@ -277,6 +281,10 @@ class QuestionResult:
             off=ModeResult.from_dict(data.get("off", {})),
             on=ModeResult.from_dict(data.get("on", {})),
             missing_sources=list(data.get("missing_sources", [])),
+            variants={
+                key: ModeResult.from_dict(value)
+                for key, value in (data.get("variants") or {}).items()
+            },
         )
 
 
@@ -419,11 +427,15 @@ def build_report(
     index_missing: list[str] | None = None,
     status: str = STATUS_COMPLETED,
     stop_reason: str | None = None,
+    extra: dict | None = None,
 ) -> dict:
     """Отчёт прогона (его пишет на диск rag_compare.py). `planned` — число вопросов набора;
     у остановленного прогона обработанных меньше. Отчёты без `status`/`planned` (написанные до
-    появления остановки) читаются как завершённые."""
+    появления остановки) читаются как завершённые. `extra` — дополнительные поля верхнего
+    уровня (режимы поиска прогона: `variant_modes`, `unavailable_modes`); их читают функции
+    research/rag_modes_eval.py, старые отчёты без них остаются корректными."""
     return {
+        **(extra or {}),
         "status": status,
         "stop_reason": stop_reason,
         "planned": planned,
@@ -436,14 +448,19 @@ def build_report(
 
 
 def progress_text(
-    done: int, total: int, stage: str | None = None, question: str | None = None
+    done: int,
+    total: int,
+    stage: str | None = None,
+    question: str | None = None,
+    stage_label: str | None = None,
 ) -> str:
     """Текст сообщения с прогрессом. Без этапа — общее число обработанных вопросов; с этапом —
-    номер текущего вопроса и этап (design.md, решение 5)."""
+    номер текущего вопроса и этап (design.md, решение 5). `stage_label` — подпись этапа, которого
+    нет в STAGE_LABELS (режимы поиска, research/rag_modes_eval.py)."""
     if stage is None:
         return f"⏳ Сравнение без RAG и с RAG: обработано {done} из {total} вопросов."
     text = (
-        f"⏳ Вопрос {done + 1} из {total} · {STAGE_LABELS.get(stage, stage)}\n"
+        f"⏳ Вопрос {done + 1} из {total} · {stage_label or STAGE_LABELS.get(stage, stage)}\n"
         f"Обработано вопросов: {done}."
     )
     return f"{text}\n{question}" if question else text
@@ -545,8 +562,15 @@ def _settings_line(settings: dict) -> str:
         f"top-k {settings.get('top_k', '?')}",
         f"порог {settings.get('min_score', '?')}",
     ]
+    if settings.get("candidates"):
+        parts.append(f"кандидатов {settings['candidates']}")
     if settings.get("model"):
         parts.append(f"модель {settings['model']}")
+    if settings.get("rewrite_provider"):
+        rewrite = settings["rewrite_provider"]
+        if settings.get("rewrite_model"):
+            rewrite += f"/{settings['rewrite_model']}"
+        parts.append(f"переписывание {rewrite}")
     return "Настройки прогона: " + ", ".join(parts) + "."
 
 
@@ -656,8 +680,11 @@ def format_table(report: dict) -> str:
     return "\n".join(lines)
 
 
-def format_question_detail(report: dict, number: int) -> str | None:
-    """Детали вопроса; None — вопроса с таким номером нет."""
+def format_question_detail(
+    report: dict, number: int, variant_titles: dict[str, str] | None = None
+) -> str | None:
+    """Детали вопроса; None — вопроса с таким номером нет. `variant_titles` — подписи
+    дополнительных режимов поиска (ключ режима → название) для ответов в этих режимах."""
     for raw in report.get("questions", []):
         if raw.get("number") == number:
             result = QuestionResult.from_dict(raw)
@@ -674,13 +701,20 @@ def format_question_detail(report: dict, number: int) -> str | None:
     ]
     if result.missing_sources:
         lines.append("⚠️ Нет в индексе: " + "; ".join(result.missing_sources))
-    for mode_key, mode in ((MODE_OFF, result.off), (MODE_ON, result.on)):
-        lines.append(f"\n— {MODE_LABELS[mode_key].capitalize()} —")
+    shown = [
+        (MODE_OFF, MODE_LABELS[MODE_OFF].capitalize(), result.off),
+        (MODE_ON, MODE_LABELS[MODE_ON].capitalize(), result.on),
+    ]
+    for key, variant in result.variants.items():
+        title = (variant_titles or {}).get(key, key)
+        shown.append((f"variant:{key}", f"С RAG, режим поиска «{title}»", variant))
+    for mode_key, label, mode in shown:
+        lines.append(f"\n— {label} —")
         if mode.error:
             lines.append(f"Сбой ответа: {mode.error}")
             continue
         lines.append(mode.answer or "(пустой ответ)")
-        if mode_key == MODE_ON:
+        if mode_key != MODE_OFF:
             if mode.search_failed:
                 lines.append("⚠️ Поиск материалов не удался — ответ получен без них.")
             elif mode.rag_sources:

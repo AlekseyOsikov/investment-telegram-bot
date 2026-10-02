@@ -97,6 +97,7 @@ import asyncio
 import copy
 import json
 import logging
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -121,12 +122,18 @@ from config import (
     MCP_MOEX_DIR,
     MCP_TIMEOUT_SECONDS,
     MCP_TOOL_RESULT_MAX_CHARS,
+    RAG_CANDIDATES,
     RAG_INDEX_DIR,
+    RAG_MAX_PER_DOC,
+    RAG_MIN_CHUNK_CHARS,
     RAG_MIN_SCORE,
+    RAG_RELATIVE_MARGIN,
     RAG_SEARCH_TIMEOUT_SECONDS,
     RAG_SMART_AGENT_STRATEGY,
     RAG_TOP_K,
     REQUEST_TIMEOUT_SECONDS,
+    REWRITE_SEARCH_MODE,
+    REWRITE_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
 )
 from mcp_integration.market_session import (
@@ -145,9 +152,11 @@ from mcp_integration.market_session import (
 )
 from providers.embeddings_client import embed_texts
 from providers.main_client import main_client
+from providers.rewrite_client import RewriteBackend
+from providers.rewrite_client import rewrite_backend as default_rewrite_backend
 from rag import index_store
 
-from . import invariants, market_tools, rag_context, task_state
+from . import invariants, market_tools, rag_context, rag_rewrite, task_state
 
 # Постоянные данные источников рыночных данных с ЛОКАЛЬНЫМ каталогом проекта (MOEX,
 # Bybit) — программа запуска и перечень разрешённых инструментов у каждого свои (см.
@@ -161,6 +170,36 @@ _SOURCE_PROGRAMS = {SOURCE_MOEX: "mcp-moex", SOURCE_BYBIT: "mcp-bybit"}
 _SOURCE_ALLOWLISTS = {SOURCE_MOEX: MODEL_TOOL_ALLOWLIST, SOURCE_BYBIT: BYBIT_MODEL_TOOL_ALLOWLIST}
 
 logger = logging.getLogger(__name__)
+
+# Предел токенов ответа модели переписывания: запрос короткий (rag_rewrite.MAX_QUERY_CHARS), а
+# «размышления» на моделях с thinking отключаются отдельно (см. _request_rewrite).
+_REWRITE_MAX_TOKENS = 120
+
+
+def _call_with_deadline(fn: Callable[[], str | None], seconds: float) -> str | None:
+    """Выполняет `fn()` в потоке-демоне и ждёт результата не дольше `seconds` ПО ЧАСАМ.
+    Таймаут HTTP-клиента — это пауза между чтениями, а не предел общего времени: провайдер,
+    держащий соединение пустыми строками keep-alive, «отвечает» через минуты (случай из
+    живого прогона /research_rag_compare, см. research/rag_compare_eval.call_with_deadline).
+    По истечении времени бросает TimeoutError; поток-сирота доживает сам, его результат
+    отбрасывается. Исключение, брошенное `fn`, пробрасывается."""
+    box: dict = {}
+
+    def runner() -> None:
+        try:
+            box["value"] = fn()
+        except BaseException as exc:  # noqa: BLE001 — передаётся вызывающему
+            box["error"] = exc
+
+    thread = threading.Thread(target=runner, name="rag-rewrite", daemon=True)
+    thread.start()
+    thread.join(max(seconds, 0.001))
+    if thread.is_alive():
+        raise TimeoutError(f"нет ответа за {seconds:g} с")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
 
 LAYER_PROFILE = "profile"
 LAYER_INVARIANTS = "invariants"
@@ -350,6 +389,13 @@ class SmartAgent:
         rag_top_k: int = RAG_TOP_K,
         rag_min_score: float = RAG_MIN_SCORE,
         rag_search_timeout: float = RAG_SEARCH_TIMEOUT_SECONDS,
+        rag_candidates: int = RAG_CANDIDATES,
+        rag_relative_margin: float = RAG_RELATIVE_MARGIN,
+        rag_min_chunk_chars: int = RAG_MIN_CHUNK_CHARS,
+        rag_max_per_doc: int = RAG_MAX_PER_DOC,
+        rewrite_backend: RewriteBackend | None = default_rewrite_backend,
+        rewrite_timeout: float = REWRITE_TIMEOUT_SECONDS,
+        rewrite_search_mode: str = REWRITE_SEARCH_MODE,
     ) -> None:
         self._client = client
         self._model = model
@@ -381,6 +427,13 @@ class SmartAgent:
         self._rag_top_k = rag_top_k
         self._rag_min_score = rag_min_score
         self._rag_search_timeout = rag_search_timeout
+        self._rag_candidates = rag_candidates
+        self._rag_relative_margin = rag_relative_margin
+        self._rag_min_chunk_chars = rag_min_chunk_chars
+        self._rag_max_per_doc = rag_max_per_doc
+        self._rewrite_backend = rewrite_backend
+        self._rewrite_timeout = rewrite_timeout
+        self._rewrite_search_mode = rewrite_search_mode
         (
             self._profiles,
             self._active_profile,
@@ -397,6 +450,10 @@ class SmartAgent:
         # в _last_context_messages не входит) и причина сбоя, если поиск не удался.
         self._last_rag_block: str | None = None
         self._last_rag_failure: str | None = None
+        # Итог последнего поиска: поисковый текст и счётчики отбора (None — поиска не было
+        # или он не удался) и причина сбоя переписывания — только в памяти, для показа
+        # состояния (design.md изменения add-rag-rerank-and-rewrite, решения 7 и 9).
+        self._last_rag_search: rag_context.SearchInfo | None = None
 
     @staticmethod
     def _default_enabled_layers() -> dict[str, bool]:
@@ -1132,34 +1189,123 @@ class SmartAgent:
             raise body_error
         return result, unavailable
 
-    def _retrieve_materials(self, user_text: str) -> rag_context.Materials:
-        """Поиск справочных материалов для ОДНОГО вопроса (слой rag, design.md изменения
-        add-smart-agent-rag, решения 2, 6, 7, 10). Пустой результат без предупреждения —
-        слой выключен или индекс выбранной стратегии не построен (это не сбой: иначе
-        окружение без индекса сопровождалось бы служебным шумом на каждом вопросе).
-        Любой сбой самого поиска — сервер эмбеддингов недоступен или не уложился в
-        бюджет RAG_SEARCH_TIMEOUT_SECONDS, повреждённые файлы индекса — не роняет ответ:
+    def _request_rewrite(self, backend: RewriteBackend, user_text: str) -> str | None:
+        """Один вызов модели переписывания (в потоке, см. _rewrite_query). Без автоповторов
+        SDK (повторы умножали бы ожидание), температура 0 (воспроизводимость сравнения
+        режимов). «thinking» отключается у deepseek/kimi, как у оценщика
+        research/rag_compare.py: короткому запросу не нужны скрытые размышления, а на моделях с
+        рассуждениями весь лимит токенов уходил на них и content оставался пустым."""
+        extra_body = None if backend.provider == "ollama" else {"thinking": {"type": "disabled"}}
+        response = backend.client.with_options(max_retries=0).chat.completions.create(
+            model=backend.model,
+            messages=rag_rewrite.build_messages(user_text),
+            max_tokens=_REWRITE_MAX_TOKENS,
+            timeout=self._rewrite_timeout,
+            temperature=0,
+            extra_body=extra_body,
+        )
+        return response.choices[0].message.content
+
+    def _rewrite_query(self, user_text: str) -> tuple[str | None, str | None]:
+        """Переписывает вопрос в поисковый запрос (design.md изменения
+        add-rag-rerank-and-rewrite, решения 2, 3, 9). Возвращает (запрос, причина сбоя):
+        (None, None) — переписывание не настроено; (None, причина) — вызов не удался
+        (недоступный сервер, превышение REWRITE_TIMEOUT_SECONDS, ошибка SDK, пустой или
+        непригодный ответ). Не бросает исключений: любой сбой означает «искать по исходному
+        вопросу», а пользователь о необязательной оптимизации не уведомляется. Модель
+        получает ТОЛЬКО текст вопроса — ни историю, ни память, ни профиль, ни инварианты."""
+        backend = self._rewrite_backend
+        if backend is None:
+            return None, None
+        try:
+            raw = _call_with_deadline(
+                lambda: self._request_rewrite(backend, user_text), self._rewrite_timeout
+            )
+        except Exception as exc:  # noqa: BLE001 — сбой переписывания не должен ронять ответ
+            logger.warning("Сбой переписывания вопроса (%s).", backend.provider, exc_info=True)
+            return None, f"{type(exc).__name__}: {exc}".strip()[:200]
+        query = rag_rewrite.normalize_response(raw)
+        if query is None:
+            return None, "модель вернула пустой или непригодный запрос"
+        return query, None
+
+    def _retrieve_materials(
+        self, user_text: str, rewrite: tuple[str | None, str | None] | None = None
+    ) -> rag_context.Materials:
+        """Поиск справочных материалов для ОДНОГО вопроса (слой rag, design.md изменений
+        add-smart-agent-rag, решения 2, 6, 7, 10, и add-rag-rerank-and-rewrite, решения 1-3).
+        Пустой результат без предупреждения — слой выключен или индекс выбранной стратегии
+        не построен (это не сбой: иначе окружение без индекса сопровождалось бы служебным
+        шумом на каждом вопросе). Порядок: переписывание вопроса (если настроено; сбой —
+        поиск по исходному вопросу) → эмбеддинг поискового текста → поиск RAG_CANDIDATES
+        кандидатов → второй этап отбора (порог и эвристики, не более RAG_TOP_K). Любой сбой
+        самого поиска — сервер эмбеддингов недоступен или не уложился в бюджет
+        RAG_SEARCH_TIMEOUT_SECONDS, повреждённые файлы индекса — не роняет ответ:
         возвращается пустой результат с предупреждением, причина сохраняется для
-        /smart_agent_show, следующий вопрос пробует снова. Порог применяется к каждому
-        чанку после search(top_k). В эмбеддинг уходит только текст вопроса."""
+        /smart_agent_show, следующий вопрос пробует снова. В эмбеддинг (и модели
+        переписывания) уходит только текст вопроса, не история и не память.
+
+        `rewrite` — готовый результат переписывания `(запрос, причина сбоя)` вместо вызова
+        модели: так сравнение режимов (research/rag_compare.py) переписывает вопрос один
+        раз и переиспользует результат между режимами. В обычной работе всегда None."""
         self._last_rag_failure = None
+        self._last_rag_search = None
         if not self._enabled_layers[LAYER_RAG]:
             return rag_context.Materials()
         try:
             if not index_store.index_exists(self._rag_strategy, self._rag_index_dir):
                 return rag_context.Materials()
-            vector = embed_texts([user_text], budget_seconds=self._rag_search_timeout)[0]
-            found = index_store.search(
-                self._rag_strategy, self._rag_index_dir, vector, self._rag_top_k
+            rewritten, rewrite_failure = (
+                rewrite if rewrite is not None else self._rewrite_query(user_text)
+            )
+            search_texts = [user_text]
+            both = False
+            if rewritten is not None:
+                if self._rewrite_search_mode == "both":
+                    search_texts = [user_text, rewritten]
+                    both = True
+                else:
+                    search_texts = [rewritten]
+            # Один запрос к серверу эмбеддингов на все тексты поиска (бюджет ожидания — общий).
+            vectors = embed_texts(search_texts, budget_seconds=self._rag_search_timeout)
+            limit = max(self._rag_candidates, self._rag_top_k)
+            found = rag_rewrite.merge_candidates(
+                *(
+                    index_store.search(self._rag_strategy, self._rag_index_dir, vector, limit)
+                    for vector in vectors
+                )
             )
         except Exception as exc:  # noqa: BLE001 — сбой поиска не должен ронять ответ
             logger.warning("Сбой поиска справочных материалов.", exc_info=True)
             reason = f"{type(exc).__name__}: {exc}".strip()
             self._last_rag_failure = reason[:200]
             return rag_context.Materials(warning=rag_context.FAILURE_WARNING)
-        return rag_context.Materials(
-            chunks=rag_context.filter_by_score(found, self._rag_min_score)
+        selection = rag_context.select_chunks(
+            found,
+            rag_context.SelectionSettings(
+                top_k=self._rag_top_k,
+                min_score=self._rag_min_score,
+                relative_margin=self._rag_relative_margin,
+                min_chunk_chars=self._rag_min_chunk_chars,
+                max_per_doc=self._rag_max_per_doc,
+            ),
         )
+        if rewritten is not None:
+            status = rag_context.REWRITE_OK
+        elif rewrite_failure is not None:
+            status = rag_context.REWRITE_FAILED
+        else:
+            status = rag_context.REWRITE_OFF
+        self._last_rag_search = rag_context.SearchInfo(
+            query=rewritten,
+            rewrite_status=status,
+            rewrite_reason=rewrite_failure,
+            both=both,
+            candidates=selection.candidates,
+            selected=len(selection.chunks),
+            dropped=selection.dropped,
+        )
+        return rag_context.Materials(chunks=selection.chunks)
 
     def get_rag_status(self) -> tuple[str, str | None]:
         """Статус слоя rag для /smart_agent_show — (STATUS_*, причина сбоя). Выключенный
@@ -1176,6 +1322,26 @@ class SmartAgent:
         if self._last_rag_failure:
             return rag_context.STATUS_UNAVAILABLE, self._last_rag_failure
         return rag_context.STATUS_OK, None
+
+    def rewrite_question(self, user_text: str) -> tuple[str | None, str | None]:
+        """Публичная обёртка над _rewrite_query() для сравнения режимов поиска: `(запрос,
+        причина сбоя)`, см. _rewrite_query."""
+        return self._rewrite_query(user_text)
+
+    def search_materials(
+        self, user_text: str, rewrite: tuple[str | None, str | None] | None = None
+    ) -> tuple[rag_context.Materials, rag_context.SearchInfo | None]:
+        """Поиск материалов БЕЗ ответа модели — для сравнения режимов поиска
+        (research/rag_compare.py): те же шаги, что в ask() (переписывание, поиск кандидатов,
+        второй этап отбора), и итог поиска. `rewrite` — готовый результат переписывания
+        (см. _retrieve_materials). Состояния агента, кроме «последнего поиска», не трогает."""
+        materials = self._retrieve_materials(user_text, rewrite)
+        return materials, self._last_rag_search
+
+    def get_last_rag_search(self) -> rag_context.SearchInfo | None:
+        """Итог последнего поиска (поисковый текст, число кандидатов и отобранных, отброшенные
+        по причинам) для /smart_agent_show; None — поиска не было или он не удался."""
+        return self._last_rag_search
 
     def get_last_rag_block(self) -> str | None:
         """Блок фрагментов, ушедший в последнее user-сообщение на последний ask() (для
@@ -1206,11 +1372,14 @@ class SmartAgent:
         процессов и без asyncio, но если хотя бы один источник настроен, в контексте
         одно сообщение «данные <источники> выключены» (market_tools.build_disabled_context_message).
 
-        Слой rag. Если он включён и индекс выбранной стратегии построен, по тексту
-        вопроса ищутся ближайшие чанки (_retrieve_materials — один поиск на вопрос, до
-        ветвления на пути ответа); прошедшие порог идут в последнем user-сообщении перед
-        самим вопросом, правила обращения с ними — отдельным system-сообщением. В
-        short_term пишется исходный вопрос без чанков. Сбой поиска не роняет ответ:
+        Слой rag. Если он включён и индекс выбранной стратегии построен, по поисковому
+        тексту вопроса (вопрос как есть либо его переписанная форма, если оператор
+        настроил переписывание) ищутся кандидаты, а второй этап отбора оставляет
+        ближайшие подходящие чанки (_retrieve_materials — один поиск на вопрос, до
+        ветвления на пути ответа); отобранные идут в последнем user-сообщении перед
+        самим вопросом, правила обращения с ними — отдельным system-сообщением. Переписанный
+        запрос используется ТОЛЬКО для поиска: в запрос к модели ответа и в short_term
+        попадает исходный вопрос без чанков. Сбой поиска не роняет ответ:
         вопрос уходит без материалов, а SmartAgentAnswer.warnings получает предупреждение.
 
         МЕТОД СИНХРОННЫЙ, но внутри путь с инструментами вызывает asyncio.run() — он

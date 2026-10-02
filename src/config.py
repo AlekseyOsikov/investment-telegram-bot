@@ -527,6 +527,45 @@ RAG_TOP_K = int(os.getenv("RAG_TOP_K", "3"))
 RAG_MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.60"))
 RAG_SEARCH_TIMEOUT_SECONDS = float(os.getenv("RAG_SEARCH_TIMEOUT_SECONDS", "5"))
 
+# Второй этап отбора после поиска (agents/rag_context.select_chunks, design.md изменения
+# add-rag-rerank-and-rewrite, решения 1 и 5). Тоже настройки ОПЕРАТОРА. Поиск берёт
+# RAG_CANDIDATES кандидатов, шаги отбора оставляют из них не более RAG_TOP_K. Порядок шагов:
+# RAG_MIN_SCORE → RAG_RELATIVE_MARGIN → RAG_MIN_CHUNK_CHARS → дубликаты → RAG_MAX_PER_DOC.
+# Нейтральные значения отключают шаг: RAG_RELATIVE_MARGIN=1, RAG_MIN_CHUNK_CHARS=0,
+# RAG_MAX_PER_DOC >= RAG_TOP_K; при всех нейтральных шагах результат совпадает с прежним
+# (топ-K прошедших порог). ПО УМОЛЧАНИЮ ШАГИ ВЫКЛЮЧЕНЫ: на сравнении режимов (design.md,
+# раздел «Результаты сравнения») ни один шаг не улучшил попадание в ожидаемый документ и
+# ответы, а лишь сократил выдачу — включайте по результатам СВОЕГО набора вопросов.
+# RAG_RELATIVE_MARGIN — на сколько оценка чанка может быть ниже оценки лучшего кандидата;
+# RAG_MIN_CHUNK_CHARS — минимальная длина чанка (мелкие «заголовки слайдов» без содержания);
+# RAG_MAX_PER_DOC — предел чанков одного документа в выдаче.
+RAG_CANDIDATES = int(os.getenv("RAG_CANDIDATES", "10"))
+RAG_RELATIVE_MARGIN = float(os.getenv("RAG_RELATIVE_MARGIN", "1"))
+RAG_MIN_CHUNK_CHARS = int(os.getenv("RAG_MIN_CHUNK_CHARS", "0"))
+RAG_MAX_PER_DOC = int(os.getenv("RAG_MAX_PER_DOC", str(RAG_TOP_K)))
+
+# Переписывание вопроса в поисковый запрос (agents/rag_rewrite.py, providers/rewrite_client.py,
+# design.md изменения add-rag-rerank-and-rewrite, решения 2, 3, 5, 8). Настройки ОПЕРАТОРА;
+# пользователь чата переписывание не включает, не выключает и не выбирает.
+# REWRITE_PROVIDER — ollama | deepseek | kimi; пусто — переписывание выключено (по умолчанию).
+# REWRITE_MODEL — модель (для deepseek/kimi по умолчанию быстрая модель провайдера, для
+# ollama задаётся явно). REWRITE_TIMEOUT_SECONDS — предел ожидания одного вызова (без
+# повторов); при сбое поиск идёт по исходному вопросу. REWRITE_SEARCH_MODE — объединять
+# кандидатов по исходному и переписанному запросам (both, по умолчанию: на сравнении режимов
+# не хуже поиска без переписывания, а на разговорных вопросах лучше) либо искать только по
+# переписанному запросу (rewritten: переписанный запрос чаще ближе к терминам, но дальше от
+# формулировки документа, и без исходного вопроса часть чанков не проходит порог).
+# OLLAMA_BASE_URL — чат-сервер Ollama (не связан с EMBEDDINGS_BASE_URL и MAIN_CLIENT).
+# При deepseek/kimi текст вопроса уходит облачному провайдеру на шаг раньше основного
+# ответа — решение оператора.
+_SUPPORTED_REWRITE_PROVIDERS = ("ollama", "deepseek", "kimi")
+_SUPPORTED_REWRITE_SEARCH_MODES = ("rewritten", "both")
+REWRITE_PROVIDER = os.getenv("REWRITE_PROVIDER", "").strip().lower()
+REWRITE_MODEL = os.getenv("REWRITE_MODEL", "").strip()
+REWRITE_TIMEOUT_SECONDS = float(os.getenv("REWRITE_TIMEOUT_SECONDS", "8"))
+REWRITE_SEARCH_MODE = os.getenv("REWRITE_SEARCH_MODE", "both").strip().lower()
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+
 # /research_rag_compare (research/rag_compare.py, design.md изменения add-rag-compare-command):
 # RAG_COMPARE_REPORT_DIR — каталог сохранённых отчётов прогонов (по одному JSON на прогон;
 # в .gitignore вместе с остальным data/; отчёты не содержат данных пользователей).
@@ -577,6 +616,17 @@ RAG_COMPARE_QUESTION_TIMEOUT_SECONDS = float(
 RAG_COMPARE_MAX_CONSECUTIVE_FAILURES = int(
     os.getenv("RAG_COMPARE_MAX_CONSECUTIVE_FAILURES", "3")
 )
+# Сравнение РЕЖИМОВ ПОИСКА (research/rag_modes_eval.py, design.md изменения
+# add-rag-rerank-and-rewrite, решение 6). Настройки ОПЕРАТОРА: пользователь чата режимы и
+# уровень не выбирает. RAG_COMPARE_LEVEL: answers (по умолчанию) — прежний прогон «без RAG /
+# с RAG» с ответами и оценкой по фактам; search — только поиск (метрики попадания в ожидаемый
+# документ, без вызовов модели ответа и оценщика). RAG_COMPARE_MODES — список режимов через
+# запятую: baseline, filter, rewrite, rewrite_filter. Пусто: на уровне search — все режимы,
+# на уровне answers — без дополнительных режимов (только «без RAG / с RAG»). Допустимость
+# имён режимов проверяется при запуске команды.
+_SUPPORTED_RAG_COMPARE_LEVELS = ("answers", "search")
+RAG_COMPARE_LEVEL = os.getenv("RAG_COMPARE_LEVEL", "answers").strip().lower()
+RAG_COMPARE_MODES = os.getenv("RAG_COMPARE_MODES", "").strip()
 
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
@@ -771,6 +821,77 @@ def _validate_config() -> None:
         logger.error(
             "Недопустимое значение RAG_MIN_SCORE=%r: нужно число от 0 до 1 включительно.",
             RAG_MIN_SCORE,
+        )
+        sys.exit(1)
+
+    if RAG_CANDIDATES < RAG_TOP_K:
+        logger.error(
+            "Недопустимое значение RAG_CANDIDATES=%r: нужно целое число не меньше "
+            "RAG_TOP_K=%r.",
+            RAG_CANDIDATES,
+            RAG_TOP_K,
+        )
+        sys.exit(1)
+
+    if not 0.0 <= RAG_RELATIVE_MARGIN <= 1.0:
+        logger.error(
+            "Недопустимое значение RAG_RELATIVE_MARGIN=%r: нужно число от 0 до 1 "
+            "включительно (1 — шаг выключен).",
+            RAG_RELATIVE_MARGIN,
+        )
+        sys.exit(1)
+
+    if RAG_MIN_CHUNK_CHARS < 0:
+        logger.error(
+            "Недопустимое значение RAG_MIN_CHUNK_CHARS=%r: нужно целое число не меньше 0 "
+            "(0 — шаг выключен).",
+            RAG_MIN_CHUNK_CHARS,
+        )
+        sys.exit(1)
+
+    if RAG_MAX_PER_DOC < 1:
+        logger.error(
+            "Недопустимое значение RAG_MAX_PER_DOC=%r: нужно целое число не меньше 1.",
+            RAG_MAX_PER_DOC,
+        )
+        sys.exit(1)
+
+    if REWRITE_PROVIDER and REWRITE_PROVIDER not in _SUPPORTED_REWRITE_PROVIDERS:
+        logger.error(
+            "Недопустимое значение REWRITE_PROVIDER=%r. Допустимо: %s (пусто — "
+            "переписывание выключено).",
+            REWRITE_PROVIDER,
+            ", ".join(_SUPPORTED_REWRITE_PROVIDERS),
+        )
+        sys.exit(1)
+
+    if REWRITE_PROVIDER == "ollama" and not REWRITE_MODEL:
+        logger.error(
+            "REWRITE_PROVIDER=ollama требует явной модели в REWRITE_MODEL "
+            "(например, qwen2.5:7b)."
+        )
+        sys.exit(1)
+
+    if REWRITE_TIMEOUT_SECONDS <= 0:
+        logger.error(
+            "Недопустимое значение REWRITE_TIMEOUT_SECONDS=%r: нужно число больше 0.",
+            REWRITE_TIMEOUT_SECONDS,
+        )
+        sys.exit(1)
+
+    if REWRITE_SEARCH_MODE not in _SUPPORTED_REWRITE_SEARCH_MODES:
+        logger.error(
+            "Недопустимое значение REWRITE_SEARCH_MODE=%r. Допустимо: %s.",
+            REWRITE_SEARCH_MODE,
+            ", ".join(_SUPPORTED_REWRITE_SEARCH_MODES),
+        )
+        sys.exit(1)
+
+    if RAG_COMPARE_LEVEL not in _SUPPORTED_RAG_COMPARE_LEVELS:
+        logger.error(
+            "Недопустимое значение RAG_COMPARE_LEVEL=%r. Допустимо: %s.",
+            RAG_COMPARE_LEVEL,
+            ", ".join(_SUPPORTED_RAG_COMPARE_LEVELS),
         )
         sys.exit(1)
 

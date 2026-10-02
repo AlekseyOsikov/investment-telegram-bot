@@ -19,7 +19,8 @@
 - `compare_command.py` — `/agent_compare`, `/agent_compare_report`, `/agent_compare_reset`.
 - `smart_agent.py` (`SmartAgent`) — владение состоянием, диск, вызовы LLM; правила вынесены в
   `task_state.py` (автомат), `invariants.py` (инварианты), `market_tools.py` (тексты и цикл слоя
-  `tools`), `rag_context.py` (правила и тексты слоя `rag`). Принцип разделения везде один: правила и тексты — в отдельном модуле, владение
+  `tools`), `rag_context.py` (правила и тексты слоя `rag`, второй этап отбора), `rag_rewrite.py`
+  (переписывание вопроса в поисковый запрос: промпт, нормализация ответа, слияние кандидатов). Принцип разделения везде один: правила и тексты — в отдельном модуле, владение
   состоянием и вызовы LLM — в `SmartAgent`/`Agent`.
 - `smart_agent_command.py` — `/smart_agent`, `/smart_agent_profile*`, `/smart_agent_remember|forget|
   long_show`, `/smart_agent_task_*`, `/smart_agent_invariant_*`, `/smart_agent_show|toggle|reset`;
@@ -123,16 +124,36 @@
 
 ## `/smart_agent`: справочные материалы (слой `rag`)
 
-Спека — `openspec/specs/smart-agent-rag/spec.md`; обоснования и калибровка порога —
-`openspec/changes/archive/*add-smart-agent-rag/design.md`. Использует индекс `rag/` (см. `src/rag/CLAUDE.md`).
-Правила и тексты — `rag_context.py` (чистый модуль, тесты `tests/test_rag_context.py`); поиск и
-состояние — `SmartAgent._retrieve_materials()`.
+Спеки — `openspec/specs/smart-agent-rag/spec.md` и `rag-query-rewrite/spec.md`; обоснования и
+калибровка порога — `openspec/changes/archive/*add-smart-agent-rag/design.md` и
+`*add-rag-rerank-and-rewrite/design.md`. Использует индекс `rag/` (см. `src/rag/CLAUDE.md`).
+Правила и тексты — `rag_context.py` и `rag_rewrite.py` (чистые модули, тесты
+`tests/test_rag_context.py`, `tests/test_rag_rewrite.py`); поиск и состояние —
+`SmartAgent._retrieve_materials()`.
 
 - **Один поиск на вопрос, до ветвления на пути ответа** (в `ask()`, до `_market_tools_mode()` и до
-  запуска MCP-процессов): эмбеддинг ТОЛЬКО текста вопроса (`embed_texts(..., budget_seconds=
-  RAG_SEARCH_TIMEOUT_SECONDS)`) → `index_store.search(RAG_SMART_AGENT_STRATEGY, ..., RAG_TOP_K)` →
-  фильтр `score >= RAG_MIN_SCORE` по КАЖДОМУ чанку. Результат (`Materials`) одинаково идёт в
-  `_plain_completion` и в `_run_tool_loop`: фрагменты присутствуют во всех обращениях цикла.
+  запуска MCP-процессов): [переписывание вопроса, если настроено] → эмбеддинг поискового текста
+  (`embed_texts(..., budget_seconds=RAG_SEARCH_TIMEOUT_SECONDS)`) →
+  `index_store.search(RAG_SMART_AGENT_STRATEGY, ..., RAG_CANDIDATES)` → второй этап
+  `rag_context.select_chunks()` (порог `RAG_MIN_SCORE` по КАЖДОМУ кандидату, относительный порог,
+  отсев коротких чанков и дубликатов, предел чанков на документ, не более `RAG_TOP_K`). Результат
+  (`Materials`) одинаково идёт в `_plain_completion` и в `_run_tool_loop`: фрагменты присутствуют во
+  всех обращениях цикла. Порядок и нейтральные значения шагов — в `config.py` и
+  `select_chunks()`; при `RAG_CANDIDATES=RAG_TOP_K` и нейтральных шагах поведение прежнее.
+- **Переписывание** (`REWRITE_PROVIDER` пуст — выключено): служебный вызов `_rewrite_query()`
+  (клиент и модель — `providers/rewrite_client.py`; `temperature=0`, без автоповторов SDK, предел
+  ПО ЧАСАМ `REWRITE_TIMEOUT_SECONDS` в потоке-демоне — таймаут HTTP-клиента не ограничивает
+  общее время, как показал живой прогон; `thinking` отключён у `deepseek`/`kimi`). Модель видит
+  ТОЛЬКО текст вопроса в тегах `<вопрос>` (данные, не инструкция) и неизменный промпт из
+  `rag_rewrite.py`: не память, не профиль, не инварианты, не фрагменты. Сбой, таймаут, пустой или
+  непригодный ответ (отказ, иероглифы — локальные модели иногда отвечают по-китайски, длиннее
+  `MAX_QUERY_CHARS`) — поиск по исходному вопросу, причина в `SearchInfo.rewrite_reason`, пользователю
+  не показывается. Переписанный запрос — ТОЛЬКО в поиск: в запрос основной модели, `short_term` и
+  строки источников идёт исходный вопрос. `REWRITE_SEARCH_MODE=both` (по умолчанию) ищет и по
+  исходному вопросу, и по переписанному (одним запросом к серверу эмбеддингов) и объединяет
+  кандидатов по лучшей оценке (`rag_rewrite.merge_candidates`): `rewritten` на сравнении режимов
+  оказался хуже — переписанный запрос уходит от формулировки документа, и часть чанков не проходит
+  порог.
 - **Правила — system, фрагменты — последнее `user`-сообщение.** `build_rules_message()` (данные, не
   инструкции; образовательный материал, не рекомендация и не гарантия; НЕ ослабляет `SYSTEM_PROMPT`;
   инварианты приоритетнее) добавляется только когда фрагменты есть; `build_user_message()` ставит
@@ -147,9 +168,13 @@
   причина — в `_last_rag_failure` для `/smart_agent_show`; следующий вопрос пробует снова.
 - **Видимость**: строки `📚 <документ> — фрагмент N, близость X` (`SmartAgentAnswer.rag_sources`) идут
   в служебное сообщение после ответа; `/smart_agent_show` — статус слоя (`get_rag_status()`: выключен /
-  индекс не построен / включён / недоступен) и блок материалов последнего вопроса.
-- Порог зависит от связки «модель эмбеддингов + стратегия + чанкинг» — при смене повторить калибровку
-  (`scripts/rag_calibrate.py`, результаты — в `design.md` изменения, раздел «Калибровка»). Первый
+  индекс не построен / включён / недоступен), поисковый запрос и итог отбора
+  (`get_last_rag_search()` → `rag_context.describe_search()`: переписанный запрос или причина отката,
+  кандидатов найдено / отобрано, отброшено по причинам) и блок материалов последнего вопроса. Итог
+  поиска — только в памяти агента, на диск не пишется.
+- Порог зависит от связки «модель эмбеддингов + стратегия + чанкинг + переписывание» — при смене
+  повторить калибровку (`scripts/rag_calibrate.py`, с переписыванием — `--rewrite`; результаты — в
+  `design.md` изменения, раздел «Калибровка»). Первый
   вопрос после простоя Ollama может не уложиться в бюджет (холодный старт) — ответ без материалов.
 
 Конфигурация (значения по умолчанию — в `config.py`): `AGENT_TASK_STATE_*` и `AGENT_TASK_START_*`

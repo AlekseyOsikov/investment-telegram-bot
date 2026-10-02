@@ -14,6 +14,12 @@ SmartAgent во временных каталогах (пустая память
 выключены): память и настройки реальных чатов не затрагиваются, а режимы отличаются только
 состоянием слоя rag. Одновременно идёт один прогон на весь бот.
 
+Уровни прогона (design.md изменения add-rag-rerank-and-rewrite, решение 6; настройки оператора
+RAG_COMPARE_LEVEL/RAG_COMPARE_MODES): `answers` — ответы и оценка по фактам (дополнительно к
+«без RAG / с RAG» — ответы в выбранных режимах поиска), `search` — только поиск по режимам
+(фильтр, переписывание вопроса) и метрики попадания в ожидаемый документ без вызовов модели
+ответа и оценщика. Правила и тексты режимов — research/rag_modes_eval.py.
+
 Быстрый отказ (решение 8): у каждого вопроса есть бюджет времени, а обращения к модели идут
 клиентом без автоповторов SDK и ждут не дольше остатка бюджета — при «зависшем» провайдере
 вопрос не тянется минутами. Остановка (решение 9): команда отменяет фоновую задачу, а
@@ -27,6 +33,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import tempfile
 import threading
 import time
@@ -44,24 +51,33 @@ from config import (
     MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
     MAIN_MODEL,
+    RAG_CANDIDATES,
     RAG_COMPARE_JUDGE_MAX_TOKENS,
     RAG_COMPARE_JUDGE_SYSTEM_PROMPT,
+    RAG_COMPARE_LEVEL,
     RAG_COMPARE_MAX_CONSECUTIVE_FAILURES,
+    RAG_COMPARE_MODES,
     RAG_COMPARE_QUESTION_TIMEOUT_SECONDS,
     RAG_COMPARE_QUESTIONS_FILE,
     RAG_COMPARE_REPORT_DIR,
     RAG_INDEX_DIR,
+    RAG_MAX_PER_DOC,
+    RAG_MIN_CHUNK_CHARS,
     RAG_MIN_SCORE,
+    RAG_RELATIVE_MARGIN,
     RAG_SEARCH_TIMEOUT_SECONDS,
     RAG_SMART_AGENT_STRATEGY,
     RAG_TOP_K,
     REQUEST_TIMEOUT_SECONDS,
+    REWRITE_SEARCH_MODE,
     TELEGRAM_MESSAGE_LIMIT,
 )
 from providers.main_client import main_client
+from providers.rewrite_client import rewrite_backend
 from rag import index_store
 
 from . import rag_compare_eval as ev
+from . import rag_modes_eval as rm
 from ._shared import api_error_to_message
 
 logger = logging.getLogger(__name__)
@@ -134,12 +150,54 @@ def _error_reason(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}".strip()
 
 
-def run_mode(question_text: str, rag_enabled: bool, timeout: float | None = None) -> ev.ModeResult:
+def _filter_steps() -> tuple[dict, bool]:
+    """Шаги отбора для режимов «с отбором»: рабочие или (если все выключены) эталонные —
+    см. rm.filter_settings."""
+    return rm.filter_settings(
+        RAG_CANDIDATES, RAG_TOP_K, RAG_RELATIVE_MARGIN, RAG_MIN_CHUNK_CHARS, RAG_MAX_PER_DOC
+    )
+
+
+def _mode_agent_kwargs(mode_key: str) -> dict:
+    """Параметры SmartAgent для режима поиска (design.md изменения add-rag-rerank-and-rewrite,
+    решение 6): настройки рабочей конфигурации, кроме отличающихся. Режимы без отбора —
+    кандидатов ровно RAG_TOP_K и нейтральные значения шагов (остаётся только порог, как до
+    изменения); режимы без переписывания — без модели переписывания."""
+    kwargs: dict = {}
+    if rm.uses_filter(mode_key):
+        steps, _ = _filter_steps()
+        kwargs.update(
+            rag_candidates=steps["candidates"],
+            rag_relative_margin=steps["relative_margin"],
+            rag_min_chunk_chars=steps["min_chunk_chars"],
+            rag_max_per_doc=steps["max_per_doc"],
+        )
+    else:
+        kwargs.update(
+            rag_candidates=RAG_TOP_K,
+            rag_relative_margin=1.0,
+            rag_min_chunk_chars=0,
+            rag_max_per_doc=RAG_TOP_K,
+        )
+    if not rm.uses_rewrite(mode_key):
+        kwargs["rewrite_backend"] = None
+    return kwargs
+
+
+def run_mode(
+    question_text: str,
+    rag_enabled: bool,
+    timeout: float | None = None,
+    retrieval_mode: str | None = None,
+) -> ev.ModeResult:
     """Ответ одного режима: свежий SmartAgent во временном каталоге (пустая память, профиль
     без полей, источники MCP выключены), слой rag включён или выключен. Настройки поиска —
     из config.py, как в рабочем режиме. Обращение к модели — клиентом без автоповторов и с
     таймаутом `timeout` (по умолчанию REQUEST_TIMEOUT_SECONDS). Сбой провайдера становится
     причиной в результате, а не исключением."""
+    # retrieval_mode (rm.MODE_*) меняет только то, чем режим поиска отличается от рабочей
+    # конфигурации (отбор, переписывание), см. _mode_agent_kwargs; None — рабочая конфигурация.
+    mode_kwargs = _mode_agent_kwargs(retrieval_mode) if retrieval_mode else {}
     with tempfile.TemporaryDirectory(prefix="rag_compare_") as tmp:
         agent = SmartAgent(
             _EVAL_CHAT_ID,
@@ -149,6 +207,7 @@ def run_mode(question_text: str, rag_enabled: bool, timeout: float | None = None
             mcp_moex_dir="",
             mcp_bybit_dir="",
             cbr_enabled=False,
+            **mode_kwargs,
         )
         agent.create_profile(_EVAL_PROFILE, {})
         agent.set_layer_enabled(LAYER_RAG, rag_enabled)
@@ -244,19 +303,75 @@ def judge(
     return verdict, None
 
 
+def _answer_and_judge(
+    question: ev.Question,
+    rag_enabled: bool,
+    retrieval_mode: str | None,
+    answer_stage: str,
+    judge_stage: str,
+    budget: QuestionBudget,
+    on_stage: Callable[[str], None] | None,
+    cancelled: Callable[[], bool] | None,
+) -> ev.ModeResult:
+    """Ответ в одном режиме и его оценка в рамках бюджета вопроса: исчерпанный бюджет помечает
+    этап причиной «превышен лимит времени вопроса» без новых обращений к модели."""
+    if cancelled and cancelled():
+        raise RunCancelled
+    if on_stage:
+        on_stage(answer_stage)
+    if budget.expired():
+        mode = ev.ModeResult(error=ev.QUESTION_TIMEOUT_REASON)
+    else:
+        mode = run_mode(question.question, rag_enabled, budget.call_timeout(), retrieval_mode)
+    if mode.answer is not None:
+        if cancelled and cancelled():
+            raise RunCancelled
+        if on_stage:
+            on_stage(judge_stage)
+        if budget.expired():
+            mode.judge_error = ev.QUESTION_TIMEOUT_REASON
+        else:
+            mode.verdict, mode.judge_error = judge(question, mode.answer, budget)
+    return mode
+
+
+def variant_stage(mode_key: str, judge_stage: bool) -> str:
+    """Ключ этапа ответа (или оценки) в дополнительном режиме поиска — для прогресса."""
+    return f"variant_{'judge' if judge_stage else 'answer'}:{mode_key}"
+
+
+def stage_label(stage: str) -> str | None:
+    """Подпись этапа прогресса, которого нет в ev.STAGE_LABELS: режимы поиска и прогон «только
+    поиск». None — подпись берётся из ev.STAGE_LABELS."""
+    if stage == STAGE_REWRITE:
+        return "переписывание вопроса"
+    if stage == STAGE_SEARCH:
+        return "поиск по режимам"
+    for prefix, template in (
+        ("variant_answer:", "ответ, режим поиска «{}»"),
+        ("variant_judge:", "оценка ответа, режим поиска «{}»"),
+    ):
+        if stage.startswith(prefix):
+            key = stage[len(prefix) :]
+            return template.format(rm.MODE_TITLES.get(key, key))
+    return None
+
+
 def evaluate_question(
     question: ev.Question,
     index_titles: list[str],
     on_stage: Callable[[str], None] | None = None,
     budget_seconds: float = RAG_COMPARE_QUESTION_TIMEOUT_SECONDS,
     cancelled: Callable[[], bool] | None = None,
+    variant_modes: list[str] | None = None,
 ) -> ev.QuestionResult:
     """Оба режима по одному вопросу плюс оценка каждого полученного ответа, в рамках общего
     бюджета времени вопроса (budget_seconds): исчерпанный бюджет помечает оставшиеся этапы
-    причиной «превышен лимит времени вопроса» без новых обращений. `on_stage` вызывается на
-    входе в каждый этап (из рабочего потока) — по нему строится прогресс. `cancelled` — признак
-    остановки прогона: поток, брошенный отменённой задачей, на следующем этапе завершается
-    (RunCancelled) и не делает новых обращений к модели."""
+    причиной «превышен лимит времени вопроса» без новых обращений. `variant_modes` — режимы
+    поиска (rm.MODE_*), по которым ответ и оценка делаются дополнительно (уровень answers).
+    `on_stage` вызывается на входе в каждый этап (из рабочего потока) — по нему строится
+    прогресс. `cancelled` — признак остановки прогона: поток, брошенный отменённой задачей, на
+    следующем этапе завершается (RunCancelled) и не делает новых обращений к модели."""
     budget = QuestionBudget(budget_seconds)
     plan = (
         (ev.MODE_OFF, False, ev.STAGE_OFF_ANSWER, ev.STAGE_OFF_JUDGE),
@@ -264,30 +379,117 @@ def evaluate_question(
     )
     modes: dict[str, ev.ModeResult] = {}
     for mode_key, rag_enabled, answer_stage, judge_stage in plan:
-        if cancelled and cancelled():
-            raise RunCancelled
-        if on_stage:
-            on_stage(answer_stage)
-        if budget.expired():
-            mode = ev.ModeResult(error=ev.QUESTION_TIMEOUT_REASON)
-        else:
-            mode = run_mode(question.question, rag_enabled, budget.call_timeout())
-        if mode.answer is not None:
-            if cancelled and cancelled():
-                raise RunCancelled
-            if on_stage:
-                on_stage(judge_stage)
-            if budget.expired():
-                mode.judge_error = ev.QUESTION_TIMEOUT_REASON
-            else:
-                mode.verdict, mode.judge_error = judge(question, mode.answer, budget)
-        modes[mode_key] = mode
+        modes[mode_key] = _answer_and_judge(
+            question, rag_enabled, None, answer_stage, judge_stage, budget, on_stage, cancelled
+        )
+    variants: dict[str, ev.ModeResult] = {}
+    for key in variant_modes or []:
+        variants[key] = _answer_and_judge(
+            question,
+            True,
+            key,
+            variant_stage(key, judge_stage=False),
+            variant_stage(key, judge_stage=True),
+            budget,
+            on_stage,
+            cancelled,
+        )
     return ev.QuestionResult(
         question=question,
         off=modes[ev.MODE_OFF],
         on=modes[ev.MODE_ON],
         missing_sources=ev.sources_not_indexed(question.sources, index_titles),
+        variants=variants,
     )
+
+
+# --------------------------------------------------------------------------- #
+# Прогон «только поиск» по режимам (без вызовов модели ответа и оценщика)
+# --------------------------------------------------------------------------- #
+
+STAGE_REWRITE = "rewrite"
+STAGE_SEARCH = "search"
+
+
+def build_mode_agents(tmp: str, modes: list[str]) -> dict[str, SmartAgent]:
+    """По агенту на режим поиска: временная память (`tmp`), пустой профиль, источники MCP
+    выключены, слой rag включён; настройки — рабочие, кроме отличающихся (_mode_agent_kwargs).
+    Агенты переиспользуются на всех вопросах прогона (состояния между вопросами не несут —
+    поиск не пишет ни память, ни историю)."""
+    agents: dict[str, SmartAgent] = {}
+    for mode in modes:
+        agent = SmartAgent(
+            f"{_EVAL_CHAT_ID}_{mode}",
+            client=_fast_client,
+            memory_dir=tmp,
+            mcp_moex_dir="",
+            mcp_bybit_dir="",
+            cbr_enabled=False,
+            **_mode_agent_kwargs(mode),
+        )
+        agent.create_profile(_EVAL_PROFILE, {})
+        agents[mode] = agent
+    return agents
+
+
+def evaluate_retrieval(
+    question: ev.Question,
+    index_titles: list[str],
+    agents: dict[str, SmartAgent],
+    on_stage: Callable[[str], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> rm.QuestionRetrieval:
+    """Поиск по каждому режиму для одного вопроса. Если среди режимов есть переписывающие,
+    вопрос переписывается ОДИН раз и результат переиспользуется (воспроизводимо и дешевле);
+    сбой переписывания не проваливает вопрос — режимы ищут по исходному тексту, а причина
+    попадает в отчёт. Сбой поиска в режиме — причина в результате этого режима, а не
+    исключение."""
+    item = rm.QuestionRetrieval(
+        question=question, missing_sources=ev.sources_not_indexed(question.sources, index_titles)
+    )
+    rewrite_modes = [mode for mode in agents if rm.uses_rewrite(mode)]
+    rewrite: tuple[str | None, str | None] | None = None
+    if rewrite_modes:
+        if cancelled and cancelled():
+            raise RunCancelled
+        if on_stage:
+            on_stage(STAGE_REWRITE)
+        started = time.monotonic()
+        rewrite = agents[rewrite_modes[0]].rewrite_question(question.question)
+        item.rewrite_seconds = time.monotonic() - started
+        item.rewrite_query, item.rewrite_failure = rewrite
+    if on_stage:
+        on_stage(STAGE_SEARCH)
+    for mode, agent in agents.items():
+        if cancelled and cancelled():
+            raise RunCancelled
+        started = time.monotonic()
+        try:
+            materials, info = agent.search_materials(
+                question.question, rewrite if rm.uses_rewrite(mode) else None
+            )
+        except Exception as exc:  # noqa: BLE001 — сбой одного режима не должен ронять прогон
+            item.modes[mode] = rm.RetrievalResult(
+                error=_error_reason(exc), seconds=time.monotonic() - started
+            )
+            continue
+        seconds = time.monotonic() - started
+        if materials.warning:
+            _, reason = agent.get_rag_status()
+            item.modes[mode] = rm.RetrievalResult(
+                error=reason or ev.SEARCH_FAILED_REASON, seconds=seconds
+            )
+            continue
+        item.modes[mode] = rm.RetrievalResult(
+            chunks=[
+                {"title": c.title, "chunk_index": c.chunk_index, "score": c.score}
+                for c in materials.chunks
+            ],
+            candidates=info.candidates if info else 0,
+            search_text=info.query if info else None,
+            seconds=seconds,
+        )
+    return item
 
 
 # --------------------------------------------------------------------------- #
@@ -333,16 +535,27 @@ def load_latest_report(report_dir: str = RAG_COMPARE_REPORT_DIR) -> dict | None:
 # --------------------------------------------------------------------------- #
 
 
-def _settings() -> dict:
+def _settings(level: str = rm.LEVEL_ANSWERS) -> dict:
+    filter_steps, filter_reference = _filter_steps()
     return {
+        "level": level,
         "strategy": RAG_SMART_AGENT_STRATEGY,
         "top_k": RAG_TOP_K,
+        "candidates": RAG_CANDIDATES,
         "min_score": RAG_MIN_SCORE,
+        "relative_margin": RAG_RELATIVE_MARGIN,
+        "min_chunk_chars": RAG_MIN_CHUNK_CHARS,
+        "max_per_doc": RAG_MAX_PER_DOC,
+        "filter_steps": filter_steps,
+        "filter_reference": filter_reference,
         "search_timeout": RAG_SEARCH_TIMEOUT_SECONDS,
         "question_timeout": RAG_COMPARE_QUESTION_TIMEOUT_SECONDS,
         "max_consecutive_failures": RAG_COMPARE_MAX_CONSECUTIVE_FAILURES,
         "model": MAIN_MODEL,
         "embeddings_model": EMBEDDINGS_MODEL,
+        "rewrite_provider": rewrite_backend.provider if rewrite_backend else "",
+        "rewrite_model": rewrite_backend.model if rewrite_backend else "",
+        "rewrite_search_mode": REWRITE_SEARCH_MODE if rewrite_backend else "",
     }
 
 
@@ -406,49 +619,104 @@ async def _send_parts(bot, chat_id: int, text: str) -> None:
         await bot.send_message(chat_id=chat_id, text=part)
 
 
+def _initial_progress(level: str, total: int) -> str:
+    if level == rm.LEVEL_SEARCH:
+        return f"⏳ Сравнение режимов поиска: обработано 0 из {total} вопросов."
+    return ev.progress_text(0, total)
+
+
 async def _run_comparison(
     bot,
     chat_id: int,
     progress_message: Message,
     questions: list[ev.Question],
     index_titles: list[str],
+    level: str = rm.LEVEL_ANSWERS,
+    modes: list[str] | None = None,
+    unavailable: dict[str, str] | None = None,
 ) -> None:
     """Фоновая задача прогона. Заканчивается одним из трёх способов: все вопросы обработаны,
     автоостановка (подряд проваленные вопросы) или остановка командой (отмена задачи) — в двух
     последних случаях сохраняется ЧАСТИЧНЫЙ отчёт. Флаг «прогон идёт» снимается в finally,
-    поэтому после любой ошибки можно запустить заново."""
+    поэтому после любой ошибки можно запустить заново. `level` — rm.LEVEL_*: answers (ответы и
+    оценка; `modes` — дополнительные режимы поиска) либо search (только поиск по `modes`);
+    `unavailable` — режимы, которые не удалось выполнить, с причиной (в отчёт)."""
     global _run_in_progress, _run_task, _stop_reason, _finalizing, _progress_done
+    modes = list(modes or [])
+    unavailable = dict(unavailable or {})
+    search_level = level == rm.LEVEL_SEARCH
     loop = asyncio.get_running_loop()
     reporter = _ProgressReporter(loop, progress_message)
     started_at = _now()
     total = len(questions)
-    results: list[ev.QuestionResult] = []
+    results: list = []
     stop_reason: str | None = None
     cancel_event = threading.Event()
+    tmp_dir = tempfile.mkdtemp(prefix="rag_modes_") if search_level else None
+    # Бюджет вопроса растёт с числом дополнительных режимов (каждый — ещё ответ и оценка):
+    # 120 с рассчитаны на два режима, а предел нужен против «зависшего» провайдера.
+    question_budget = RAG_COMPARE_QUESTION_TIMEOUT_SECONDS * (2 + len(modes)) / 2
     try:
         try:
+            agents = (
+                await asyncio.to_thread(build_mode_agents, tmp_dir, modes) if search_level else {}
+            )
+            if search_level:
+                first_stage = (
+                    STAGE_REWRITE if any(rm.uses_rewrite(m) for m in modes) else STAGE_SEARCH
+                )
+            else:
+                first_stage = ev.STAGES[0]
             for index, question in enumerate(questions, start=1):
-                reporter.post(ev.progress_text(index - 1, total, ev.STAGES[0], question.question))
-
-                def on_stage(stage: str, done: int = index - 1, text: str = question.question):
-                    reporter.post(ev.progress_text(done, total, stage, text))
-
-                results.append(
-                    await asyncio.to_thread(
-                        evaluate_question,
-                        question,
-                        index_titles,
-                        on_stage,
-                        RAG_COMPARE_QUESTION_TIMEOUT_SECONDS,
-                        cancel_event.is_set,
+                reporter.post(
+                    ev.progress_text(
+                        index - 1, total, first_stage, question.question, stage_label(first_stage)
                     )
                 )
+
+                def on_stage(stage: str, done: int = index - 1, text: str = question.question):
+                    reporter.post(ev.progress_text(done, total, stage, text, stage_label(stage)))
+
+                if search_level:
+                    results.append(
+                        await asyncio.to_thread(
+                            evaluate_retrieval,
+                            question,
+                            index_titles,
+                            agents,
+                            on_stage,
+                            cancel_event.is_set,
+                        )
+                    )
+                else:
+                    results.append(
+                        await asyncio.to_thread(
+                            evaluate_question,
+                            question,
+                            index_titles,
+                            on_stage,
+                            question_budget,
+                            cancel_event.is_set,
+                            modes,
+                        )
+                    )
                 _progress_done = index
-                if ev.should_stop(results, RAG_COMPARE_MAX_CONSECUTIVE_FAILURES):
-                    limit = RAG_COMPARE_MAX_CONSECUTIVE_FAILURES
+                limit = RAG_COMPARE_MAX_CONSECUTIVE_FAILURES
+                stop_now = (
+                    rm.should_stop(results, limit)
+                    if search_level
+                    else ev.should_stop(results, limit)
+                )
+                if stop_now:
+                    reason = (
+                        "поиск не удался во всех режимах (сервер эмбеддингов недоступен "
+                        "или повреждён индекс)"
+                        if search_level
+                        else "провайдер не отвечает или превышен лимит времени вопроса"
+                    )
                     stop_reason = (
                         f"автоостановка: {_plural_questions(limit)} подряд завершились сбоем "
-                        "(провайдер не отвечает или превышен лимит времени вопроса)"
+                        f"({reason})"
                     )
                     break
         except asyncio.CancelledError:
@@ -458,25 +726,49 @@ async def _run_comparison(
             stop_reason = _stop_reason or "по команде пользователя"
 
         _finalizing = True
-        report = ev.build_report(
-            started_at=started_at,
-            finished_at=_now(),
-            settings=_settings(),
-            results=results,
-            planned=total,
-            index_missing=[p for r in results for p in r.missing_sources],
-            status=ev.STATUS_STOPPED if stop_reason else ev.STATUS_COMPLETED,
-            stop_reason=stop_reason,
-        )
+        status = ev.STATUS_STOPPED if stop_reason else ev.STATUS_COMPLETED
+        index_missing = [p for r in results for p in r.missing_sources]
+        if search_level:
+            report = rm.build_retrieval_report(
+                started_at=started_at,
+                finished_at=_now(),
+                settings=_settings(level),
+                results=results,
+                planned=total,
+                modes=modes,
+                unavailable=unavailable,
+                index_missing=index_missing,
+                status=status,
+                stop_reason=stop_reason,
+            )
+        else:
+            report = ev.build_report(
+                started_at=started_at,
+                finished_at=_now(),
+                settings=_settings(level),
+                results=results,
+                planned=total,
+                index_missing=index_missing,
+                status=status,
+                stop_reason=stop_reason,
+                extra=(
+                    {"variant_modes": modes, "unavailable_modes": unavailable}
+                    if modes or unavailable
+                    else None
+                ),
+            )
         await asyncio.to_thread(save_report, report)
-        final_note = (
-            f"⛔ Прогон остановлен: обработано {len(results)} из {total} вопросов."
-            if stop_reason
-            else ev.progress_text(total, total) + " Готово."
-        )
+        if stop_reason:
+            final_note = f"⛔ Прогон остановлен: обработано {len(results)} из {total} вопросов."
+        elif search_level:
+            final_note = (
+                f"⏳ Сравнение режимов поиска: обработано {total} из {total} вопросов. Готово."
+            )
+        else:
+            final_note = ev.progress_text(total, total) + " Готово."
         await reporter.finish(final_note)
-        await _send_parts(bot, chat_id, ev.format_summary(report))
-        await _send_parts(bot, chat_id, ev.format_table(report))
+        for text in _report_texts(report):
+            await _send_parts(bot, chat_id, text)
     except Exception:  # noqa: BLE001 — сообщаем в чат и освобождаем флаг (finally)
         logger.exception("Прогон сравнения RAG завершился неожиданной ошибкой.")
         try:
@@ -493,6 +785,21 @@ async def _run_comparison(
         _run_task = None
         _stop_reason = None
         _finalizing = False
+        if tmp_dir:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def _report_texts(report: dict) -> list[str]:
+    """Сообщения итога для отчёта любого вида: сводка и таблица по вопросам; у сравнения
+    ответов с дополнительными режимами поиска — ещё блок по режимам."""
+    if rm.is_retrieval_report(report):
+        return [rm.format_retrieval_summary(report), rm.format_retrieval_table(report)]
+    texts = [ev.format_summary(report)]
+    variants = rm.format_variants_summary(report)
+    if variants:
+        texts.append(variants)
+    texts.append(ev.format_table(report))
+    return texts
 
 
 # --------------------------------------------------------------------------- #
@@ -524,6 +831,24 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(f"❌ Контрольный набор вопросов некорректен: {exc}.")
         return
 
+    # Уровень и режимы задаёт оператор (RAG_COMPARE_LEVEL/RAG_COMPARE_MODES); пользователь чата
+    # их не выбирает. Недопустимое значение — понятное сообщение, а не прогон «как получится».
+    try:
+        level = rm.parse_level(RAG_COMPARE_LEVEL)
+        selected_modes = rm.parse_modes(RAG_COMPARE_MODES)
+    except rm.ModeSettingError as exc:
+        await update.message.reply_text(f"❌ Настройки сравнения режимов некорректны: {exc}")
+        return
+    modes, unavailable = rm.resolve_modes(selected_modes, level, rewrite_backend is not None)
+    if level == rm.LEVEL_SEARCH and not modes:
+        details = "; ".join(f"{rm.MODE_TITLES[k]}: {r}" for k, r in unavailable.items())
+        await update.message.reply_text(
+            "❌ Для уровня «только поиск» нет доступных режимов"
+            + (f" ({details})" if details else "")
+            + ". Проверьте RAG_COMPARE_MODES и REWRITE_PROVIDER."
+        )
+        return
+
     if _run_in_progress:
         await update.message.reply_text(
             f"⏳ Прогон уже идёт: обработано {_progress_done} из {_progress_total} вопросов.\n"
@@ -553,14 +878,25 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 + " ожидаемого документа нет в индексе (он мог быть пропущен при индексации): "
                 "они будут помечены в отчёте."
             )
+        for key, reason in unavailable.items():
+            await update.message.reply_text(
+                f"⚠️ Режим «{rm.MODE_TITLES[key]}» недоступен: {reason}. Он будет помечен в отчёте."
+            )
         progress_message = await update.message.reply_text(
-            ev.progress_text(0, len(questions))
+            _initial_progress(level, len(questions))
             + "\nБот остаётся доступен; итог придёт сюда, подробности — "
             "/research_rag_compare_report <номер>, остановить — /research_rag_compare_stop."
         )
         task = asyncio.get_running_loop().create_task(
             _run_comparison(
-                context.bot, update.effective_chat.id, progress_message, questions, index_titles
+                context.bot,
+                update.effective_chat.id,
+                progress_message,
+                questions,
+                index_titles,
+                level,
+                modes,
+                unavailable,
             )
         )
     except BaseException:
@@ -608,8 +944,9 @@ async def rag_compare_report_command(update: Update, context: ContextTypes.DEFAU
 
     processed = len(report["questions"])
     planned = report.get("planned", processed)
+    retrieval = rm.is_retrieval_report(report)
     if not context.args:
-        text = ev.format_summary(report) + "\n\n" + ev.format_table(report)
+        text = "\n\n".join(_report_texts(report))
     else:
         try:
             number = int(context.args[0])
@@ -619,7 +956,11 @@ async def rag_compare_report_command(update: Update, context: ContextTypes.DEFAU
                 "/research_rag_compare_report <номер вопроса>"
             )
             return
-        text = ev.format_question_detail(report, number)
+        text = (
+            rm.format_retrieval_detail(report, number)
+            if retrieval
+            else ev.format_question_detail(report, number, rm.MODE_TITLES)
+        )
         if text is None:
             if 1 <= number <= planned:
                 await update.message.reply_text(

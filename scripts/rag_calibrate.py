@@ -9,12 +9,21 @@ EMBEDDINGS_MODEL, стратегии или RAG_FIXED_CHUNK_* калибровк
 
 Запуск из корня проекта (нужны .env бота и запущенный Ollama):
     python scripts/rag_calibrate.py [--strategy structural] [--top-k 3] [--snippets]
+    python scripts/rag_calibrate.py --rewrite     # с переписыванием вопроса (REWRITE_PROVIDER)
+
+С флагом --rewrite для каждого запроса печатаются оценки top-1 по исходному вопросу и по
+переписанному запросу (модель и провайдер — из REWRITE_PROVIDER/REWRITE_MODEL в .env), а
+сводка по группам считается для трёх вариантов: исходный, переписанный и «оба» (лучшая из двух
+оценок — режим REWRITE_SEARCH_MODE=both). Переписывание сдвигает распределение оценок, поэтому
+порог при включённом переписывании подбирают именно по этой сводке (design.md изменения
+add-rag-rerank-and-rewrite, решение 4).
 """
 
 import argparse
 import os
 import statistics
 import sys
+import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
@@ -76,12 +85,108 @@ def summarize(scores_by_group: dict[str, list[float]]) -> list[str]:
     return lines
 
 
+def summarize_variants(by_group: dict[str, dict[str, list[float]]]) -> list[str]:
+    """Сводка по группам для вариантов поиска (исходный / переписанный / оба)."""
+    lines = ["", "Сводка по группам (score top-1) для трёх вариантов поиска:"]
+    for group in GROUPS:
+        variants = by_group.get(group)
+        if not variants:
+            lines.append(f"  {group}: нет запросов")
+            continue
+        for variant, scores in variants.items():
+            if not scores:
+                continue
+            lines.append(
+                f"  {group} {variant:<11} n={len(scores)}  min={min(scores):.3f}  "
+                f"median={statistics.median(scores):.3f}  max={max(scores):.3f}"
+            )
+    for variant in ("исходный", "переписанный", "оба"):
+        a_scores = by_group.get("A", {}).get(variant, [])
+        c_scores = by_group.get("C", {}).get(variant, [])
+        if a_scores and c_scores:
+            a_min, c_max = min(a_scores), max(c_scores)
+            verdict = (
+                f"не пересекаются, зазор {c_max:.3f} … {a_min:.3f}"
+                if a_min > c_max
+                else f"ПЕРЕСЕКАЮТСЯ (min A = {a_min:.3f} <= max C = {c_max:.3f})"
+            )
+            lines.append(f"  A и C, вариант «{variant}»: {verdict}")
+    return lines
+
+
+def run_rewrite(args, queries: list[tuple[str, str]], config) -> int:
+    """Калибровка с переписыванием: top-1 по исходному вопросу и по переписанному запросу."""
+    from agents.smart_agent import SmartAgent
+    from providers.embeddings_client import embed_texts
+    from providers.rewrite_client import rewrite_backend
+    from rag.index_store import search
+
+    if rewrite_backend is None:
+        print(
+            "Переписывание не настроено: задайте REWRITE_PROVIDER (и REWRITE_MODEL для ollama) "
+            "в .env, а для deepseek/kimi — соответствующий API-ключ.",
+            file=sys.stderr,
+        )
+        return 2
+    agent = SmartAgent(
+        "rag_calibrate",
+        memory_dir=tempfile.mkdtemp(prefix="rag_calibrate_"),
+        mcp_moex_dir="",
+        mcp_bybit_dir="",
+        cbr_enabled=False,
+    )
+    print(
+        f"Стратегия: {args.strategy}; индекс: {config.RAG_INDEX_DIR}; модель эмбеддингов: "
+        f"{config.EMBEDDINGS_MODEL}; переписывание: {rewrite_backend.provider}/"
+        f"{rewrite_backend.model}; запросов: {len(queries)}"
+    )
+    print(f"{'гр':<3} {'исх.':>6} {'перепис.':>8} {'оба':>6}  запрос → переписанный запрос")
+
+    by_group: dict[str, dict[str, list[float]]] = {}
+    failures = 0
+    for group, query in queries:
+        rewritten, failure = agent.rewrite_question(query)
+        texts = [query] + ([rewritten] if rewritten else [])
+        vectors = embed_texts(texts)
+        tops: list[float | None] = []
+        for vector in vectors:
+            results = search(args.strategy, config.RAG_INDEX_DIR, vector, 1)
+            tops.append(results[0].score if results else None)
+        original = tops[0]
+        rewritten_score = tops[1] if len(tops) > 1 else None
+        if original is None:
+            print(f"{group:<3} {'—':>6} {'—':>8} {'—':>6}  {query}  (пустой индекс)")
+            continue
+        both = max(original, rewritten_score) if rewritten_score is not None else original
+        variants = by_group.setdefault(group, {"исходный": [], "переписанный": [], "оба": []})
+        variants["исходный"].append(original)
+        variants["оба"].append(both)
+        if rewritten_score is not None:
+            variants["переписанный"].append(rewritten_score)
+            note = f"→ {rewritten}"
+        else:
+            failures += 1
+            note = f"→ (переписывание не удалось: {failure})"
+        shown = f"{rewritten_score:>8.3f}" if rewritten_score is not None else f"{'—':>8}"
+        print(f"{group:<3} {original:>6.3f} {shown} {both:>6.3f}  {query} {note}")
+
+    print("\n".join(summarize_variants(by_group)))
+    if failures:
+        print(f"\nПереписывание не удалось на {failures} запросах — они учтены как «исходный».")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Калибровка RAG_MIN_SCORE")
     parser.add_argument("--strategy", default="structural", help="стратегия индекса")
     parser.add_argument("--top-k", type=int, default=3, help="сколько чанков искать")
     parser.add_argument("--queries", default=DEFAULT_QUERIES_FILE, help="файл с запросами")
     parser.add_argument("--snippets", action="store_true", help="печатать начало текста top-1")
+    parser.add_argument(
+        "--rewrite",
+        action="store_true",
+        help="сравнить оценки по исходному вопросу и по переписанному (REWRITE_PROVIDER)",
+    )
     args = parser.parse_args()
 
     if not os.path.isfile(args.queries):
@@ -108,6 +213,9 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+
+    if args.rewrite:
+        return run_rewrite(args, queries, config)
 
     print(
         f"Стратегия: {args.strategy}; индекс: {config.RAG_INDEX_DIR}; "

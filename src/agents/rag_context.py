@@ -71,6 +71,174 @@ def filter_by_score(chunks: list, min_score: float) -> list:
     return [chunk for chunk in chunks if chunk.score >= min_score]
 
 
+# Причины отбрасывания кандидата вторым этапом (ключи Selection.dropped; порядок — порядок
+# шагов, он же порядок показа в /smart_agent_show).
+DROP_THRESHOLD = "threshold"
+DROP_MARGIN = "margin"
+DROP_SHORT = "short"
+DROP_DUPLICATE = "duplicate"
+DROP_PER_DOC = "per_doc"
+DROP_TOP_K = "top_k"
+DROP_REASONS = (
+    DROP_THRESHOLD,
+    DROP_MARGIN,
+    DROP_SHORT,
+    DROP_DUPLICATE,
+    DROP_PER_DOC,
+    DROP_TOP_K,
+)
+
+# Относительный порог от этого значения и выше не отсекает ничего (нейтральное значение).
+_MARGIN_OFF = 1.0
+# Допуск при сравнении вещественных оценок: чанк ровно на границе не должен теряться
+# из-за погрешности float32 у FAISS.
+_SCORE_EPSILON = 1e-6
+
+
+@dataclass(frozen=True)
+class SelectionSettings:
+    """Параметры второго этапа отбора (config.RAG_*, design.md изменения
+    add-rag-rerank-and-rewrite, решение 1). Нейтральные значения отключают шаг:
+    relative_margin >= 1, min_chunk_chars <= 0, max_per_doc >= top_k."""
+
+    top_k: int
+    min_score: float
+    relative_margin: float = _MARGIN_OFF
+    min_chunk_chars: int = 0
+    max_per_doc: int = 1_000_000
+
+
+@dataclass(frozen=True)
+class Selection:
+    """Итог второго этапа: отобранные чанки (по убыванию близости), число кандидатов на
+    входе и сколько отброшено по каждой причине (ключи — DROP_*)."""
+
+    chunks: list = field(default_factory=list)
+    candidates: int = 0
+    dropped: dict = field(default_factory=dict)
+
+
+# Состояние переписывания вопроса на последнем поиске (SearchInfo.rewrite_status).
+REWRITE_OFF = "off"  # переписывание не настроено оператором
+REWRITE_OK = "ok"  # поиск шёл по переписанному запросу
+REWRITE_FAILED = "failed"  # вызов не удался — поиск по исходному вопросу
+
+_DROP_LABELS = {
+    DROP_THRESHOLD: "ниже порога",
+    DROP_MARGIN: "слабее лучшего",
+    DROP_SHORT: "слишком короткие",
+    DROP_DUPLICATE: "дубликаты",
+    DROP_PER_DOC: "лишние из одного документа",
+    DROP_TOP_K: "сверх лимита",
+}
+
+
+@dataclass(frozen=True)
+class SearchInfo:
+    """Итог последнего поиска для /smart_agent_show (в памяти агента, на диск не пишется):
+    какой текст искали и как прошёл отбор. `query` — переписанный запрос (None — искали по
+    вопросу как есть); `both` — искали и по исходному вопросу, и по переписанному."""
+
+    query: str | None = None
+    rewrite_status: str = REWRITE_OFF
+    rewrite_reason: str | None = None
+    both: bool = False
+    candidates: int = 0
+    selected: int = 0
+    dropped: dict = field(default_factory=dict)
+
+
+def describe_search(info: SearchInfo) -> list[str]:
+    """Строки для показа состояния: поисковый текст и итог отбора кандидатов. Текст вопроса
+    пользователя здесь не повторяется — только переписанный запрос."""
+    if info.rewrite_status == REWRITE_OK and info.query:
+        scope = " (и исходный вопрос)" if info.both else ""
+        query_line = f"Поисковый запрос: «{info.query}»{scope}"
+    elif info.rewrite_status == REWRITE_FAILED:
+        reason = f": {info.rewrite_reason}" if info.rewrite_reason else ""
+        query_line = f"Поисковый запрос: исходный вопрос (переписывание не удалось{reason})"
+    else:
+        query_line = "Поисковый запрос: исходный вопрос (без переписывания)"
+
+    dropped = ", ".join(
+        f"{_DROP_LABELS[reason]} — {info.dropped[reason]}"
+        for reason in DROP_REASONS
+        if info.dropped.get(reason)
+    )
+    selection_line = f"Кандидатов найдено: {info.candidates}, отобрано: {info.selected}"
+    if dropped:
+        selection_line += f" (отброшено: {dropped})"
+    return [query_line, selection_line]
+
+
+def _normalized_text(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def select_chunks(candidates: list, settings: SelectionSettings) -> Selection:
+    """Второй этап после поиска: из кандидатов — не более settings.top_k чанков.
+
+    Шаги в фиксированном порядке (каждый получает то, что оставил предыдущий):
+    1. оценка не ниже `min_score`;
+    2. оценка не ниже оценки лучшего из оставшихся минус `relative_margin`;
+    3. длина текста не меньше `min_chunk_chars` (мелкие чанки без содержания);
+    4. дубликаты по нормализованному тексту (остаётся лучший по оценке);
+    5. не более `max_per_doc` чанков одного документа (по заголовку);
+    6. первые `top_k`.
+    Порядок результата — по убыванию оценки. Порог применяется ко ВСЕМ кандидатам, а не
+    к уже урезанной выдаче, поэтому отсеянный чанк не занимает место прошедшего.
+    Чистая функция: без сети и моделей."""
+    dropped = {reason: 0 for reason in DROP_REASONS}
+    # Стабильная сортировка: при равных оценках сохраняется порядок поиска.
+    ordered = sorted(candidates, key=lambda chunk: -chunk.score)
+
+    remaining = []
+    for chunk in ordered:
+        if chunk.score >= settings.min_score:
+            remaining.append(chunk)
+        else:
+            dropped[DROP_THRESHOLD] += 1
+
+    if remaining and settings.relative_margin < _MARGIN_OFF:
+        floor = remaining[0].score - settings.relative_margin - _SCORE_EPSILON
+        kept = [chunk for chunk in remaining if chunk.score >= floor]
+        dropped[DROP_MARGIN] += len(remaining) - len(kept)
+        remaining = kept
+
+    if settings.min_chunk_chars > 0:
+        kept = [
+            chunk for chunk in remaining if len(chunk.text.strip()) >= settings.min_chunk_chars
+        ]
+        dropped[DROP_SHORT] += len(remaining) - len(kept)
+        remaining = kept
+
+    seen: set[str] = set()
+    unique = []
+    for chunk in remaining:
+        key = _normalized_text(chunk.text)
+        if key in seen:
+            dropped[DROP_DUPLICATE] += 1
+            continue
+        seen.add(key)
+        unique.append(chunk)
+    remaining = unique
+
+    per_doc: dict[str, int] = {}
+    limited = []
+    for chunk in remaining:
+        count = per_doc.get(chunk.title, 0)
+        if count >= settings.max_per_doc:
+            dropped[DROP_PER_DOC] += 1
+            continue
+        per_doc[chunk.title] = count + 1
+        limited.append(chunk)
+    remaining = limited
+
+    selected = remaining[: settings.top_k]
+    dropped[DROP_TOP_K] += len(remaining) - len(selected)
+    return Selection(chunks=selected, candidates=len(candidates), dropped=dropped)
+
+
 def build_rules_message() -> dict[str, str]:
     """Системное сообщение с правилами обращения с материалами. Добавляется в контекст
     только когда фрагменты в запросе есть."""
