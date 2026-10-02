@@ -25,9 +25,8 @@
   строкой `--------`). См. `src/rag/CLAUDE.md`.
 - `rag_compare.py` + `rag_compare_eval.py` — `/research_rag_compare`
   `/research_rag_compare_stop` и `/research_rag_compare_report [номер]`: сравнение ответов `/smart_agent` с выключенным и
-  включённым слоем `rag` на контрольных вопросах из файла оператора (спека — `openspec/specs/rag-answer-comparison/`
-  после архивации изменения `add-rag-compare-command`, до того —
-  `openspec/changes/add-rag-compare-command/`). Правила и тексты — в чистом
+  включённым слоем `rag` на контрольных вопросах из файла оператора (спека — `openspec/specs/rag-answer-comparison/`;
+  обоснования — `openspec/changes/archive/*add-rag-compare-command/design.md`). Правила и тексты — в чистом
   `rag_compare_eval.py` (тесты `tests/test_rag_compare_eval.py`), обращения к агенту/LLM/диску и
   Telegram — в `rag_compare.py`.
 
