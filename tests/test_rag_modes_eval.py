@@ -66,8 +66,8 @@ def test_resolve_empty_choice_answers_level_means_no_extra_modes():
 
 def test_resolve_rewrite_modes_unavailable_without_rewrite_with_reason():
     active, unavailable = rm.resolve_modes([], rm.LEVEL_SEARCH, rewrite_configured=False)
-    assert active == [rm.MODE_BASELINE, rm.MODE_FILTER]
-    assert set(unavailable) == {rm.MODE_REWRITE, rm.MODE_REWRITE_FILTER}
+    assert active == [rm.MODE_BASELINE, rm.MODE_FILTER, rm.MODE_CONCAT]
+    assert set(unavailable) == {rm.MODE_REWRITE, rm.MODE_REWRITE_FILTER, rm.MODE_REWRITE_CONTEXT}
     assert all(reason == rm.REWRITE_NOT_CONFIGURED for reason in unavailable.values())
 
 
@@ -370,3 +370,157 @@ def test_summary_mentions_reference_filter_origin():
     text = rm.format_retrieval_summary(report)
     assert "эталонные, у оператора шаги выключены" in text
     assert "отн. порог 0.08" in text
+
+
+# --- режимы с контекстом диалога (изменение add-rag-rewrite-dialog-context) -----------------------
+
+
+def _dialog_question(number: int, sources=("Облигации",), history=()) -> ev.Question:
+    return ev.Question(number=number, question=f"Вопрос {number}?", kind="concept",
+                       facts=("a",), sources=tuple(sources), history=tuple(history))
+
+
+def _dialog_retrieval(number, history=(), sources=("Облигации",), **modes) -> QuestionRetrieval:
+    return QuestionRetrieval(question=_dialog_question(number, sources, history), modes=dict(modes))
+
+
+def test_new_modes_are_appended_after_the_existing_ones_in_order():
+    assert rm.RETRIEVAL_MODES[:4] == (
+        rm.MODE_BASELINE, rm.MODE_FILTER, rm.MODE_REWRITE, rm.MODE_REWRITE_FILTER)
+    assert rm.RETRIEVAL_MODES[4:] == (rm.MODE_REWRITE_CONTEXT, rm.MODE_CONCAT)
+    assert rm.MODE_TITLES[rm.MODE_REWRITE_CONTEXT] == "с контекстом диалога"
+    assert rm.MODE_TITLES[rm.MODE_CONCAT] == "склейка"
+
+
+def test_mode_flags_for_dialog_modes():
+    assert rm.uses_rewrite(rm.MODE_REWRITE_CONTEXT) and not rm.uses_filter(rm.MODE_REWRITE_CONTEXT)
+    assert rm.uses_history(rm.MODE_REWRITE_CONTEXT) and rm.uses_history(rm.MODE_CONCAT)
+    assert not rm.uses_rewrite(rm.MODE_CONCAT) and not rm.uses_filter(rm.MODE_CONCAT)
+    assert not rm.uses_history(rm.MODE_REWRITE) and not rm.uses_history(rm.MODE_BASELINE)
+
+
+def test_parse_modes_accepts_dialog_modes_in_canonical_order():
+    assert rm.parse_modes("concat, rewrite_context, baseline") == [
+        rm.MODE_BASELINE, rm.MODE_REWRITE_CONTEXT, rm.MODE_CONCAT]
+
+
+def test_concat_works_without_rewrite_but_context_mode_needs_it():
+    active, unavailable = rm.resolve_modes(
+        [rm.MODE_REWRITE_CONTEXT, rm.MODE_CONCAT], rm.LEVEL_SEARCH, rewrite_configured=False)
+    assert active == [rm.MODE_CONCAT]
+    assert unavailable == {rm.MODE_REWRITE_CONTEXT: rm.REWRITE_NOT_CONFIGURED}
+
+
+def test_dialog_modes_are_unavailable_at_the_answers_level_with_a_reason():
+    active, unavailable = rm.resolve_modes(
+        [rm.MODE_FILTER, rm.MODE_REWRITE_CONTEXT, rm.MODE_CONCAT],
+        rm.LEVEL_ANSWERS, rewrite_configured=True)
+    assert active == [rm.MODE_FILTER]
+    assert set(unavailable) == {rm.MODE_REWRITE_CONTEXT, rm.MODE_CONCAT}
+    assert all(reason == rm.HISTORY_MODE_ANSWERS_REASON for reason in unavailable.values())
+
+
+def test_history_questions_setting_uses_working_value_or_the_reference():
+    assert rm.history_questions_setting(2) == (2, False)
+    assert rm.history_questions_setting(0) == (rm.REFERENCE_HISTORY_QUESTIONS, True)
+    assert rm.REFERENCE_HISTORY_QUESTIONS == 3
+
+
+def test_concat_text_joins_the_last_history_question_with_the_current_one():
+    assert rm.concat_text(["Как выбирать облигации?", "А ОФЗ?"], "А акции?") == "А ОФЗ? А акции?"
+    assert rm.concat_text(("Как выбирать облигации?",), "А акции?") == (
+        "Как выбирать облигации? А акции?")
+
+
+def test_concat_text_without_history_is_the_question_itself():
+    assert rm.concat_text([], "А акции?") == "А акции?"
+    assert rm.concat_text((), "А акции?") == "А акции?"
+
+
+def test_split_by_history_separates_multi_turn_from_standalone_questions():
+    multi_item = _dialog_retrieval(1, history=["Как выбирать облигации?"])
+    single_item = _dialog_retrieval(2)
+    multi, single = rm.split_by_history([multi_item, single_item])
+    assert multi == [multi_item] and single == [single_item]
+    assert rm.is_multi_turn(multi_item) and not rm.is_multi_turn(single_item)
+
+
+def test_dialog_report_fields_survive_a_roundtrip():
+    item = _dialog_retrieval(3, history=["Как выбирать облигации?"],
+                             rewrite_context=RetrievalResult(history_used=1, search_text="акции"))
+    item.context_rewrite_query = "выбор акций"
+    item.context_rewrite_seconds = 1.2
+    item.context_rewrite_failure = None
+    restored = QuestionRetrieval.from_dict(item.to_dict())
+    assert restored.question.history == ("Как выбирать облигации?",)
+    assert restored.context_rewrite_query == "выбор акций"
+    assert restored.context_rewrite_seconds == 1.2
+    assert restored.modes[rm.MODE_REWRITE_CONTEXT].history_used == 1
+
+
+def test_old_retrieval_report_without_dialog_fields_still_loads():
+    item = _dialog_retrieval(1, baseline=_mode("Облигации 1"))
+    data = item.to_dict()
+    for key in ("history", "context_rewrite"):
+        del data[key]
+    data["modes"]["baseline"].pop("history_used")
+    restored = QuestionRetrieval.from_dict(data)
+    assert restored.question.history == ()
+    assert restored.context_rewrite_query is None
+    assert restored.modes["baseline"].history_used == 0
+
+
+def _dialog_report(results, modes, **settings):
+    return rm.build_retrieval_report(
+        started_at="-", finished_at="-", settings=settings, results=results,
+        planned=len(results), modes=modes, unavailable={})
+
+
+def test_summary_splits_metrics_into_multi_turn_and_standalone_groups():
+    results = [
+        _dialog_retrieval(1, history=["Как выбирать облигации?"],
+                          baseline=_mode("Акции"), rewrite_context=_mode("Облигации 1")),
+        _dialog_retrieval(2, baseline=_mode("Облигации 1"), rewrite_context=_mode("Облигации 1")),
+    ]
+    text = rm.format_retrieval_summary(
+        _dialog_report(results, [rm.MODE_BASELINE, rm.MODE_REWRITE_CONTEXT]))
+    assert "▶ Многоходовые вопросы (1)" in text and "▶ Самостоятельные вопросы (1)" in text
+    multi_block = text.split("▶ Многоходовые вопросы (1)")[1].split("▶ Самостоятельные")[0]
+    assert "попал в ожидаемый документ: 0 из 1" in multi_block  # baseline промахнулся
+    assert "+100 п.п. к базовому" in multi_block  # контекст диалога попал
+
+
+def test_summary_has_no_groups_when_there_is_only_one_kind_of_question():
+    results = [_dialog_retrieval(1, baseline=_mode("Облигации 1"))]
+    text = rm.format_retrieval_summary(_dialog_report(results, [rm.MODE_BASELINE]))
+    assert "▶" not in text
+
+
+def test_summary_reports_context_rewrite_statistics():
+    item = _dialog_retrieval(1, history=["Как выбирать облигации?"], baseline=_mode("Акции"))
+    item.context_rewrite_query = "выбор акций"
+    item.context_rewrite_seconds = 2.0
+    text = rm.format_retrieval_summary(_dialog_report([item], [rm.MODE_BASELINE]))
+    assert "Переписывание с историей диалога: удалось 1 из 1" in text
+
+
+def test_summary_settings_mention_the_reference_history_size():
+    text = rm.format_retrieval_summary(_dialog_report(
+        [], [rm.MODE_BASELINE], history_questions=3, history_reference=True))
+    assert "эталонное" in text and "в режиме «с контекстом диалога» (эталонное): 3" in text
+    working = rm.format_retrieval_summary(_dialog_report(
+        [], [rm.MODE_BASELINE], history_questions=2, history_reference=False))
+    assert "(рабочее): 2" in working
+
+
+def test_detail_shows_history_and_both_rewrites():
+    item = _dialog_retrieval(1, history=["Как выбирать облигации?", "А ОФЗ?"],
+                             baseline=_mode("Акции"))
+    item.rewrite_query = "акции"
+    item.rewrite_seconds = 1.0
+    item.context_rewrite_query = "выбор акций после облигаций"
+    item.context_rewrite_seconds = 1.5
+    text = rm.format_retrieval_detail(_dialog_report([item], [rm.MODE_BASELINE]), 1)
+    assert "Как выбирать облигации? → А ОФЗ?" in text
+    assert "Переписанный запрос (1.0 с): акции" in text
+    assert "Переписанный запрос с историей (1.5 с): выбор акций после облигаций" in text

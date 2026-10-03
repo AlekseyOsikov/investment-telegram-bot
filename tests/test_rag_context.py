@@ -241,7 +241,7 @@ def test_describe_search_rewritten_query_and_dropped_reasons():
     )
     lines = rag_context.describe_search(info)
     assert lines[0] == "Поисковый запрос: «облигации ВДО риски»"
-    assert lines[1] == (
+    assert lines[2] == (
         "Кандидатов найдено: 10, отобрано: 3 (отброшено: ниже порога — 4, слишком короткие — 2)"
     )
 
@@ -266,4 +266,23 @@ def test_describe_search_without_rewrite_and_without_dropped_has_no_dropped_clau
     info = rag_context.SearchInfo(candidates=3, selected=3)
     lines = rag_context.describe_search(info)
     assert lines[0] == "Поисковый запрос: исходный вопрос (без переписывания)"
-    assert lines[1] == "Кандидатов найдено: 3, отобрано: 3"
+    assert lines[2] == "Кандидатов найдено: 3, отобрано: 3"
+
+
+def test_describe_search_always_shows_the_number_of_history_questions():
+    without = rag_context.describe_search(rag_context.SearchInfo(candidates=3, selected=3))
+    assert without[1] == "Прошлых вопросов в переписывании: 0"
+    used = rag_context.describe_search(
+        rag_context.SearchInfo(
+            query="выбор акций", rewrite_status=rag_context.REWRITE_OK, history_used=2
+        )
+    )
+    assert used[1] == "Прошлых вопросов в переписывании: 2"
+
+
+def test_describe_search_does_not_repeat_question_texts():
+    info = rag_context.SearchInfo(
+        query="выбор акций", rewrite_status=rag_context.REWRITE_OK, history_used=2
+    )
+    text = "\n".join(rag_context.describe_search(info))
+    assert "как выбирать облигации" not in text

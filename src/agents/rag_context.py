@@ -146,11 +146,15 @@ class SearchInfo:
     candidates: int = 0
     selected: int = 0
     dropped: dict = field(default_factory=dict)
+    # Сколько прошлых вопросов пользователя ушло в вызов переписывания (0 — история не
+    # передавалась: выключена, слой short_term выключен, диалог пуст или вызов не удался).
+    history_used: int = 0
 
 
 def describe_search(info: SearchInfo) -> list[str]:
-    """Строки для показа состояния: поисковый текст и итог отбора кандидатов. Текст вопроса
-    пользователя здесь не повторяется — только переписанный запрос."""
+    """Строки для показа состояния: поисковый текст, число прошлых вопросов в переписывании и итог
+    отбора кандидатов. Текст вопроса пользователя и тексты прошлых вопросов здесь не повторяются
+    (они уже доступны как краткосрочная память) — только переписанный запрос и число."""
     if info.rewrite_status == REWRITE_OK and info.query:
         scope = " (и исходный вопрос)" if info.both else ""
         query_line = f"Поисковый запрос: «{info.query}»{scope}"
@@ -168,7 +172,8 @@ def describe_search(info: SearchInfo) -> list[str]:
     selection_line = f"Кандидатов найдено: {info.candidates}, отобрано: {info.selected}"
     if dropped:
         selection_line += f" (отброшено: {dropped})"
-    return [query_line, selection_line]
+    history_line = f"Прошлых вопросов в переписывании: {info.history_used}"
+    return [query_line, history_line, selection_line]
 
 
 def _normalized_text(text: str) -> str:

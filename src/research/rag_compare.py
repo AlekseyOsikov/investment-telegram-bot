@@ -69,6 +69,7 @@ from config import (
     RAG_SMART_AGENT_STRATEGY,
     RAG_TOP_K,
     REQUEST_TIMEOUT_SECONDS,
+    REWRITE_HISTORY_QUESTIONS,
     REWRITE_SEARCH_MODE,
     TELEGRAM_MESSAGE_LIMIT,
 )
@@ -441,33 +442,63 @@ def evaluate_retrieval(
 ) -> rm.QuestionRetrieval:
     """Поиск по каждому режиму для одного вопроса. Если среди режимов есть переписывающие,
     вопрос переписывается ОДИН раз и результат переиспользуется (воспроизводимо и дешевле);
-    сбой переписывания не проваливает вопрос — режимы ищут по исходному тексту, а причина
+    режим «с контекстом диалога» у вопроса с историей переписывает его ещё раз — с предыдущими
+    вопросами из набора (не из памяти агента: изолированные агенты своей истории не имеют).
+    Сбой переписывания не проваливает вопрос — режимы ищут по исходному тексту, а причина
     попадает в отчёт. Сбой поиска в режиме — причина в результате этого режима, а не
-    исключение."""
+    исключение. У вопроса без истории «склейка» ищет по самому вопросу (как «как до изменения»),
+    а «с контекстом диалога» использует обычное переписывание (как «с переписыванием»)."""
     item = rm.QuestionRetrieval(
         question=question, missing_sources=ev.sources_not_indexed(question.sources, index_titles)
     )
-    rewrite_modes = [mode for mode in agents if rm.uses_rewrite(mode)]
-    rewrite: tuple[str | None, str | None] | None = None
-    if rewrite_modes:
+    history = list(question.history)
+    history_size, _ = rm.history_questions_setting(REWRITE_HISTORY_QUESTIONS)
+    context_history = history[-history_size:] if history else []
+    context_mode = rm.MODE_REWRITE_CONTEXT in agents
+    plain_modes = [m for m in agents if rm.uses_rewrite(m) and m != rm.MODE_REWRITE_CONTEXT]
+    need_context = context_mode and bool(context_history)
+    need_plain = bool(plain_modes) or (context_mode and not context_history)
+
+    plain_rewrite: tuple[str | None, str | None] | None = None
+    context_rewrite: tuple[str | None, str | None] | None = None
+    if need_plain:
+        if cancelled and cancelled():
+            raise RunCancelled
+        if on_stage:
+            on_stage(STAGE_REWRITE)
+        agent = agents[(plain_modes or [rm.MODE_REWRITE_CONTEXT])[0]]
+        started = time.monotonic()
+        plain_rewrite = agent.rewrite_question(question.question)
+        item.rewrite_seconds = time.monotonic() - started
+        item.rewrite_query, item.rewrite_failure = plain_rewrite
+    if need_context:
         if cancelled and cancelled():
             raise RunCancelled
         if on_stage:
             on_stage(STAGE_REWRITE)
         started = time.monotonic()
-        rewrite = agents[rewrite_modes[0]].rewrite_question(question.question)
-        item.rewrite_seconds = time.monotonic() - started
-        item.rewrite_query, item.rewrite_failure = rewrite
+        context_rewrite = agents[rm.MODE_REWRITE_CONTEXT].rewrite_question(
+            question.question, context_history
+        )
+        item.context_rewrite_seconds = time.monotonic() - started
+        item.context_rewrite_query, item.context_rewrite_failure = context_rewrite
     if on_stage:
         on_stage(STAGE_SEARCH)
     for mode, agent in agents.items():
         if cancelled and cancelled():
             raise RunCancelled
+        text = question.question
+        rewrite: tuple[str | None, str | None] | None = None
+        mode_history: list[str] | None = None
+        if mode == rm.MODE_REWRITE_CONTEXT and need_context:
+            rewrite, mode_history = context_rewrite, context_history
+        elif rm.uses_rewrite(mode):
+            rewrite = plain_rewrite
+        elif mode == rm.MODE_CONCAT:
+            text = rm.concat_text(history, question.question)
         started = time.monotonic()
         try:
-            materials, info = agent.search_materials(
-                question.question, rewrite if rm.uses_rewrite(mode) else None
-            )
+            materials, info = agent.search_materials(text, rewrite, mode_history)
         except Exception as exc:  # noqa: BLE001 — сбой одного режима не должен ронять прогон
             item.modes[mode] = rm.RetrievalResult(
                 error=_error_reason(exc), seconds=time.monotonic() - started
@@ -480,14 +511,18 @@ def evaluate_retrieval(
                 error=reason or ev.SEARCH_FAILED_REASON, seconds=seconds
             )
             continue
+        search_text = info.query if info else None
+        if mode == rm.MODE_CONCAT and text != question.question:
+            search_text = text
         item.modes[mode] = rm.RetrievalResult(
             chunks=[
                 {"title": c.title, "chunk_index": c.chunk_index, "score": c.score}
                 for c in materials.chunks
             ],
             candidates=info.candidates if info else 0,
-            search_text=info.query if info else None,
+            search_text=search_text,
             seconds=seconds,
+            history_used=info.history_used if info else 0,
         )
     return item
 
@@ -537,6 +572,7 @@ def load_latest_report(report_dir: str = RAG_COMPARE_REPORT_DIR) -> dict | None:
 
 def _settings(level: str = rm.LEVEL_ANSWERS) -> dict:
     filter_steps, filter_reference = _filter_steps()
+    history_questions, history_reference = rm.history_questions_setting(REWRITE_HISTORY_QUESTIONS)
     return {
         "level": level,
         "strategy": RAG_SMART_AGENT_STRATEGY,
@@ -548,6 +584,8 @@ def _settings(level: str = rm.LEVEL_ANSWERS) -> dict:
         "max_per_doc": RAG_MAX_PER_DOC,
         "filter_steps": filter_steps,
         "filter_reference": filter_reference,
+        "history_questions": history_questions,
+        "history_reference": history_reference,
         "search_timeout": RAG_SEARCH_TIMEOUT_SECONDS,
         "question_timeout": RAG_COMPARE_QUESTION_TIMEOUT_SECONDS,
         "max_consecutive_failures": RAG_COMPARE_MAX_CONSECUTIVE_FAILURES,
@@ -634,13 +672,16 @@ async def _run_comparison(
     level: str = rm.LEVEL_ANSWERS,
     modes: list[str] | None = None,
     unavailable: dict[str, str] | None = None,
+    skipped_numbers: list[int] | None = None,
 ) -> None:
     """Фоновая задача прогона. Заканчивается одним из трёх способов: все вопросы обработаны,
     автоостановка (подряд проваленные вопросы) или остановка командой (отмена задачи) — в двух
     последних случаях сохраняется ЧАСТИЧНЫЙ отчёт. Флаг «прогон идёт» снимается в finally,
     поэтому после любой ошибки можно запустить заново. `level` — rm.LEVEL_*: answers (ответы и
     оценка; `modes` — дополнительные режимы поиска) либо search (только поиск по `modes`);
-    `unavailable` — режимы, которые не удалось выполнить, с причиной (в отчёт)."""
+    `unavailable` — режимы, которые не удалось выполнить, с причиной (в отчёт);
+    `skipped_numbers` — номера многоходовых вопросов, пропущенных на уровне answers (в отчёт,
+    чтобы команда чтения отчёта отвечала по ним понятно)."""
     global _run_in_progress, _run_task, _stop_reason, _finalizing, _progress_done
     modes = list(modes or [])
     unavailable = dict(unavailable or {})
@@ -751,11 +792,15 @@ async def _run_comparison(
                 index_missing=index_missing,
                 status=status,
                 stop_reason=stop_reason,
-                extra=(
-                    {"variant_modes": modes, "unavailable_modes": unavailable}
-                    if modes or unavailable
-                    else None
-                ),
+                extra={
+                    **(
+                        {"variant_modes": modes, "unavailable_modes": unavailable}
+                        if modes or unavailable
+                        else {}
+                    ),
+                    **({"skipped_multi_turn": list(skipped_numbers)} if skipped_numbers else {}),
+                }
+                or None,
             )
         await asyncio.to_thread(save_report, report)
         if stop_reason:
@@ -849,6 +894,21 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
         return
 
+    # Многоходовые вопросы (с history) на уровне ответов не выполняются: ответ на продолжение
+    # без настоящей предыстории несравним, они проверяются уровнем search.
+    skipped_numbers: list[int] = []
+    if level == rm.LEVEL_ANSWERS:
+        standalone, multi_turn = ev.split_multi_turn(questions)
+        if multi_turn and not standalone:
+            await update.message.reply_text(
+                "ℹ️ У всех вопросов набора задана история диалога (поле history). Такие вопросы "
+                "проверяются сравнением режимов поиска: задайте RAG_COMPARE_LEVEL=search. "
+                "Прогон ответов не начат."
+            )
+            return
+        skipped_numbers = [q.number for q in multi_turn]
+        questions = standalone
+
     if _run_in_progress:
         await update.message.reply_text(
             f"⏳ Прогон уже идёт: обработано {_progress_done} из {_progress_total} вопросов.\n"
@@ -878,6 +938,13 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 + " ожидаемого документа нет в индексе (он мог быть пропущен при индексации): "
                 "они будут помечены в отчёте."
             )
+        if skipped_numbers:
+            await update.message.reply_text(
+                f"ℹ️ Пропущено многоходовых вопросов (с историей диалога): {len(skipped_numbers)} — "
+                + ", ".join(str(n) for n in skipped_numbers)
+                + ". Ответы на продолжения без настоящей предыстории несравнимы; такие вопросы "
+                "проверяются на уровне search (RAG_COMPARE_LEVEL=search)."
+            )
         for key, reason in unavailable.items():
             await update.message.reply_text(
                 f"⚠️ Режим «{rm.MODE_TITLES[key]}» недоступен: {reason}. Он будет помечен в отчёте."
@@ -897,6 +964,7 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 level,
                 modes,
                 unavailable,
+                skipped_numbers,
             )
         )
     except BaseException:
@@ -962,7 +1030,13 @@ async def rag_compare_report_command(update: Update, context: ContextTypes.DEFAU
             else ev.format_question_detail(report, number, rm.MODE_TITLES)
         )
         if text is None:
-            if 1 <= number <= planned:
+            if number in (report.get("skipped_multi_turn") or []):
+                await update.message.reply_text(
+                    f"Вопрос {number} многоходовый (с историей диалога): на уровне ответов он не "
+                    "выполнялся. Его результаты — в отчёте уровня search "
+                    "(RAG_COMPARE_LEVEL=search)."
+                )
+            elif 1 <= number <= planned:
                 await update.message.reply_text(
                     f"Вопрос {number} не был обработан: прогон остановлен, "
                     f"обработано {processed} из {planned}."

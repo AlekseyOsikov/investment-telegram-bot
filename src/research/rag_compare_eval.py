@@ -74,6 +74,9 @@ class Question:
     kind: str
     facts: tuple[str, ...]
     sources: tuple[str, ...]  # префиксы заголовков документов индекса
+    # Предыдущие вопросы диалога (от старых к новым), после которых задан этот вопрос; пусто —
+    # самостоятельный вопрос (design.md изменения add-rag-rewrite-dialog-context, решение 6).
+    history: tuple[str, ...] = ()
 
 
 def parse_questions(raw: Any) -> list[Question]:
@@ -97,10 +100,37 @@ def parse_questions(raw: Any) -> list[Question]:
         sources = _non_empty_strings(item.get("sources"))
         if not sources:
             raise QuestionSetError(f"вопрос {number}: нет ожидаемых источников")
+        history = _parse_history(item.get("history"), number)
         questions.append(
-            Question(number=number, question=text.strip(), kind=kind, facts=facts, sources=sources)
+            Question(
+                number=number,
+                question=text.strip(),
+                kind=kind,
+                facts=facts,
+                sources=sources,
+                history=history,
+            )
         )
     return questions
+
+
+def _parse_history(value: Any, number: int) -> tuple[str, ...]:
+    """Необязательное поле `history` вопроса: список непустых строк (предыдущие вопросы диалога
+    от старых к новым). Нет поля или null — самостоятельный вопрос; не список или пустая строка
+    в списке — QuestionSetError с номером вопроса (молча выбросить реплику значило бы изменить
+    контекст без ведома автора набора)."""
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise QuestionSetError(f"вопрос {number}: history должен быть списком строк")
+    items: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            raise QuestionSetError(
+                f"вопрос {number}: history содержит пустую или не строковую реплику"
+            )
+        items.append(entry.strip())
+    return tuple(items)
 
 
 def _non_empty_strings(value: Any) -> tuple[str, ...]:
@@ -110,6 +140,16 @@ def _non_empty_strings(value: Any) -> tuple[str, ...]:
     # Частично пустой список — тоже ошибка набора: молча выбросить факт значило бы занизить
     # или завысить покрытие без ведома автора набора.
     return items if len(items) == len(value) else ()
+
+
+def split_multi_turn(questions: list[Question]) -> tuple[list[Question], list[Question]]:
+    """(самостоятельные, многоходовые) вопросы набора. На уровне сравнения ответов многоходовые
+    (с `history`) не выполняются: ответ на продолжение без настоящей предыстории с ответами
+    модели несравним, такие вопросы проверяются уровнем search (design.md изменения
+    add-rag-rewrite-dialog-context, решение 8). Номера вопросов не меняются."""
+    standalone = [q for q in questions if not q.history]
+    multi_turn = [q for q in questions if q.history]
+    return standalone, multi_turn
 
 
 def load_questions(path: str) -> list[Question]:
@@ -261,6 +301,7 @@ class QuestionResult:
             "kind": q.kind,
             "facts": list(q.facts),
             "sources": list(q.sources),
+            "history": list(q.history),
             "missing_sources": list(self.missing_sources),
             "off": self.off.to_dict(),
             "on": self.on.to_dict(),
@@ -275,6 +316,7 @@ class QuestionResult:
             kind=data["kind"],
             facts=tuple(data["facts"]),
             sources=tuple(data["sources"]),
+            history=tuple(data.get("history") or ()),
         )
         return QuestionResult(
             question=question,
@@ -699,6 +741,10 @@ def format_question_detail(
         *[f"{i}. {fact}" for i, fact in enumerate(q.facts, start=1)],
         "\nОжидаемые источники: " + "; ".join(q.sources),
     ]
+    if q.history:
+        lines.append(
+            "История диалога (предыдущие вопросы): " + " → ".join(q.history)
+        )
     if result.missing_sources:
         lines.append("⚠️ Нет в индексе: " + "; ".join(result.missing_sources))
     shown = [

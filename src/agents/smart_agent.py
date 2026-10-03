@@ -132,6 +132,7 @@ from config import (
     RAG_SMART_AGENT_STRATEGY,
     RAG_TOP_K,
     REQUEST_TIMEOUT_SECONDS,
+    REWRITE_HISTORY_QUESTIONS,
     REWRITE_SEARCH_MODE,
     REWRITE_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
@@ -396,6 +397,7 @@ class SmartAgent:
         rewrite_backend: RewriteBackend | None = default_rewrite_backend,
         rewrite_timeout: float = REWRITE_TIMEOUT_SECONDS,
         rewrite_search_mode: str = REWRITE_SEARCH_MODE,
+        rewrite_history_questions: int = REWRITE_HISTORY_QUESTIONS,
     ) -> None:
         self._client = client
         self._model = model
@@ -434,6 +436,7 @@ class SmartAgent:
         self._rewrite_backend = rewrite_backend
         self._rewrite_timeout = rewrite_timeout
         self._rewrite_search_mode = rewrite_search_mode
+        self._rewrite_history_questions = rewrite_history_questions
         (
             self._profiles,
             self._active_profile,
@@ -1189,7 +1192,31 @@ class SmartAgent:
             raise body_error
         return result, unavailable
 
-    def _request_rewrite(self, backend: RewriteBackend, user_text: str) -> str | None:
+    def _history_for_rewrite(self) -> list[str]:
+        """Прошлые вопросы пользователя для модели переписывания (design.md изменения
+        add-rag-rewrite-dialog-context, решения 1 и 4): последние REWRITE_HISTORY_QUESTIONS
+        реплик с ролью user из краткосрочной памяти АКТИВНОГО профиля, от старых к новым. Пусто,
+        если история выключена настройкой, нет активного профиля, пользователь выключил слой
+        short_term (/smart_agent_toggle short) или диалог пуст (первый вопрос, очистка памяти).
+        Вызывается из ask() ДО дописывания текущей пары в short_term, поэтому текущий вопрос сюда
+        не попадает. Ответы модели, долговременная память, задача, профиль и инварианты не
+        читаются. Сбой выборки не роняет поиск: пустая история и запись в журнал."""
+        if self._rewrite_history_questions <= 0 or self._active_profile is None:
+            return []
+        if not self._enabled_layers[LAYER_SHORT_TERM]:
+            return []
+        try:
+            return rag_rewrite.history_questions(
+                self._profiles[self._active_profile]["short_term"],
+                self._rewrite_history_questions,
+            )
+        except Exception:  # noqa: BLE001 — история необязательна, поиск идёт без неё
+            logger.warning("Не удалось выбрать прошлые вопросы для переписывания.", exc_info=True)
+            return []
+
+    def _request_rewrite(
+        self, backend: RewriteBackend, user_text: str, history: list[str] | tuple[str, ...] = ()
+    ) -> str | None:
         """Один вызов модели переписывания (в потоке, см. _rewrite_query). Без автоповторов
         SDK (повторы умножали бы ожидание), температура 0 (воспроизводимость сравнения
         режимов). «thinking» отключается у deepseek/kimi, как у оценщика
@@ -1198,7 +1225,7 @@ class SmartAgent:
         extra_body = None if backend.provider == "ollama" else {"thinking": {"type": "disabled"}}
         response = backend.client.with_options(max_retries=0).chat.completions.create(
             model=backend.model,
-            messages=rag_rewrite.build_messages(user_text),
+            messages=rag_rewrite.build_messages(user_text, history),
             max_tokens=_REWRITE_MAX_TOKENS,
             timeout=self._rewrite_timeout,
             temperature=0,
@@ -1206,20 +1233,24 @@ class SmartAgent:
         )
         return response.choices[0].message.content
 
-    def _rewrite_query(self, user_text: str) -> tuple[str | None, str | None]:
+    def _rewrite_query(
+        self, user_text: str, history: list[str] | tuple[str, ...] = ()
+    ) -> tuple[str | None, str | None]:
         """Переписывает вопрос в поисковый запрос (design.md изменения
         add-rag-rerank-and-rewrite, решения 2, 3, 9). Возвращает (запрос, причина сбоя):
         (None, None) — переписывание не настроено; (None, причина) — вызов не удался
         (недоступный сервер, превышение REWRITE_TIMEOUT_SECONDS, ошибка SDK, пустой или
         непригодный ответ). Не бросает исключений: любой сбой означает «искать по исходному
-        вопросу», а пользователь о необязательной оптимизации не уведомляется. Модель
-        получает ТОЛЬКО текст вопроса — ни историю, ни память, ни профиль, ни инварианты."""
+        вопросу» (БЕЗ вопросов истории), а пользователь о необязательной оптимизации не
+        уведомляется. Модель получает текст вопроса и — только если передана `history` (прошлые
+        вопросы пользователя, см. _history_for_rewrite) — их тексты; ответы модели, память,
+        профиль, инварианты и фрагменты ей не передаются."""
         backend = self._rewrite_backend
         if backend is None:
             return None, None
         try:
             raw = _call_with_deadline(
-                lambda: self._request_rewrite(backend, user_text), self._rewrite_timeout
+                lambda: self._request_rewrite(backend, user_text, history), self._rewrite_timeout
             )
         except Exception as exc:  # noqa: BLE001 — сбой переписывания не должен ронять ответ
             logger.warning("Сбой переписывания вопроса (%s).", backend.provider, exc_info=True)
@@ -1230,7 +1261,10 @@ class SmartAgent:
         return query, None
 
     def _retrieve_materials(
-        self, user_text: str, rewrite: tuple[str | None, str | None] | None = None
+        self,
+        user_text: str,
+        rewrite: tuple[str | None, str | None] | None = None,
+        history: list[str] | None = None,
     ) -> rag_context.Materials:
         """Поиск справочных материалов для ОДНОГО вопроса (слой rag, design.md изменений
         add-smart-agent-rag, решения 2, 6, 7, 10, и add-rag-rerank-and-rewrite, решения 1-3).
@@ -1242,12 +1276,18 @@ class SmartAgent:
         самого поиска — сервер эмбеддингов недоступен или не уложился в бюджет
         RAG_SEARCH_TIMEOUT_SECONDS, повреждённые файлы индекса — не роняет ответ:
         возвращается пустой результат с предупреждением, причина сохраняется для
-        /smart_agent_show, следующий вопрос пробует снова. В эмбеддинг (и модели
-        переписывания) уходит только текст вопроса, не история и не память.
+        /smart_agent_show, следующий вопрос пробует снова. В эмбеддинг уходит только поисковый
+        текст (исходный вопрос и/или его переписанная форма), а модели переписывания — текст
+        вопроса и, если оператор включил историю, прошлые вопросы пользователя (но не ответы
+        модели, не память, не профиль).
 
         `rewrite` — готовый результат переписывания `(запрос, причина сбоя)` вместо вызова
         модели: так сравнение режимов (research/rag_compare.py) переписывает вопрос один
-        раз и переиспользует результат между режимами. В обычной работе всегда None."""
+        раз и переиспользует результат между режимами. `history` — прошлые вопросы для модели
+        переписывания: None — выбрать из краткосрочной памяти активного профиля по правилам
+        _history_for_rewrite (рабочий путь), список (в том числе пустой) — использовать как есть
+        (сравнение режимов на изолированных агентах с пустой памятью). В обычной работе оба
+        аргумента None."""
         self._last_rag_failure = None
         self._last_rag_search = None
         if not self._enabled_layers[LAYER_RAG]:
@@ -1255,9 +1295,17 @@ class SmartAgent:
         try:
             if not index_store.index_exists(self._rag_strategy, self._rag_index_dir):
                 return rag_context.Materials()
-            rewritten, rewrite_failure = (
-                rewrite if rewrite is not None else self._rewrite_query(user_text)
-            )
+            if rewrite is not None:
+                rewritten, rewrite_failure = rewrite
+                used_history = list(history or [])
+            else:
+                used_history = (
+                    list(history) if history is not None else self._history_for_rewrite()
+                )
+                rewritten, rewrite_failure = self._rewrite_query(user_text, used_history)
+            # Прошлые вопросы реально повлияли на запрос только если вызов удался: при сбое
+            # поиск идёт по исходному вопросу без истории (спека rag-query-rewrite).
+            history_used = len(used_history) if rewritten is not None else 0
             search_texts = [user_text]
             both = False
             if rewritten is not None:
@@ -1304,6 +1352,7 @@ class SmartAgent:
             candidates=selection.candidates,
             selected=len(selection.chunks),
             dropped=selection.dropped,
+            history_used=history_used,
         )
         return rag_context.Materials(chunks=selection.chunks)
 
@@ -1323,19 +1372,27 @@ class SmartAgent:
             return rag_context.STATUS_UNAVAILABLE, self._last_rag_failure
         return rag_context.STATUS_OK, None
 
-    def rewrite_question(self, user_text: str) -> tuple[str | None, str | None]:
+    def rewrite_question(
+        self, user_text: str, history: list[str] | tuple[str, ...] = ()
+    ) -> tuple[str | None, str | None]:
         """Публичная обёртка над _rewrite_query() для сравнения режимов поиска: `(запрос,
-        причина сбоя)`, см. _rewrite_query."""
-        return self._rewrite_query(user_text)
+        причина сбоя)`, см. _rewrite_query. `history` — прошлые вопросы из контрольного набора
+        (изолированный агент своей истории не имеет)."""
+        return self._rewrite_query(user_text, history)
 
     def search_materials(
-        self, user_text: str, rewrite: tuple[str | None, str | None] | None = None
+        self,
+        user_text: str,
+        rewrite: tuple[str | None, str | None] | None = None,
+        history: list[str] | None = None,
     ) -> tuple[rag_context.Materials, rag_context.SearchInfo | None]:
         """Поиск материалов БЕЗ ответа модели — для сравнения режимов поиска
         (research/rag_compare.py): те же шаги, что в ask() (переписывание, поиск кандидатов,
         второй этап отбора), и итог поиска. `rewrite` — готовый результат переписывания
-        (см. _retrieve_materials). Состояния агента, кроме «последнего поиска», не трогает."""
-        materials = self._retrieve_materials(user_text, rewrite)
+        (см. _retrieve_materials), `history` — прошлые вопросы для модели переписывания (None —
+        из краткосрочной памяти агента). Состояния агента, кроме «последнего поиска», не
+        трогает."""
+        materials = self._retrieve_materials(user_text, rewrite, history)
         return materials, self._last_rag_search
 
     def get_last_rag_search(self) -> rag_context.SearchInfo | None:

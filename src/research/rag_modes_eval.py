@@ -11,7 +11,10 @@ Telegram — в research/rag_compare.py.
   baseline        — как до изменения: топ-K по близости и порог, без отбора и переписывания;
   filter          — второй этап отбора (RAG_CANDIDATES кандидатов → шаги отбора → топ-K);
   rewrite         — переписывание вопроса, поиск как в baseline;
-  rewrite_filter  — переписывание и отбор (рабочий режим при настроенном переписывании).
+  rewrite_filter  — переписывание и отбор (рабочий режим при настроенном переписывании);
+  rewrite_context — переписывание с предыдущими вопросами диалога (поле `history` вопроса в
+                    наборе; design.md изменения add-rag-rewrite-dialog-context);
+  concat          — без моделей: эмбеддинг по «последний предыдущий вопрос + текущий».
 Настройки каждого режима, кроме отличающихся, берутся из рабочей конфигурации.
 
 Отчёт режима «только поиск» — обычный dict (kind="retrieval"), его пишет и читает rag_compare.py
@@ -28,16 +31,30 @@ MODE_BASELINE = "baseline"
 MODE_FILTER = "filter"
 MODE_REWRITE = "rewrite"
 MODE_REWRITE_FILTER = "rewrite_filter"
+MODE_REWRITE_CONTEXT = "rewrite_context"
+MODE_CONCAT = "concat"
 
-RETRIEVAL_MODES = (MODE_BASELINE, MODE_FILTER, MODE_REWRITE, MODE_REWRITE_FILTER)
+RETRIEVAL_MODES = (
+    MODE_BASELINE,
+    MODE_FILTER,
+    MODE_REWRITE,
+    MODE_REWRITE_FILTER,
+    MODE_REWRITE_CONTEXT,
+    MODE_CONCAT,
+)
 MODE_TITLES = {
     MODE_BASELINE: "как до изменения",
     MODE_FILTER: "с отбором",
     MODE_REWRITE: "с переписыванием",
     MODE_REWRITE_FILTER: "с переписыванием и отбором",
+    MODE_REWRITE_CONTEXT: "с контекстом диалога",
+    MODE_CONCAT: "склейка",
 }
-_REWRITE_MODES = (MODE_REWRITE, MODE_REWRITE_FILTER)
+_REWRITE_MODES = (MODE_REWRITE, MODE_REWRITE_FILTER, MODE_REWRITE_CONTEXT)
 _FILTER_MODES = (MODE_FILTER, MODE_REWRITE_FILTER)
+# Режимы, которым нужна история диалога вопроса (поле `history` набора): на самостоятельном
+# вопросе они совпадают с «как до изменения» («склейка») и «с переписыванием» («с контекстом»).
+_HISTORY_MODES = (MODE_REWRITE_CONTEXT, MODE_CONCAT)
 
 LEVEL_SEARCH = "search"  # только поиск: ни ответов модели, ни оценщика
 LEVEL_ANSWERS = "answers"  # ответы и оценка по фактам (прежний прогон «без RAG / с RAG»)
@@ -45,6 +62,14 @@ LEVELS = (LEVEL_SEARCH, LEVEL_ANSWERS)
 
 REPORT_KIND_RETRIEVAL = "retrieval"
 REWRITE_NOT_CONFIGURED = "переписывание не настроено (REWRITE_PROVIDER)"
+HISTORY_MODE_ANSWERS_REASON = (
+    "требует вопросов с историей диалога; такие вопросы проверяются на уровне search"
+)
+
+# Эталонное число предыдущих вопросов для режима «с контекстом диалога», если у оператора
+# история в переписывании выключена (REWRITE_HISTORY_QUESTIONS=0): иначе режим не проверял бы
+# того, ради чего он нужен. Указывается в отчёте (design.md add-rag-rewrite-dialog-context).
+REFERENCE_HISTORY_QUESTIONS = 3
 
 
 # Эталонные значения шагов отбора для режимов «с отбором»: если у оператора все шаги выключены
@@ -88,6 +113,43 @@ def filter_settings(
         },
         False,
     )
+
+
+def history_questions_setting(configured: int) -> tuple[int, bool]:
+    """Сколько предыдущих вопросов передавать режиму «с контекстом диалога»: рабочее значение, а
+    если оно нулевое — эталонное REFERENCE_HISTORY_QUESTIONS. Возвращает (число, взято ли
+    эталонное)."""
+    if configured > 0:
+        return configured, False
+    return REFERENCE_HISTORY_QUESTIONS, True
+
+
+def concat_text(history: list[str] | tuple[str, ...], question: str) -> str:
+    """Текст режима «склейка»: последний предыдущий вопрос диалога и текущий через пробел; у
+    вопроса без истории — сам вопрос (режим совпадает с «как до изменения»)."""
+    if not history:
+        return question
+    return f"{history[-1]} {question}"
+
+
+def is_multi_turn(result: QuestionRetrieval) -> bool:
+    """Многоходовый ли вопрос: в наборе у него задана история диалога."""
+    return bool(result.question.history)
+
+
+def split_by_history(
+    results: list[QuestionRetrieval],
+) -> tuple[list[QuestionRetrieval], list[QuestionRetrieval]]:
+    """(многоходовые, самостоятельные) вопросы — метрики режимов считаются по группам
+    отдельно, чтобы выигрыш контекста диалога не терялся среди вопросов, у которых история
+    ничего не меняет."""
+    multi = [r for r in results if is_multi_turn(r)]
+    single = [r for r in results if not is_multi_turn(r)]
+    return multi, single
+
+
+def uses_history(mode_key: str) -> bool:
+    return mode_key in _HISTORY_MODES
 
 
 def uses_rewrite(mode_key: str) -> bool:
@@ -135,7 +197,9 @@ def resolve_modes(
     active: list[str] = []
     unavailable: dict[str, str] = {}
     for mode in chosen:
-        if uses_rewrite(mode) and not rewrite_configured:
+        if level == LEVEL_ANSWERS and uses_history(mode):
+            unavailable[mode] = HISTORY_MODE_ANSWERS_REASON
+        elif uses_rewrite(mode) and not rewrite_configured:
             unavailable[mode] = REWRITE_NOT_CONFIGURED
         else:
             active.append(mode)
@@ -150,13 +214,15 @@ def resolve_modes(
 @dataclass
 class RetrievalResult:
     """Итог одного режима по одному вопросу: отобранные чанки (по убыванию близости),
-    сколько кандидатов найдено, время поиска; error — причина сбоя поиска."""
+    сколько кандидатов найдено, время поиска; error — причина сбоя поиска; history_used — сколько
+    предыдущих вопросов диалога реально ушло в переписывание (режим «с контекстом диалога»)."""
 
     chunks: list[dict] = field(default_factory=list)  # {"title","chunk_index","score"}
     candidates: int = 0
     search_text: str | None = None  # переписанный запрос (None — искали по вопросу как есть)
     seconds: float = 0.0
     error: str | None = None
+    history_used: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -165,6 +231,7 @@ class RetrievalResult:
             "search_text": self.search_text,
             "seconds": self.seconds,
             "error": self.error,
+            "history_used": self.history_used,
         }
 
     @staticmethod
@@ -175,6 +242,7 @@ class RetrievalResult:
             search_text=data.get("search_text"),
             seconds=float(data.get("seconds", 0.0)),
             error=data.get("error"),
+            history_used=int(data.get("history_used", 0)),
         )
 
     @property
@@ -185,13 +253,18 @@ class RetrievalResult:
 @dataclass
 class QuestionRetrieval:
     """Результаты всех режимов по одному вопросу плюс итог переписывания (один раз на вопрос,
-    результат переиспользуется между режимами с переписыванием)."""
+    результат переиспользуется между режимами с переписыванием). Переписывание с историей
+    диалога (режим «с контекстом диалога») хранится отдельно: `context_rewrite_*` заполняется
+    только у вопроса с историей."""
 
     question: ev.Question
     modes: dict[str, RetrievalResult] = field(default_factory=dict)
     rewrite_query: str | None = None
     rewrite_failure: str | None = None
     rewrite_seconds: float = 0.0
+    context_rewrite_query: str | None = None
+    context_rewrite_failure: str | None = None
+    context_rewrite_seconds: float = 0.0
     missing_sources: list[str] = field(default_factory=list)  # ожидаемые, которых нет в индексе
 
     @property
@@ -206,11 +279,17 @@ class QuestionRetrieval:
             "kind": q.kind,
             "facts": list(q.facts),
             "sources": list(q.sources),
+            "history": list(q.history),
             "missing_sources": list(self.missing_sources),
             "rewrite": {
                 "query": self.rewrite_query,
                 "failure": self.rewrite_failure,
                 "seconds": self.rewrite_seconds,
+            },
+            "context_rewrite": {
+                "query": self.context_rewrite_query,
+                "failure": self.context_rewrite_failure,
+                "seconds": self.context_rewrite_seconds,
             },
             "modes": {key: result.to_dict() for key, result in self.modes.items()},
         }
@@ -223,8 +302,10 @@ class QuestionRetrieval:
             kind=data["kind"],
             facts=tuple(data.get("facts", ())),
             sources=tuple(data["sources"]),
+            history=tuple(data.get("history") or ()),
         )
         rewrite = data.get("rewrite") or {}
+        context_rewrite = data.get("context_rewrite") or {}
         return QuestionRetrieval(
             question=question,
             modes={
@@ -234,6 +315,9 @@ class QuestionRetrieval:
             rewrite_query=rewrite.get("query"),
             rewrite_failure=rewrite.get("failure"),
             rewrite_seconds=float(rewrite.get("seconds", 0.0)),
+            context_rewrite_query=context_rewrite.get("query"),
+            context_rewrite_failure=context_rewrite.get("failure"),
+            context_rewrite_seconds=float(context_rewrite.get("seconds", 0.0)),
             missing_sources=list(data.get("missing_sources", [])),
         )
 
@@ -380,6 +464,12 @@ def _settings_line(settings: dict) -> str:
     ):
         if settings.get(key) not in (None, ""):
             parts.append(f"{label}: {settings[key]}")
+    if settings.get("history_questions") is not None:
+        origin = "эталонное" if settings.get("history_reference") else "рабочее"
+        parts.append(
+            f"прошлых вопросов в режиме «с контекстом диалога» ({origin}): "
+            f"{settings['history_questions']}"
+        )
     steps = settings.get("filter_steps")
     if steps:
         reference = settings.get("filter_reference")
@@ -390,6 +480,34 @@ def _settings_line(settings: dict) -> str:
             f"мин. длина {steps.get('min_chunk_chars')}, на документ {steps.get('max_per_doc')}"
         )
     return "Настройки: " + ", ".join(parts) + "." if parts else ""
+
+
+def _mode_blocks(aggregates: dict[str, dict], mode_keys: list[str]) -> list[str]:
+    """Блоки метрик по режимам; разница с «как до изменения» — внутри тех же вопросов."""
+    lines: list[str] = []
+    base = aggregates.get(MODE_BASELINE)
+    for key in mode_keys:
+        agg = aggregates[key]
+        lines.append(f"\n• {MODE_TITLES[key]}")
+        delta = (
+            _delta_pp(agg["hit_rate"], base["hit_rate"]) if base and key != MODE_BASELINE else ""
+        )
+        lines.append(
+            f"  попал в ожидаемый документ: {agg['hits']} из {agg['questions']} "
+            f"({_pct(agg['hit_rate'])}{delta})"
+        )
+        lines.append(
+            f"  позиция первого попадания: {_number(agg['mean_position'], '.1f')}, "
+            f"MRR: {_number(agg['mrr'], '.2f')}"
+        )
+        lines.append(
+            f"  чанков в выдаче: {_number(agg['mean_chunks'], '.1f')}, не из ожидаемых "
+            f"документов: {_pct(agg['irrelevant_share'])}, без материалов: {agg['empty']}"
+        )
+        lines.append(f"  время поиска: {_number(agg['mean_seconds'], '.2f')} с")
+        if agg["failed"]:
+            lines.append(f"  ⚠️ поиск не удался на {agg['failed']} вопросах")
+    return lines
 
 
 def format_retrieval_summary(report: dict) -> str:
@@ -420,28 +538,13 @@ def format_retrieval_summary(report: dict) -> str:
         if key in unavailable:
             lines.append(f"⚠️ Режим «{MODE_TITLES[key]}» недоступен: {unavailable[key]}.")
 
-    base = aggregates.get(MODE_BASELINE)
-    for key in mode_keys:
-        agg = aggregates[key]
-        lines.append(f"\n• {MODE_TITLES[key]}")
-        delta = (
-            _delta_pp(agg["hit_rate"], base["hit_rate"]) if base and key != MODE_BASELINE else ""
-        )
-        lines.append(
-            f"  попал в ожидаемый документ: {agg['hits']} из {agg['questions']} "
-            f"({_pct(agg['hit_rate'])}{delta})"
-        )
-        lines.append(
-            f"  позиция первого попадания: {_number(agg['mean_position'], '.1f')}, "
-            f"MRR: {_number(agg['mrr'], '.2f')}"
-        )
-        lines.append(
-            f"  чанков в выдаче: {_number(agg['mean_chunks'], '.1f')}, не из ожидаемых "
-            f"документов: {_pct(agg['irrelevant_share'])}, без материалов: {agg['empty']}"
-        )
-        lines.append(f"  время поиска: {_number(agg['mean_seconds'], '.2f')} с")
-        if agg["failed"]:
-            lines.append(f"  ⚠️ поиск не удался на {agg['failed']} вопросах")
+    multi, single = split_by_history(results)
+    if multi and single:
+        for title, subset in (("Многоходовые вопросы", multi), ("Самостоятельные вопросы", single)):
+            lines.append(f"\n▶ {title} ({len(subset)})")
+            lines.extend(_mode_blocks(aggregate_retrieval(subset, mode_keys), mode_keys))
+    else:
+        lines.extend(_mode_blocks(aggregates, mode_keys))
 
     rewrites = [r for r in results if r.rewrite_query or r.rewrite_failure]
     if rewrites:
@@ -450,6 +553,14 @@ def format_retrieval_summary(report: dict) -> str:
         lines.append(
             f"\nПереписывание: удалось {len(done)} из {len(rewrites)}, среднее время "
             f"{average:.1f} с."
+        )
+    context_rewrites = [r for r in results if r.context_rewrite_query or r.context_rewrite_failure]
+    if context_rewrites:
+        done = [r for r in context_rewrites if r.context_rewrite_query]
+        average = sum(r.context_rewrite_seconds for r in context_rewrites) / len(context_rewrites)
+        lines.append(
+            f"Переписывание с историей диалога: удалось {len(done)} из {len(context_rewrites)}, "
+            f"среднее время {average:.1f} с."
         )
     if excluded:
         lines.append(
@@ -504,6 +615,8 @@ def format_retrieval_detail(report: dict, number: int) -> str | None:
         f"❓ Вопрос {q.number} ({ev.KIND_LABELS.get(q.kind, q.kind)}): {q.question}",
         "\nОжидаемые источники: " + "; ".join(q.sources),
     ]
+    if q.history:
+        lines.append("История диалога (предыдущие вопросы): " + " → ".join(q.history))
     if result.missing_sources:
         lines.append("⚠️ Нет в индексе: " + "; ".join(result.missing_sources))
     if result.rewrite_query:
@@ -512,6 +625,13 @@ def format_retrieval_detail(report: dict, number: int) -> str | None:
         )
     elif result.rewrite_failure:
         lines.append(f"\nПереписывание не удалось: {result.rewrite_failure}")
+    if result.context_rewrite_query:
+        lines.append(
+            f"Переписанный запрос с историей ({result.context_rewrite_seconds:.1f} с): "
+            f"{result.context_rewrite_query}"
+        )
+    elif result.context_rewrite_failure:
+        lines.append(f"Переписывание с историей не удалось: {result.context_rewrite_failure}")
     for key in [m for m in report.get("modes", []) if m in RETRIEVAL_MODES]:
         mode = result.modes.get(key)
         lines.append(f"\n— {MODE_TITLES[key].capitalize()} —")

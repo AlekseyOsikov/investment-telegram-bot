@@ -480,3 +480,80 @@ def test_call_with_deadline_orphan_result_is_discarded():
     with pytest.raises(ev.DeadlineExceeded):
         ev.call_with_deadline(slow, 0.05)
     assert done.wait(5)  # поток-сирота действительно дожил, но вызывающий его результат не получил
+
+
+# --- история диалога в контрольном наборе (изменение add-rag-rewrite-dialog-context) ----------
+
+
+def test_question_without_history_field_is_a_standalone_question():
+    (question,) = ev.parse_questions([_raw()])
+    assert question.history == ()
+
+
+def test_valid_history_is_parsed_in_order_and_stripped():
+    (question,) = ev.parse_questions([_raw(history=["  Как выбирать X?  ", "А Y?"])])
+    assert question.history == ("Как выбирать X?", "А Y?")
+
+
+def test_null_history_means_standalone():
+    (question,) = ev.parse_questions([_raw(history=None)])
+    assert question.history == ()
+
+
+def test_history_must_be_a_list():
+    with pytest.raises(QuestionSetError) as error:
+        ev.parse_questions([_raw(), _raw(history="Как выбирать X?")])
+    assert "вопрос 2" in str(error.value)
+
+
+@pytest.mark.parametrize("bad", [[""], ["   "], ["нормально", ""], [5], [None]])
+def test_history_with_empty_or_non_string_entry_is_rejected(bad):
+    with pytest.raises(QuestionSetError) as error:
+        ev.parse_questions([_raw(history=bad)])
+    assert "вопрос 1" in str(error.value)
+
+
+def test_history_survives_a_roundtrip_through_the_report_dict():
+    question = Question(number=3, question="А Y?", kind="concept", facts=("a",),
+                        sources=("Doc1",), history=("Как выбирать X?",))
+    result = QuestionResult(question=question, off=_mode(), on=_mode())
+    restored = QuestionResult.from_dict(result.to_dict())
+    assert restored.question.history == ("Как выбирать X?",)
+
+
+def test_old_report_without_history_still_loads():
+    result = _result(_mode(0.5), _mode(0.75))
+    data = result.to_dict()
+    del data["history"]
+    assert QuestionResult.from_dict(data).question.history == ()
+
+
+def test_question_detail_shows_the_dialog_history():
+    question = Question(number=1, question="А Y?", kind="concept", facts=("a",),
+                        sources=("Doc1",), history=("Как выбирать X?", "А Z?"))
+    result = QuestionResult(question=question, off=_mode(0.5), on=_mode(0.75))
+    text = ev.format_question_detail({"questions": [result.to_dict()]}, 1)
+    assert "История диалога" in text and "Как выбирать X? → А Z?" in text
+
+
+def test_split_multi_turn_separates_questions_with_history_and_keeps_numbers():
+    questions = ev.parse_questions([
+        _raw(question="Самостоятельный?"),
+        _raw(question="А продолжение?", history=["Первый вопрос?"]),
+        _raw(question="Ещё самостоятельный?"),
+    ])
+    standalone, multi_turn = ev.split_multi_turn(questions)
+    assert [q.number for q in standalone] == [1, 3]
+    assert [q.number for q in multi_turn] == [2]
+
+
+def test_split_multi_turn_of_a_set_without_history_skips_nothing():
+    questions = ev.parse_questions([_raw(), _raw(question="Другой?")])
+    standalone, multi_turn = ev.split_multi_turn(questions)
+    assert standalone == questions and multi_turn == []
+
+
+def test_split_multi_turn_of_a_set_where_every_question_has_history():
+    questions = ev.parse_questions([_raw(history=["a?"]), _raw(history=["b?", "c?"])])
+    standalone, multi_turn = ev.split_multi_turn(questions)
+    assert standalone == [] and len(multi_turn) == 2

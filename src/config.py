@@ -558,12 +558,25 @@ RAG_MAX_PER_DOC = int(os.getenv("RAG_MAX_PER_DOC", str(RAG_TOP_K)))
 # OLLAMA_BASE_URL — чат-сервер Ollama (не связан с EMBEDDINGS_BASE_URL и MAIN_CLIENT).
 # При deepseek/kimi текст вопроса уходит облачному провайдеру на шаг раньше основного
 # ответа — решение оператора.
+# REWRITE_HISTORY_QUESTIONS (design.md изменения add-rag-rewrite-dialog-context) — сколько
+# ПРЕДЫДУЩИХ ВОПРОСОВ пользователя (только тексты вопросов из краткосрочной памяти активного
+# профиля, без ответов модели, долговременной памяти, задачи, профиля и инвариантов) передавать
+# модели переписывания вместе с текущим вопросом, чтобы разрешать неполные вопросы вроде
+# «А акции?». 0 — не передавать (по умолчанию: запрос к модели прежний, новый канал данных не
+# открыт). Не передаётся и при выключенном слое short_term. При deepseek/kimi прошлые вопросы
+# уходят облачному провайдеру — решение оператора (для локальной обработки — ollama).
 _SUPPORTED_REWRITE_PROVIDERS = ("ollama", "deepseek", "kimi")
 _SUPPORTED_REWRITE_SEARCH_MODES = ("rewritten", "both")
 REWRITE_PROVIDER = os.getenv("REWRITE_PROVIDER", "").strip().lower()
 REWRITE_MODEL = os.getenv("REWRITE_MODEL", "").strip()
 REWRITE_TIMEOUT_SECONDS = float(os.getenv("REWRITE_TIMEOUT_SECONDS", "8"))
 REWRITE_SEARCH_MODE = os.getenv("REWRITE_SEARCH_MODE", "both").strip().lower()
+_REWRITE_HISTORY_QUESTIONS_RAW = os.getenv("REWRITE_HISTORY_QUESTIONS", "0").strip()
+try:
+    REWRITE_HISTORY_QUESTIONS = int(_REWRITE_HISTORY_QUESTIONS_RAW)
+except ValueError:
+    # Нецелое значение отвергает _validate_config() понятным сообщением (а не трейсбеком).
+    REWRITE_HISTORY_QUESTIONS = -1
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
 
 # /research_rag_compare (research/rag_compare.py, design.md изменения add-rag-compare-command):
@@ -884,6 +897,14 @@ def _validate_config() -> None:
             "Недопустимое значение REWRITE_SEARCH_MODE=%r. Допустимо: %s.",
             REWRITE_SEARCH_MODE,
             ", ".join(_SUPPORTED_REWRITE_SEARCH_MODES),
+        )
+        sys.exit(1)
+
+    if not 0 <= REWRITE_HISTORY_QUESTIONS <= 10:
+        logger.error(
+            "Недопустимое значение REWRITE_HISTORY_QUESTIONS=%r: нужно целое число от 0 до 10 "
+            "(0 — история не передаётся модели переписывания).",
+            _REWRITE_HISTORY_QUESTIONS_RAW,
         )
         sys.exit(1)
 
