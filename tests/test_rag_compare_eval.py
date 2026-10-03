@@ -158,15 +158,15 @@ def test_compare_coverage_better_equal_worse():
 
 
 def test_source_hit_by_title_prefix_case_insensitive_with_several_sources():
-    assert ev.source_hit(["Док01"], ["Док01. Чек-лист выбора инструментов"])
-    assert ev.source_hit(["обл12"], ["ОБЛ12. Чек-лист"])
-    assert ev.source_hit(["Док02", "Док01"], ["Док05. Скользящие", "Док01. Чек-лист"])
+    assert ev.source_hit(["Док01"], ["Док01. Памятка выбора инструментов"])
+    assert ev.source_hit(["док07"], ["ДОК07. Памятка"])
+    assert ev.source_hit(["Док02", "Док01"], ["Док05. Графики и тренды", "Док01. Памятка"])
     assert not ev.source_hit(["Док01"], ["Док03. Основы диверсификации"])
     assert not ev.source_hit(["Док01"], [])
 
 
 def test_sources_not_indexed_lists_prefixes_without_documents():
-    titles = ["Док01. Чек-лист выбора инструментов", "Короткая заметка"]
+    titles = ["Док01. Памятка выбора инструментов", "Короткая заметка"]
     assert ev.sources_not_indexed(["Док01", "короткая"], titles) == []
     assert ev.sources_not_indexed(["Док04", "Док01"], titles) == ["Док04"]
     assert ev.sources_not_indexed(["Док04"], []) == ["Док04"]
@@ -174,7 +174,7 @@ def test_sources_not_indexed_lists_prefixes_without_documents():
 
 def test_fired_and_hit_metrics():
     q = _question(sources=("Док01",))
-    with_hit = _mode(1.0, rag_titles=["Док01. Чек-лист"])
+    with_hit = _mode(1.0, rag_titles=["Док01. Памятка"])
     miss = _mode(1.0, rag_titles=["Док03. Основы диверсификации"])
     nothing = _mode(1.0)
     assert ev.fired(with_hit) and ev.hit(q, with_hit)
