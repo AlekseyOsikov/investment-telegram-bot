@@ -52,6 +52,7 @@ from config import (
     MAIN_CLIENT_LABEL,
     MAIN_MODEL,
     RAG_CANDIDATES,
+    RAG_COMPARE_CITATION_JUDGE_SYSTEM_PROMPT,
     RAG_COMPARE_JUDGE_MAX_TOKENS,
     RAG_COMPARE_JUDGE_SYSTEM_PROMPT,
     RAG_COMPARE_LEVEL,
@@ -236,14 +237,36 @@ def run_mode(
         llm_calls=answer.llm_calls,
         warnings=list(answer.warnings),
         rag_sources=[
-            {"title": s.title, "chunk_index": s.chunk_index, "score": round(s.score, 3)}
+            {
+                "title": s.title,
+                "chunk_index": s.chunk_index,
+                "score": round(s.score, 3),
+                "chunk_id": s.chunk_id,
+            }
             for s in answer.rag_sources
         ],
         search_failed=rag_context.FAILURE_WARNING in answer.warnings,
+        citations=[
+            {
+                "quote": c.quote,
+                "title": c.source.title,
+                "chunk_index": c.source.chunk_index,
+                "chunk_id": c.source.chunk_id,
+            }
+            for c in answer.citations
+        ],
+        citations_written=answer.citations_written,
+        citations_unverified=answer.citations_unverified,
+        abstained=answer.abstained,
     )
 
 
-def _judge_call(user_content: str, max_tokens: int, timeout: float) -> dict | None:
+def _judge_call(
+    user_content: str,
+    max_tokens: int,
+    timeout: float,
+    system_prompt: str = RAG_COMPARE_JUDGE_SYSTEM_PROMPT,
+) -> dict | None:
     """Один вызов оценщика. «thinking» отключён, как в research/temperature.py: оценщику нужен
     короткий JSON, а на моделях с рассуждениями весь лимит токенов уходил на скрытые
     размышления (finish_reason == "length", content пуст) — оценка терялась. Пустой content
@@ -251,7 +274,7 @@ def _judge_call(user_content: str, max_tokens: int, timeout: float) -> dict | No
     response = _fast_client.chat.completions.create(
         model=MAIN_MODEL,
         messages=[
-            {"role": "system", "content": RAG_COMPARE_JUDGE_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
         ],
         max_tokens=max_tokens,
@@ -267,19 +290,20 @@ def _judge_call(user_content: str, max_tokens: int, timeout: float) -> dict | No
     return parsed if isinstance(parsed, dict) else None
 
 
-def judge(
-    question: ev.Question, answer: str, budget: QuestionBudget | None = None
-) -> tuple[ev.Verdict | None, str | None]:
-    """Оценка ответа по чек-листу фактов (вслепую по режиму). Один повтор с удвоенным лимитом
-    токенов при обрезанном JSON или пустом ответе — только пока не исчерпан бюджет вопроса.
-    Таймаут каждого вызова — остаток бюджета (без бюджета — REQUEST_TIMEOUT_SECONDS).
-    Возвращает (оценка, None) или (None, причина)."""
-    user_content = ev.build_judge_user_content(question.question, question.facts, answer)
+def _judge_data(
+    user_content: str, system_prompt: str, budget: QuestionBudget | None
+) -> tuple[dict | None, str | None]:
+    """Вызов оценщика с одним повтором на удвоенном лимите токенов при обрезанном JSON или
+    пустом ответе — только пока не исчерпан бюджет вопроса. Таймаут каждого вызова — остаток
+    бюджета (без бюджета — REQUEST_TIMEOUT_SECONDS). Возвращает (данные, None) или (None,
+    причина); разбор содержимого — на вызывающем."""
 
     def call(max_tokens: int) -> dict | None:
         limit = budget.call_timeout() if budget else REQUEST_TIMEOUT_SECONDS
         # Жёсткий предел по часам вокруг вызова (таймаут клиента его не гарантирует).
-        return ev.call_with_deadline(lambda: _judge_call(user_content, max_tokens, limit), limit)
+        return ev.call_with_deadline(
+            lambda: _judge_call(user_content, max_tokens, limit, system_prompt), limit
+        )
 
     data: dict | None = None
     try:
@@ -298,9 +322,39 @@ def judge(
         return None, "оценщик не ответил в пределах времени вопроса"
     except Exception as exc:  # noqa: BLE001 — сбой оценки не должен ронять прогон
         return None, _error_reason(exc)
+    return data, None
+
+
+def judge(
+    question: ev.Question, answer: str, budget: QuestionBudget | None = None
+) -> tuple[ev.Verdict | None, str | None]:
+    """Оценка ответа по чек-листу фактов (вслепую по режиму). Возвращает (оценка, None) или
+    (None, причина)."""
+    user_content = ev.build_judge_user_content(question.question, question.facts, answer)
+    data, reason = _judge_data(user_content, RAG_COMPARE_JUDGE_SYSTEM_PROMPT, budget)
+    if reason is not None:
+        return None, reason
     verdict = ev.parse_judge_response(data, len(question.facts))
     if verdict is None:
         return None, "оценщик вернул непригодный ответ"
+    return verdict, None
+
+
+def judge_citations(
+    question: ev.Question,
+    answer: str,
+    quotes: list[str],
+    budget: QuestionBudget | None = None,
+) -> tuple[ev.CitationVerdict | None, str | None]:
+    """Оценка совпадения смысла ответа и ПРОВЕРЕННЫХ цитат (вслепую по режиму: в запросе только
+    вопрос, ответ и цитаты). Возвращает (вердикт, None) или (None, причина)."""
+    user_content = ev.build_citation_judge_user_content(question.question, answer, quotes)
+    data, reason = _judge_data(user_content, RAG_COMPARE_CITATION_JUDGE_SYSTEM_PROMPT, budget)
+    if reason is not None:
+        return None, reason
+    verdict = ev.parse_citation_judge_response(data)
+    if verdict is None:
+        return None, "оценщик цитат вернул непригодный ответ"
     return verdict, None
 
 
@@ -313,9 +367,12 @@ def _answer_and_judge(
     budget: QuestionBudget,
     on_stage: Callable[[str], None] | None,
     cancelled: Callable[[], bool] | None,
+    citation_stage: str | None = None,
 ) -> ev.ModeResult:
     """Ответ в одном режиме и его оценка в рамках бюджета вопроса: исчерпанный бюджет помечает
-    этап причиной «превышен лимит времени вопроса» без новых обращений к модели."""
+    этап причиной «превышен лимит времени вопроса» без новых обращений к модели. С
+    `citation_stage` дополнительно оценивается совпадение смысла ответа и проверенных цитат
+    (только если они есть)."""
     if cancelled and cancelled():
         raise RunCancelled
     if on_stage:
@@ -333,6 +390,17 @@ def _answer_and_judge(
             mode.judge_error = ev.QUESTION_TIMEOUT_REASON
         else:
             mode.verdict, mode.judge_error = judge(question, mode.answer, budget)
+        if citation_stage and mode.citations:
+            if cancelled and cancelled():
+                raise RunCancelled
+            if on_stage:
+                on_stage(citation_stage)
+            if budget.expired():
+                mode.citation_judge_error = ev.QUESTION_TIMEOUT_REASON
+            else:
+                mode.citation_verdict, mode.citation_judge_error = judge_citations(
+                    question, mode.answer, [c["quote"] for c in mode.citations], budget
+                )
     return mode
 
 
@@ -374,6 +442,17 @@ def evaluate_question(
     прогресс. `cancelled` — признак остановки прогона: поток, брошенный отменённой задачей, на
     следующем этапе завершается (RunCancelled) и не делает новых обращений к модели."""
     budget = QuestionBudget(budget_seconds)
+    if question.expect_abstain:
+        # Вопрос вне корпуса: нужен только ответ с RAG (ожидается «не знаю»), без оценки по фактам.
+        if cancelled and cancelled():
+            raise RunCancelled
+        if on_stage:
+            on_stage(ev.STAGE_ON_ANSWER)
+        if budget.expired():
+            on = ev.ModeResult(error=ev.QUESTION_TIMEOUT_REASON)
+        else:
+            on = run_mode(question.question, True, budget.call_timeout())
+        return ev.QuestionResult(question=question, off=ev.ModeResult(), on=on)
     plan = (
         (ev.MODE_OFF, False, ev.STAGE_OFF_ANSWER, ev.STAGE_OFF_JUDGE),
         (ev.MODE_ON, True, ev.STAGE_ON_ANSWER, ev.STAGE_ON_JUDGE),
@@ -381,7 +460,15 @@ def evaluate_question(
     modes: dict[str, ev.ModeResult] = {}
     for mode_key, rag_enabled, answer_stage, judge_stage in plan:
         modes[mode_key] = _answer_and_judge(
-            question, rag_enabled, None, answer_stage, judge_stage, budget, on_stage, cancelled
+            question,
+            rag_enabled,
+            None,
+            answer_stage,
+            judge_stage,
+            budget,
+            on_stage,
+            cancelled,
+            citation_stage=ev.STAGE_ON_CITATIONS if rag_enabled else None,
         )
     variants: dict[str, ev.ModeResult] = {}
     for key in variant_modes or []:
@@ -549,12 +636,12 @@ def load_latest_report(report_dir: str = RAG_COMPARE_REPORT_DIR) -> dict | None:
     """Последний сохранённый отчёт (файл с наибольшим именем); None — отчётов ещё нет.
     Повреждённый файл — ReportError."""
     try:
-        names = sorted(n for n in os.listdir(report_dir) if n.endswith(_REPORT_SUFFIX))
+        name = ev.latest_report_name(os.listdir(report_dir))
     except FileNotFoundError:
         return None
-    if not names:
+    if name is None:
         return None
-    path = os.path.join(report_dir, names[-1])
+    path = os.path.join(report_dir, name)
     try:
         with open(path, encoding="utf-8") as file:
             report = json.load(file)
@@ -866,7 +953,9 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             "Создайте файл — он не входит в репозиторий, потому что привязан к вашему корпусу "
             "документов: JSON-список объектов с полями question, kind (corpus_specific | "
             "concept | post_cutoff), facts (ожидаемые факты) и sources (префиксы заголовков "
-            "документов индекса). Формат и пример — в README. Другой путь задаётся переменной "
+            "документов индекса); вопрос вне корпуса — объект с question и "
+            "expect_abstain: true (ожидается ответ «не знаю»). Формат и пример — в README. "
+            "Другой путь задаётся переменной "
             "RAG_COMPARE_QUESTIONS_FILE."
         )
         return
@@ -908,6 +997,24 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
         skipped_numbers = [q.number for q in multi_turn]
         questions = standalone
+
+    # Вопросы вне корпуса (expect_abstain) проверяют режим «не знаю» у ответа, а не поиск по
+    # ожидаемым документам, поэтому уровень «только поиск» их не обрабатывает.
+    if level == rm.LEVEL_SEARCH:
+        abstain_numbers = [q.number for q in questions if q.expect_abstain]
+        if abstain_numbers:
+            questions = [q for q in questions if not q.expect_abstain]
+            if not questions:
+                await update.message.reply_text(
+                    "ℹ️ В наборе только вопросы вне корпуса (expect_abstain): они проверяются "
+                    "уровнем ответов (RAG_COMPARE_LEVEL=answers). Прогон не начат."
+                )
+                return
+            await update.message.reply_text(
+                "ℹ️ Вопросы вне корпуса ("
+                + ", ".join(str(n) for n in abstain_numbers)
+                + ") в сравнении режимов поиска не участвуют — их проверяет уровень ответов."
+            )
 
     if _run_in_progress:
         await update.message.reply_text(

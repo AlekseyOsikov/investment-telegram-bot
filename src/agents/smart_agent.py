@@ -333,6 +333,17 @@ class SmartAgentAnswer:
     # Слой rag: фрагменты, реально попавшие в запрос (документ, номер, оценка) — командный
     # слой печатает их строкой «📚» отдельно от ответа; пусто, если материалов не было.
     rag_sources: list[rag_context.RagSource] = field(default_factory=list)
+    # Цитаты (спека smart-agent-rag): проверенные по тексту фрагментов (показываются под своим
+    # фрагментом в rag_sources — тот содержит ВСЕ поданные фрагменты, в том числе без цитат);
+    # citations_written — сколько цитат написала модель (доля проверенных в eval);
+    # citations_unverified — материалы поданы, но проверенных цитат нет; abstained — ответ
+    # «не знаю» без вызова модели; no_materials_note — поиск ничего не нашёл, но модель
+    # вызвана (доступны инструменты).
+    citations: list[rag_context.VerifiedCitation] = field(default_factory=list)
+    citations_written: int = 0
+    citations_unverified: bool = False
+    abstained: bool = False
+    no_materials_note: bool = False
 
 
 def _empty_profile() -> dict:
@@ -1062,8 +1073,14 @@ class SmartAgent:
 
     @staticmethod
     def _rag_messages(materials: rag_context.Materials) -> list[dict[str, str]] | None:
-        """Правила обращения с материалами — только когда фрагменты в запросе есть."""
-        return [rag_context.build_rules_message()] if materials.chunks else None
+        """Правила обращения с материалами — когда фрагменты в запросе есть; при состоявшемся
+        поиске без фрагментов (модель вызвана только с доступными инструментами, иначе ответ —
+        «не знаю» без вызова) — указание не выдавать ответ за подтверждённый материалами."""
+        if materials.chunks:
+            return [rag_context.build_rules_message()]
+        if materials.searched:
+            return [rag_context.build_no_materials_message()]
+        return None
 
     @staticmethod
     def _question_message(user_text: str, materials: rag_context.Materials) -> dict[str, str]:
@@ -1095,6 +1112,27 @@ class SmartAgent:
             prompt_tokens=usage["prompt_tokens"] if usage else None,
             completion_tokens=usage["completion_tokens"] if usage else None,
         )
+
+    def _citation_retry(
+        self, user_text: str, materials: rag_context.Materials, draft: str
+    ) -> tuple[list[rag_context.VerifiedCitation], int, dict[str, int] | None]:
+        """Один повторный вызов за цитатами (design.md add-rag-citations-and-abstain, п.4):
+        тот же контекст со слоем rag, черновик ответа и просьба дополнить его блоком цитат.
+        Без инструментов — черновик уже содержит их результаты. Возвращает (проверенные цитаты,
+        число написанных, usage). Любой сбой гасится: ответ у пользователя уже есть."""
+        try:
+            messages = self._build_context_messages(None, self._rag_messages(materials))
+            messages.append(self._question_message(user_text, materials))
+            messages.append({"role": "assistant", "content": draft})
+            messages.append({"role": "user", "content": rag_context.CITATION_RETRY_PROMPT})
+            response = self._chat(messages)
+            text = response.choices[0].message.content or ""
+            usage = self._extract_usage(response)
+        except Exception:  # noqa: BLE001 — сбой повтора не должен ронять готовый ответ
+            logger.warning("Сбой повторного запроса цитат.", exc_info=True)
+            return [], 0, None
+        result = rag_context.build_citation_result(text, materials.chunks)
+        return result.verified, result.written, usage
 
     def _market_tools_mode(self) -> str:
         """STATUS_OFF — слой выключен пользователем, STATUS_NOT_CONFIGURED — ни один
@@ -1354,7 +1392,7 @@ class SmartAgent:
             dropped=selection.dropped,
             history_used=history_used,
         )
-        return rag_context.Materials(chunks=selection.chunks)
+        return rag_context.Materials(chunks=selection.chunks, searched=True)
 
     def get_rag_status(self) -> tuple[str, str | None]:
         """Статус слоя rag для /smart_agent_show — (STATUS_*, причина сбоя). Выключенный
@@ -1439,6 +1477,12 @@ class SmartAgent:
         попадает исходный вопрос без чанков. Сбой поиска не роняет ответ:
         вопрос уходит без материалов, а SmartAgentAnswer.warnings получает предупреждение.
 
+        Цитаты и «не знаю» (add-rag-citations-and-abstain). Ответ по материалам заканчивается
+        блоком «Цитаты:»: он отделяется от текста, цитаты проверяются по тексту фрагментов
+        (rag_context.build_citation_result); без проверенных — один повтор за цитатами. В
+        short_term пишется ответ без блока. Если поиск состоялся и ничего не нашёл, а слой
+        tools не может участвовать, модель НЕ вызывается: ответ — rag_context.ABSTAIN_TEXT.
+
         МЕТОД СИНХРОННЫЙ, но внутри путь с инструментами вызывает asyncio.run() — он
         бросит RuntimeError, если вызвать ask() в потоке с уже работающим циклом
         событий. Единственный вызывающий (agents/smart_agent_command.py) оборачивает
@@ -1467,7 +1511,23 @@ class SmartAgent:
         )
 
         mode = self._market_tools_mode()
+        tools_can_participate = mode == market_tools.STATUS_OK
         warnings: list[str] = [materials.warning] if materials.warning else []
+
+        # Режим «не знаю»: поиск состоялся, ничего не нашёл, инструменты не участвуют — модель
+        # не вызывается и ничего не выдумывает (спека smart-agent-rag).
+        if rag_context.should_abstain(materials, tools_can_participate):
+            self._tools_status = {}
+            self._last_tool_calls = []
+            return self._finish_answer(
+                rag_context.ABSTAIN_TEXT,
+                user_text,
+                request_tokens_approx,
+                warnings=warnings,
+                llm_calls=0,
+                abstained=True,
+            )
+
         unavailable: dict[str, str] = {}
         if mode == market_tools.STATUS_OK:
             outcome, unavailable = asyncio.run(self._tool_completion_async(user_text, materials))
@@ -1509,20 +1569,90 @@ class SmartAgent:
 
         answer = outcome.text or "Модель вернула пустой ответ. Попробуй переформулировать вопрос."
 
+        # Цитаты: блок модели отделяется от ответа и проверяется по тексту поданных фрагментов;
+        # без проверенных цитат — один повтор (спека smart-agent-rag, «Цитаты в ответе…»).
+        citations: list[rag_context.VerifiedCitation] = []
+        citations_written = 0
+        prompt_tokens, completion_tokens = outcome.prompt_tokens, outcome.completion_tokens
+        llm_calls = outcome.llm_calls
+        if materials.chunks and outcome.text:
+            parsed = rag_context.build_citation_result(outcome.text, materials.chunks)
+            citations, citations_written = parsed.verified, parsed.written
+            if parsed.body.strip():
+                answer = parsed.body
+            if not citations:
+                retried, written, usage = self._citation_retry(
+                    user_text, materials, outcome.text
+                )
+                llm_calls += 1
+                citations_written += written
+                citations = retried
+                if usage:
+                    prompt_tokens = (prompt_tokens or 0) + usage["prompt_tokens"]
+                    completion_tokens = (completion_tokens or 0) + usage["completion_tokens"]
+
+        return self._finish_answer(
+            answer,
+            user_text,
+            request_tokens_approx,
+            warnings=warnings,
+            llm_calls=llm_calls,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            tool_calls=list(outcome.calls),
+            materials=materials,
+            citations=citations,
+            citations_written=citations_written,
+            no_materials_note=rag_context.needs_no_materials_note(
+                materials, tools_can_participate
+            ),
+        )
+
+    def _finish_answer(
+        self,
+        answer: str,
+        user_text: str,
+        request_tokens_approx: int,
+        *,
+        warnings: list[str],
+        llm_calls: int,
+        prompt_tokens: int | None = None,
+        completion_tokens: int | None = None,
+        tool_calls: list | None = None,
+        materials: rag_context.Materials | None = None,
+        citations: list[rag_context.VerifiedCitation] | None = None,
+        citations_written: int = 0,
+        abstained: bool = False,
+        no_materials_note: bool = False,
+    ) -> SmartAgentAnswer:
+        """Запись пары «вопрос — ответ» в short_term и сборка результата ask(). В память идёт
+        ответ без блока цитат и без текстов фрагментов; ответ «не знаю» пишется как обычная
+        пара (видим и очищаем пользователем)."""
         short_term = self._profiles[self._active_profile]["short_term"]
         short_term.append({"role": "user", "content": user_text})
         short_term.append({"role": "assistant", "content": answer})
         self._save_state()
 
+        chunks = materials.chunks if materials else []
+        citations = citations or []
+        # Источники — ВСЕ поданные фрагменты: под теми, из которых есть проверенные цитаты, они
+        # показываются, остальные идут тем же форматом без цитат
+        # (rag_context.format_citation_lines).
+        sources = rag_context.source_records(chunks)
         return SmartAgentAnswer(
             text=answer,
             request_tokens_approx=request_tokens_approx,
-            context_tokens=outcome.prompt_tokens,
-            response_tokens=outcome.completion_tokens,
-            tool_calls=list(outcome.calls),
+            context_tokens=prompt_tokens,
+            response_tokens=completion_tokens,
+            tool_calls=tool_calls or [],
             warnings=warnings,
-            llm_calls=outcome.llm_calls,
-            rag_sources=rag_context.source_records(materials.chunks),
+            llm_calls=llm_calls,
+            rag_sources=sources,
+            citations=citations,
+            citations_written=citations_written,
+            citations_unverified=bool(chunks) and not citations,
+            abstained=abstained,
+            no_materials_note=no_materials_note,
         )
 
     def get_tools_status(self) -> dict[str, tuple[str, str | None]]:

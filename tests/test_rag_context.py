@@ -12,8 +12,11 @@ from agents import rag_context
 
 
 def _chunk(score: float, title: str = "Диверсификация", index: int = 1, text: str = "Текст.",
-           author: str | None = None):
-    return SimpleNamespace(score=score, title=title, chunk_index=index, text=text, author=author)
+           author: str | None = None, chunk_id: str | None = None):
+    chunk = SimpleNamespace(score=score, title=title, chunk_index=index, text=text, author=author)
+    if chunk_id is not None:
+        chunk.chunk_id = chunk_id
+    return chunk
 
 
 def test_filter_keeps_only_chunks_at_or_above_threshold_in_order():
@@ -286,3 +289,224 @@ def test_describe_search_does_not_repeat_question_texts():
     )
     text = "\n".join(rag_context.describe_search(info))
     assert "как выбирать облигации" not in text
+
+
+# --- Источники с chunk_id, режим «не знаю», цитаты (изменение add-rag-citations-and-abstain) ---
+
+_TEXT = "Диверсификация — это распределение вложений между разными активами и рынками."
+
+
+def test_source_records_carry_chunk_id_and_lines_show_it():
+    sources = rag_context.source_records([_chunk(0.7, index=2, chunk_id="doc:structural:2")])
+    assert sources[0].chunk_id == "doc:structural:2"
+    assert rag_context.format_source_lines(sources) == [
+        "📚 Диверсификация — фрагмент 2 (id doc:structural:2), близость 0.70"
+    ]
+
+
+def test_source_records_without_chunk_id_keep_old_line():
+    sources = rag_context.source_records([_chunk(0.7)])
+    assert sources[0].chunk_id == ""
+
+
+def test_abstain_only_when_search_done_nothing_found_and_no_tools():
+    searched = rag_context.Materials(searched=True)
+    assert rag_context.should_abstain(searched, tools_can_participate=False)
+    assert not rag_context.should_abstain(searched, tools_can_participate=True)
+    # слой выключен, индекса нет или сбой поиска — searched=False
+    assert not rag_context.should_abstain(rag_context.Materials(), tools_can_participate=False)
+    failed = rag_context.Materials(warning=rag_context.FAILURE_WARNING)
+    assert not rag_context.should_abstain(failed, tools_can_participate=False)
+    # есть чанки — не отказ
+    found = rag_context.Materials(chunks=[_chunk(0.7)], searched=True)
+    assert not rag_context.should_abstain(found, tools_can_participate=False)
+
+
+def test_no_materials_note_only_when_search_done_nothing_found_and_tools_available():
+    searched = rag_context.Materials(searched=True)
+    assert rag_context.needs_no_materials_note(searched, tools_can_participate=True)
+    assert not rag_context.needs_no_materials_note(searched, tools_can_participate=False)
+    assert not rag_context.needs_no_materials_note(rag_context.Materials(), True)
+
+
+def test_abstain_text_asks_to_clarify_and_is_not_a_guarantee():
+    text = rag_context.ABSTAIN_TEXT
+    assert "Уточните" in text and "не лицензированный" in text
+    assert "гарант" not in text.lower()
+
+
+def test_rules_message_requires_citations_and_keeps_the_safety_clause():
+    text = rag_context.build_rules_message()["content"]
+    assert "Цитаты:" in text and "[n]" in text
+    assert "Обязанность цитировать НЕ отменяет" in text
+    assert "обязательные предупреждения" in text
+
+
+def test_no_materials_message_is_system_and_keeps_the_safety_clause():
+    message = rag_context.build_no_materials_message()
+    assert message["role"] == "system"
+    assert "НЕ отменяет" in message["content"]
+    assert "обязательные предупреждения" in message["content"]
+
+
+def test_parse_citations_splits_body_from_quotes_block():
+    answer = "Ответ.\n\nЦитаты:\n[1] «первая цитата»\n- [2] «вторая цитата»"
+    body, cites = rag_context.parse_citations(answer)
+    assert body == "Ответ."
+    assert [(c.number, c.quote) for c in cites] == [(1, "первая цитата"), (2, "вторая цитата")]
+
+
+def test_parse_citations_accepts_markdown_header_and_any_case():
+    for header in ("**Цитаты:**", "ЦИТАТЫ", "## Цитаты:"):
+        body, cites = rag_context.parse_citations(f"Текст\n{header}\n[1] «абвгд»")
+        assert body == "Текст" and len(cites) == 1
+
+
+def test_parse_citations_without_header_returns_whole_answer():
+    answer = "Просто ответ про [1] «не цитата»."
+    assert rag_context.parse_citations(answer) == (answer, [])
+
+
+def test_parse_citations_ignores_garbage_lines_in_block():
+    body, cites = rag_context.parse_citations("A\nЦитаты:\nмусор\n[1] «настоящая цитата»")
+    assert len(cites) == 1 and cites[0].quote == "настоящая цитата"
+
+
+def test_parse_citations_header_in_the_middle_uses_the_last_one():
+    answer = "Первый абзац\nЦитаты:\n[1] «а»\nещё текст\nЦитаты:\n[1] «вторая цитата»"
+    body, cites = rag_context.parse_citations(answer)
+    assert body.endswith("ещё текст")
+    assert [c.quote for c in cites] == ["вторая цитата"]
+
+
+def test_verify_accepts_exact_substring_ignoring_case_spacing_dash_and_yo():
+    chunks = [_chunk(0.7, text=_TEXT)]
+    quote = "диверсификация  -  это распределение   вложений"
+    assert rag_context.verify_citation(rag_context.RawCitation(1, quote), chunks)
+    yo = [_chunk(0.7, text="Всё это — ёмкий пример того, как делится портфель.")]
+    assert rag_context.verify_citation(
+        rag_context.RawCitation(1, "все это - емкий пример того"), yo
+    )
+
+
+def test_verify_rejects_invented_quote_and_wrong_number():
+    chunks = [_chunk(0.7, text=_TEXT)]
+    assert not rag_context.verify_citation(
+        rag_context.RawCitation(1, "доходность гарантирована всегда"), chunks
+    )
+    assert not rag_context.verify_citation(
+        rag_context.RawCitation(2, "распределение вложений между разными"), chunks
+    )
+    assert not rag_context.verify_citation(
+        rag_context.RawCitation(0, "распределение вложений между разными"), chunks
+    )
+
+
+def test_verify_rejects_paraphrase_and_too_short_quote():
+    chunks = [_chunk(0.7, text=_TEXT)]
+    assert not rag_context.verify_citation(
+        rag_context.RawCitation(1, "вложения распределяют между активами"), chunks
+    )
+    assert not rag_context.verify_citation(rag_context.RawCitation(1, "это"), chunks)
+
+
+def test_verify_ellipsis_parts_must_follow_in_order():
+    chunks = [_chunk(0.7, text=_TEXT)]
+    assert rag_context.verify_citation(
+        rag_context.RawCitation(1, "распределение вложений… разными активами"), chunks
+    )
+    assert rag_context.verify_citation(
+        rag_context.RawCitation(1, "распределение вложений... разными активами"), chunks
+    )
+    assert not rag_context.verify_citation(
+        rag_context.RawCitation(1, "разными активами… распределение вложений"), chunks
+    )
+
+
+def test_citation_result_keeps_only_verified_and_reports_ratio():
+    chunks = [
+        _chunk(0.7, title="Первый", index=1, text=_TEXT, chunk_id="a:1"),
+        _chunk(0.6, title="Второй", index=5, text="Облигация — долговая ценная бумага.",
+               chunk_id="a:5"),
+    ]
+    answer = (
+        "Ответ.\nЦитаты:\n[1] «распределение вложений между разными активами»\n"
+        "[2] «облигация гарантированно растёт»\n[2] «долговая ценная бумага»"
+    )
+    result = rag_context.build_citation_result(answer, chunks)
+    assert result.body == "Ответ."
+    assert [c.source.title for c in result.verified] == ["Первый", "Второй"]
+    assert result.written == 3 and result.rejected == 1
+    assert abs(result.ratio - 2 / 3) < 1e-9
+    assert [c.source.chunk_id for c in result.verified] == ["a:1", "a:5"]
+
+
+def test_citation_result_without_block_has_zero_ratio_and_full_body():
+    result = rag_context.build_citation_result("Обычный ответ.", [_chunk(0.7, text=_TEXT)])
+    assert result.body == "Обычный ответ." and result.verified == [] and result.ratio == 0.0
+
+
+def test_citation_result_caps_number_of_citations():
+    chunks = [_chunk(0.7, text="альфа бета гамма дельта эпсилон дзета эта тета йота каппа")]
+    quotes = "\n".join(
+        f"[1] «{q}»"
+        for q in ("альфа бета гамма дельта", "бета гамма дельта эпсилон",
+                  "гамма дельта эпсилон дзета", "дельта эпсилон дзета эта")
+    )
+    result = rag_context.build_citation_result(f"О\nЦитаты:\n{quotes}", chunks)
+    assert result.written == 4 and len(result.verified) == rag_context.MAX_CITATIONS
+
+
+def test_citation_lines_group_quotes_under_their_source_and_truncate_long_ones():
+    chunks = [_chunk(0.7, title="Первый", index=1, text=_TEXT, chunk_id="a:1")]
+    result = rag_context.build_citation_result(
+        "О\nЦитаты:\n[1] «распределение вложений между разными активами»", chunks
+    )
+    lines = rag_context.format_citation_lines(
+        rag_context.source_records(chunks), result.verified
+    )
+    assert lines[0].startswith("📚 Первый — фрагмент 1 (id a:1)")
+    assert lines[1] == "    «распределение вложений между разными активами»"
+    long_cite = rag_context.VerifiedCitation("я" * 1000, result.verified[0].source)
+    shown = rag_context.format_citation_lines([long_cite.source], [long_cite])[1]
+    assert shown.endswith("…»") and len(shown) < 330
+
+
+def test_answer_service_lines_cases():
+    chunks = [_chunk(0.7, title="Первый", index=1, text=_TEXT, chunk_id="a:1")]
+    good = rag_context.build_citation_result(
+        "О\nЦитаты:\n[1] «распределение вложений между разными активами»", chunks
+    )
+    verified = rag_context.format_answer_service_lines(
+        rag_context.source_records(chunks), good.verified
+    )
+    assert verified[0].startswith("📚 Первый") and verified[1].lstrip().startswith("«")
+    assert rag_context.UNVERIFIED_NOTE not in verified
+
+    sources = rag_context.source_records(chunks)
+    unverified = rag_context.format_answer_service_lines(sources, [], unverified=True)
+    assert unverified[0].startswith("📚 Первый") and unverified[-1] == rag_context.UNVERIFIED_NOTE
+
+    note = rag_context.format_answer_service_lines([], [], no_materials_note=True)
+    assert note == [rag_context.NO_MATERIALS_NOTE]
+    # отказ и ответ без слоя — без строк
+    assert rag_context.format_answer_service_lines([], []) == []
+
+
+def test_fragment_without_citations_stays_in_the_list_without_quotes():
+    chunks = [
+        _chunk(0.7, title="Первый", index=1, text=_TEXT, chunk_id="a:1"),
+        _chunk(0.6, title="Второй", index=5, text="Облигация — долговая ценная бумага.",
+               chunk_id="a:5"),
+    ]
+    result = rag_context.build_citation_result(
+        "О\nЦитаты:\n[1] «распределение вложений между разными активами»", chunks
+    )
+    lines = rag_context.format_answer_service_lines(
+        rag_context.source_records(chunks), result.verified
+    )
+    assert [line.startswith("📚") for line in lines] == [True, False, True]
+    assert lines[0].startswith("📚 Первый — фрагмент 1 (id a:1)")
+    assert lines[1].lstrip().startswith("«")
+    assert lines[2].startswith("📚 Второй — фрагмент 5 (id a:5)")
+    assert rag_context.UNVERIFIED_NOTE not in lines

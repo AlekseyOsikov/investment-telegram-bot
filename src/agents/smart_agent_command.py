@@ -315,7 +315,9 @@ def _format_token_stats(result: SmartAgentAnswer) -> str:
         f"📈 Токены: запрос ≈{result.request_tokens_approx} (по символам), "
         f"контекст={context_tokens}, ответ={response}"
     )
-    if result.llm_calls > 1:
+    if result.llm_calls == 0:
+        line += " (без обращения к модели)"
+    elif result.llm_calls > 1:
         # Вызовы инструментов — несколько обращений к модели за один вопрос, и
         # контекст/ответ здесь суммы по всем (это реальная стоимость вопроса).
         line += f" (суммарно по {result.llm_calls} обращениям к модели)"
@@ -704,7 +706,12 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
     # Состояние задачи обновляется уже после отправки ответа (см. _task_service_lines),
     # а служебная информация уходит одним сообщением, а не двумя.
     service_lines = market_tools.format_call_lines(result.tool_calls)
-    service_lines += rag_context.format_source_lines(result.rag_sources)
+    service_lines += rag_context.format_answer_service_lines(
+        result.rag_sources,
+        result.citations,
+        unverified=result.citations_unverified,
+        no_materials_note=result.no_materials_note,
+    )
     service_lines += result.warnings
     service_lines += _task_service_lines(agent)
     service_lines.append(_format_token_stats(result))

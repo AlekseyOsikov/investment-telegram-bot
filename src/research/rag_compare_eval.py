@@ -18,13 +18,16 @@ SmartAgent и модели, фоновый прогон, Telegram и диск �
 from __future__ import annotations
 
 import json
+import re
 import threading
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any, TypeVar
 
+KIND_OUT_OF_CORPUS = "out_of_corpus"  # только с expect_abstain (вопрос вне корпуса)
 KINDS = ("corpus_specific", "concept", "post_cutoff")
 KIND_LABELS = {
+    KIND_OUT_OF_CORPUS: "вне корпуса",
     "corpus_specific": "по специфике корпуса",
     "concept": "по общему понятию",
     "post_cutoff": "после даты знаний модели",
@@ -50,12 +53,14 @@ STAGE_OFF_ANSWER = "off_answer"
 STAGE_OFF_JUDGE = "off_judge"
 STAGE_ON_ANSWER = "on_answer"
 STAGE_ON_JUDGE = "on_judge"
-STAGES = (STAGE_OFF_ANSWER, STAGE_OFF_JUDGE, STAGE_ON_ANSWER, STAGE_ON_JUDGE)
+STAGE_ON_CITATIONS = "on_citations"
+STAGES = (STAGE_OFF_ANSWER, STAGE_OFF_JUDGE, STAGE_ON_ANSWER, STAGE_ON_JUDGE, STAGE_ON_CITATIONS)
 STAGE_LABELS = {
     STAGE_OFF_ANSWER: "ответ без RAG",
     STAGE_OFF_JUDGE: "оценка ответа без RAG",
     STAGE_ON_ANSWER: "ответ с RAG",
     STAGE_ON_JUDGE: "оценка ответа с RAG",
+    STAGE_ON_CITATIONS: "оценка цитат ответа с RAG",
 }
 DISCLAIMER = (
     "Оценка ответов — вызов той же модели по чек-листу фактов, а один прогон недетерминирован: "
@@ -77,11 +82,16 @@ class Question:
     # Предыдущие вопросы диалога (от старых к новым), после которых задан этот вопрос; пусто —
     # самостоятельный вопрос (design.md изменения add-rag-rewrite-dialog-context, решение 6).
     history: tuple[str, ...] = ()
+    # Вопрос вне корпуса: ожидание — режим «не знаю» (add-rag-citations-and-abstain, решение 6);
+    # факты и источники не требуются, ответ по фактам не оценивается.
+    expect_abstain: bool = False
 
 
 def parse_questions(raw: Any) -> list[Question]:
     """Проверяет и разбирает набор: список непустой, у каждого вопроса непустые формулировка,
-    факты и источники, тип из KINDS. Любое нарушение — QuestionSetError с номером вопроса."""
+    факты и источники, тип из KINDS. Вопрос с `expect_abstain: true` (вне корпуса) требует
+    только формулировку: тип по умолчанию KIND_OUT_OF_CORPUS, факты и источники не нужны.
+    Любое нарушение — QuestionSetError с номером вопроса."""
     if not isinstance(raw, list) or not raw:
         raise QuestionSetError("набор пуст или не является списком вопросов")
     questions: list[Question] = []
@@ -91,15 +101,21 @@ def parse_questions(raw: Any) -> list[Question]:
         text = item.get("question")
         if not isinstance(text, str) or not text.strip():
             raise QuestionSetError(f"вопрос {number}: нет формулировки")
+        expect_abstain = item.get("expect_abstain", False)
+        if not isinstance(expect_abstain, bool):
+            raise QuestionSetError(f"вопрос {number}: expect_abstain должен быть true или false")
         kind = item.get("kind")
-        if kind not in KINDS:
+        if expect_abstain and kind is None:
+            kind = KIND_OUT_OF_CORPUS
+        if kind not in KINDS and not (expect_abstain and kind == KIND_OUT_OF_CORPUS):
             raise QuestionSetError(f"вопрос {number}: недопустимый тип {kind!r}")
         facts = _non_empty_strings(item.get("facts"))
-        if not facts:
-            raise QuestionSetError(f"вопрос {number}: нет ожидаемых фактов")
         sources = _non_empty_strings(item.get("sources"))
-        if not sources:
-            raise QuestionSetError(f"вопрос {number}: нет ожидаемых источников")
+        if not expect_abstain:
+            if not facts:
+                raise QuestionSetError(f"вопрос {number}: нет ожидаемых фактов")
+            if not sources:
+                raise QuestionSetError(f"вопрос {number}: нет ожидаемых источников")
         history = _parse_history(item.get("history"), number)
         questions.append(
             Question(
@@ -109,6 +125,7 @@ def parse_questions(raw: Any) -> list[Question]:
                 facts=facts,
                 sources=sources,
                 history=history,
+                expect_abstain=expect_abstain,
             )
         )
     return questions
@@ -230,6 +247,67 @@ def parse_judge_response(data: Any, fact_count: int) -> Verdict | None:
 
 
 # --------------------------------------------------------------------------- #
+# Оценка совпадения смысла ответа и проверенных цитат (вслепую по режиму)
+# --------------------------------------------------------------------------- #
+
+CITATION_SUPPORTED = "supported"
+CITATION_PARTIAL = "partial"
+CITATION_UNSUPPORTED = "unsupported"
+CITATION_VERDICTS = (CITATION_SUPPORTED, CITATION_PARTIAL, CITATION_UNSUPPORTED)
+CITATION_VERDICT_LABELS = {
+    CITATION_SUPPORTED: "подтверждается",
+    CITATION_PARTIAL: "подтверждается частично",
+    CITATION_UNSUPPORTED: "не подтверждается",
+}
+_MAX_UNSUPPORTED_CLAIMS = 5
+
+
+def build_citation_judge_user_content(question: str, answer: str, quotes: list[str]) -> str:
+    """Запрос оценщику: вопрос, ответ и проверенные цитаты. Указания на режим (с материалами
+    или без) нет по построению — цитаты поданы как есть."""
+    numbered = "\n".join(f"{i}. {quote}" for i, quote in enumerate(quotes, start=1))
+    return (
+        f"Вопрос:\n{question}\n\n"
+        f"Цитаты:\n{numbered}\n\n"
+        f"Ответ ассистента:\n<<<\n{answer}\n>>>"
+    )
+
+
+@dataclass(frozen=True)
+class CitationVerdict:
+    """verdict — один из CITATION_VERDICTS; unsupported — утверждения ответа без опоры в
+    цитатах (по словам оценщика)."""
+
+    verdict: str
+    unsupported: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict:
+        return {"verdict": self.verdict, "unsupported": list(self.unsupported)}
+
+    @staticmethod
+    def from_dict(data: dict) -> CitationVerdict:
+        return CitationVerdict(
+            verdict=str(data.get("verdict", "")),
+            unsupported=tuple(str(c) for c in data.get("unsupported", [])),
+        )
+
+
+def parse_citation_judge_response(data: Any) -> CitationVerdict | None:
+    """Разбирает JSON оценщика цитат. None — непригоден (не объект или вердикт вне
+    CITATION_VERDICTS). Утверждения без опоры — только непустые строки, не более
+    _MAX_UNSUPPORTED_CLAIMS, усечённые."""
+    if not isinstance(data, dict) or data.get("verdict") not in CITATION_VERDICTS:
+        return None
+    claims = data.get("unsupported_claims")
+    unsupported = tuple(
+        _short(c)
+        for c in (claims if isinstance(claims, list) else [])
+        if isinstance(c, str) and c.strip()
+    )[:_MAX_UNSUPPORTED_CLAIMS]
+    return CitationVerdict(verdict=data["verdict"], unsupported=unsupported)
+
+
+# --------------------------------------------------------------------------- #
 # Результаты вопросов
 # --------------------------------------------------------------------------- #
 
@@ -251,15 +329,28 @@ class ModeResult:
     search_failed: bool = False
     verdict: Verdict | None = None
     judge_error: str | None = None
+    # Цитаты и «не знаю» (add-rag-citations-and-abstain): проверенные цитаты ответа
+    # ({"quote","title","chunk_index","chunk_id"}), сколько цитат написала модель, признаки
+    # «цитаты не подтверждены» и отказа, оценка совпадения смысла ответа и цитат.
+    citations: list[dict] = field(default_factory=list)
+    citations_written: int = 0
+    citations_unverified: bool = False
+    abstained: bool = False
+    citation_verdict: CitationVerdict | None = None
+    citation_judge_error: str | None = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data["verdict"] = self.verdict.to_dict() if self.verdict else None
+        data["citation_verdict"] = (
+            self.citation_verdict.to_dict() if self.citation_verdict else None
+        )
         return data
 
     @staticmethod
     def from_dict(data: dict) -> ModeResult:
         verdict = data.get("verdict")
+        citation_verdict = data.get("citation_verdict")
         return ModeResult(
             answer=data.get("answer"),
             error=data.get("error"),
@@ -272,6 +363,16 @@ class ModeResult:
             search_failed=bool(data.get("search_failed", False)),
             verdict=Verdict.from_dict(verdict) if isinstance(verdict, dict) else None,
             judge_error=data.get("judge_error"),
+            citations=list(data.get("citations", [])),
+            citations_written=int(data.get("citations_written", 0)),
+            citations_unverified=bool(data.get("citations_unverified", False)),
+            abstained=bool(data.get("abstained", False)),
+            citation_verdict=(
+                CitationVerdict.from_dict(citation_verdict)
+                if isinstance(citation_verdict, dict)
+                else None
+            ),
+            citation_judge_error=data.get("citation_judge_error"),
         )
 
     @property
@@ -302,6 +403,7 @@ class QuestionResult:
             "facts": list(q.facts),
             "sources": list(q.sources),
             "history": list(q.history),
+            "expect_abstain": q.expect_abstain,
             "missing_sources": list(self.missing_sources),
             "off": self.off.to_dict(),
             "on": self.on.to_dict(),
@@ -317,6 +419,7 @@ class QuestionResult:
             facts=tuple(data["facts"]),
             sources=tuple(data["sources"]),
             history=tuple(data.get("history") or ()),
+            expect_abstain=bool(data.get("expect_abstain", False)),
         )
         return QuestionResult(
             question=question,
@@ -366,6 +469,19 @@ def compare_coverage(off_coverage: float, on_coverage: float) -> str:
     if on_coverage < off_coverage - _EPSILON:
         return "worse"
     return "equal"
+
+
+def citation_eligible(result: QuestionResult) -> bool:
+    """Участвует ли вопрос в метриках источников и цитат: вопрос по корпусу, ответ с RAG получен,
+    поиск не упал и бот не ответил режимом «не знаю» (ложный отказ считается отдельно)."""
+    on = result.on
+    return (
+        not result.question.expect_abstain
+        and on.answer is not None
+        and not on.error
+        and not on.search_failed
+        and not on.abstained
+    )
 
 
 def exclusion_reason(result: QuestionResult) -> str | None:
@@ -437,8 +553,11 @@ def question_failed(result: QuestionResult) -> bool:
     """Провалился ли вопрос: из-за сбоя (провайдера, оценщика) или превышения времени не получен
     ответ или оценка хотя бы одного этапа. Сбой ПОИСКА материалов проваленным вопросом не
     считается: ответы получены, а такой вопрос и так исключается из сравнения (см.
-    exclusion_reason)."""
-    return any(
+    exclusion_reason). У вопроса вне корпуса оценки по фактам нет — проваливается только сбой
+    ответа; сбой оценщика цитат проваливает вопрос, как и сбой оценщика фактов."""
+    if result.question.expect_abstain:
+        return bool(result.on.error)
+    return bool(result.on.citation_judge_error) or any(
         mode.error or mode.judge_error or (mode.answer is not None and mode.verdict is None)
         for mode in (result.off, result.on)
     )
@@ -457,6 +576,19 @@ def consecutive_failures(results: list[QuestionResult]) -> int:
 def should_stop(results: list[QuestionResult], limit: int) -> bool:
     """Пора ли остановить прогон: подряд провалилось не меньше `limit` вопросов."""
     return limit > 0 and consecutive_failures(results) >= limit
+
+
+# Имя файла отчёта: UTC-время прогона (его пишет research/rag_compare.py). Файлы набора вопросов
+# и калибровки лежат в том же каталоге data/rag_eval/ и тоже заканчиваются на .json, поэтому
+# «последний отчёт» выбирается только среди файлов с таким именем.
+_REPORT_NAME = re.compile(r"^\d{8}T\d{6}Z\.json$")
+
+
+def latest_report_name(names: list[str]) -> str | None:
+    """Имя последнего отчёта среди имён файлов каталога (по времени в имени); None — отчётов нет.
+    Файлы другого вида (наборы вопросов, копии, временные файлы) игнорируются."""
+    reports = sorted(name for name in names if _REPORT_NAME.match(name))
+    return reports[-1] if reports else None
 
 
 def build_report(
@@ -519,7 +651,10 @@ def aggregate(results: list[QuestionResult]) -> dict:
     которым не получено ни одного оценённого ответа (сравнение невозможно)."""
     scored: list[QuestionResult] = []
     excluded: list[dict] = []
-    for result in results:
+    # Вопросы вне корпуса (expect_abstain) в сравнении по фактам не участвуют: у них нет ни
+    # фактов, ни ответа без RAG; их считают метрики режима «не знаю» ниже.
+    fact_results = [r for r in results if not r.question.expect_abstain]
+    for result in fact_results:
         reason = exclusion_reason(result)
         if reason is None:
             scored.append(result)
@@ -532,17 +667,47 @@ def aggregate(results: list[QuestionResult]) -> dict:
     for r in scored:
         verdicts[compare_coverage(r.off.coverage, r.on.coverage)] += 1
 
-    on_answered = [r for r in results if r.on.answer is not None and not r.on.error]
+    on_answered = [r for r in fact_results if r.on.answer is not None and not r.on.error]
     hit_candidates = [r for r in on_answered if not r.source_missing and not r.on.search_failed]
 
     def total(values) -> float | int:
         return sum(v for v in values if v is not None)
 
     def count_judged(mode_key: str) -> int:
-        return sum(1 for r in results if getattr(r, mode_key).verdict is not None)
+        return sum(1 for r in fact_results if getattr(r, mode_key).verdict is not None)
+
+    eligible = [r for r in fact_results if citation_eligible(r)]
+    ratios = [
+        len(r.on.citations) / r.on.citations_written for r in eligible if r.on.citations_written > 0
+    ]
+    cit_verdicts = {key: 0 for key in CITATION_VERDICTS}
+    for r in eligible:
+        if r.on.citation_verdict and r.on.citation_verdict.verdict in cit_verdicts:
+            cit_verdicts[r.on.citation_verdict.verdict] += 1
+    abstain_questions = [r for r in results if r.question.expect_abstain]
 
     return {
         "total": len(results),
+        "facts_total": len(fact_results),
+        "cit_eligible": len(eligible),
+        "cit_sources": sum(1 for r in eligible if r.on.rag_sources),
+        "cit_quotes": sum(1 for r in eligible if r.on.citations),
+        "cit_no_quotes": [r.question.number for r in eligible if not r.on.citations],
+        "cit_avg_ratio": sum(ratios) / len(ratios) if ratios else None,
+        "cit_ratio_answers": len(ratios),
+        "cit_verdicts": cit_verdicts,
+        "cit_judge_missing": sum(
+            1 for r in eligible if r.on.citations and r.on.citation_verdict is None
+        ),
+        "abstain_expected": len(abstain_questions),
+        "abstain_correct": sum(1 for r in abstain_questions if r.on.abstained),
+        "abstain_wrong": [
+            r.question.number
+            for r in abstain_questions
+            if not r.on.abstained and r.on.answer is not None and not r.on.error
+        ],
+        "abstain_errors": [r.question.number for r in abstain_questions if r.on.error],
+        "false_abstain": [r.question.number for r in fact_results if r.on.abstained],
         "scored": len(scored),
         "excluded": excluded,
         "avg_off": sum(off_cov) / len(off_cov) if off_cov else None,
@@ -558,10 +723,12 @@ def aggregate(results: list[QuestionResult]) -> dict:
         "hit": sum(1 for r in hit_candidates if hit(r.question, r.on)),
         "hit_candidates": len(hit_candidates),
         "not_fired": [
-            r.question.number for r in on_answered if not fired(r.on) and not r.on.search_failed
+            r.question.number
+            for r in on_answered
+            if not fired(r.on) and not r.on.search_failed and not r.on.abstained
         ],
-        "search_failed": [r.question.number for r in results if r.on.search_failed],
-        "source_missing": [r.question.number for r in results if r.source_missing],
+        "search_failed": [r.question.number for r in fact_results if r.on.search_failed],
+        "source_missing": [r.question.number for r in fact_results if r.source_missing],
         "tokens_off": total(
             (r.off.prompt_tokens or 0) + (r.off.completion_tokens or 0) for r in results
         ),
@@ -571,7 +738,7 @@ def aggregate(results: list[QuestionResult]) -> dict:
         "time_off": total(r.off.elapsed for r in results),
         "time_on": total(r.on.elapsed for r in results),
         "unavailable_modes": [
-            key for key in (MODE_OFF, MODE_ON) if results and count_judged(key) == 0
+            key for key in (MODE_OFF, MODE_ON) if fact_results and count_judged(key) == 0
         ],
     }
 
@@ -637,13 +804,15 @@ def format_summary(report: dict) -> str:
     if agg["unavailable_modes"]:
         names = ", ".join(MODE_LABELS[m] for m in agg["unavailable_modes"])
         lines.append(f"\n⚠️ Сравнение невозможно: нет оценённых ответов в режиме «{names}».")
+    elif agg["facts_total"] == 0 and agg["abstain_expected"]:
+        pass  # в наборе только вопросы вне корпуса — сравнения по фактам нет
     elif agg["scored"] == 0:
         lines.append(
             "\n⚠️ Сравнение невозможно: ни один вопрос не набрал оценённых ответов в обоих режимах."
         )
     else:
         lines.append(
-            f"\nПокрытие ожидаемых фактов (по {agg['scored']} из {agg['total']} вопросов):\n"
+            f"\nПокрытие ожидаемых фактов (по {agg['scored']} из {agg['facts_total']} вопросов):\n"
             f"• без RAG: {_pct(agg['avg_off'])}\n"
             f"• с RAG: {_pct(agg['avg_on'])}\n"
             f"• разница: {_signed_pct(agg['delta'])}\n"
@@ -656,6 +825,7 @@ def format_summary(report: dict) -> str:
         f"\nПоиск: сработал в {agg['fired']} из {agg['on_answered']} ответов с RAG; "
         f"попал в ожидаемый документ в {agg['hit']} из {agg['hit_candidates']}."
     )
+    lines += _citation_summary_lines(agg)
     if agg["not_fired"]:
         lines.append(
             "Поиск не сработал (материалы не использованы) на вопросах: "
@@ -682,6 +852,45 @@ def format_summary(report: dict) -> str:
     return "\n".join(lines)
 
 
+def _citation_summary_lines(agg: dict) -> list[str]:
+    """Блок сводки про источники, цитаты и режим «не знаю»; пусто, если оценивать нечего."""
+    lines: list[str] = []
+    eligible = agg["cit_eligible"]
+    if eligible:
+        verdicts = agg["cit_verdicts"]
+        lines.append(
+            f"\nИсточники и цитаты (ответы с RAG, по {eligible} вопросам по корпусу):\n"
+            f"• с источниками: {agg['cit_sources']} из {eligible}\n"
+            f"• с проверенными цитатами: {agg['cit_quotes']} из {eligible}\n"
+            f"• средняя доля проверенных цитат среди написанных: {_pct(agg['cit_avg_ratio'])} "
+            f"(по {agg['cit_ratio_answers']} ответам)\n"
+            "• смысл ответа и цитат: "
+            + ", ".join(
+                f"{CITATION_VERDICT_LABELS[key]} — {verdicts[key]}" for key in CITATION_VERDICTS
+            )
+            + (f"; без оценки — {agg['cit_judge_missing']}" if agg["cit_judge_missing"] else "")
+        )
+        if agg["cit_no_quotes"]:
+            lines.append(
+                f"Без проверенных цитат ответы на вопросы: {_numbers(agg['cit_no_quotes'])}."
+            )
+    if agg["abstain_expected"]:
+        lines.append(
+            f"\nРежим «не знаю»: верных отказов {agg['abstain_correct']} из "
+            f"{agg['abstain_expected']} вопросов вне корпуса."
+        )
+        if agg["abstain_wrong"]:
+            lines.append(f"Вместо отказа дан ответ на вопросах: {_numbers(agg['abstain_wrong'])}.")
+        if agg["abstain_errors"]:
+            lines.append(f"Сбой ответа на вопросах вне корпуса: {_numbers(agg['abstain_errors'])}.")
+    if agg["false_abstain"]:
+        lines.append(
+            "⚠️ Ложный отказ («не знаю») на вопросах по корпусу: "
+            f"{_numbers(agg['false_abstain'])}."
+        )
+    return lines
+
+
 def _question_title(question: Question) -> str:
     text = question.question
     return text if len(text) <= _TITLE_MAX_CHARS else text[: _TITLE_MAX_CHARS - 1] + "…"
@@ -695,10 +904,36 @@ def _mode_cell(mode: ModeResult) -> str:
     return _pct(mode.coverage)
 
 
+def _citation_cell(result: QuestionResult) -> str:
+    """Хвост строки таблицы: источники, цитаты, смысл; для ложного отказа — пометка."""
+    if result.on.abstained:
+        return " · ⚠️ ложный отказ"
+    if not citation_eligible(result):
+        return ""
+    on = result.on
+    cell = f" · ист: {'✓' if on.rag_sources else '✗'} цит: {'✓' if on.citations else '✗'}"
+    if on.citations_written:
+        cell += f" ({len(on.citations)}/{on.citations_written})"
+    if on.citation_verdict:
+        cell += f" · смысл: {CITATION_VERDICT_LABELS.get(on.citation_verdict.verdict, '?')}"
+    return cell
+
+
 def format_table(report: dict) -> str:
     results = [QuestionResult.from_dict(q) for q in report.get("questions", [])]
     lines = ["📋 По вопросам: покрытие без RAG → с RAG, поиск\n"]
     for r in results:
+        if r.question.expect_abstain:
+            if r.on.error:
+                outcome = "сбой ответа"
+            elif r.on.abstained:
+                outcome = "отказ ✓"
+            else:
+                outcome = "ответ вместо отказа ✗"
+            lines.append(
+                f"{r.question.number}. {_question_title(r.question)}\n   вне корпуса: {outcome}"
+            )
+            continue
         reason = exclusion_reason(r)
         if reason is None:
             trend = {"better": "▲", "equal": "=", "worse": "▼"}[
@@ -718,6 +953,7 @@ def format_table(report: dict) -> str:
         lines.append(
             f"{r.question.number}. {_question_title(r.question)}\n"
             f"   {_mode_cell(r.off)} → {_mode_cell(r.on)} {trend} · {search}{note}"
+            f"{_citation_cell(r)}"
         )
     return "\n".join(lines)
 
@@ -735,12 +971,15 @@ def format_question_detail(
         return None
 
     q = result.question
-    lines = [
-        f"❓ Вопрос {q.number} ({KIND_LABELS[q.kind]}): {q.question}",
-        "\nОжидаемые факты:",
-        *[f"{i}. {fact}" for i, fact in enumerate(q.facts, start=1)],
-        "\nОжидаемые источники: " + "; ".join(q.sources),
-    ]
+    lines = [f"❓ Вопрос {q.number} ({KIND_LABELS[q.kind]}): {q.question}"]
+    if q.expect_abstain:
+        lines.append("\nОжидание: ответ «не знаю» (вопрос вне корпуса).")
+    else:
+        lines += [
+            "\nОжидаемые факты:",
+            *[f"{i}. {fact}" for i, fact in enumerate(q.facts, start=1)],
+            "\nОжидаемые источники: " + "; ".join(q.sources),
+        ]
     if q.history:
         lines.append(
             "История диалога (предыдущие вопросы): " + " → ".join(q.history)
@@ -751,6 +990,8 @@ def format_question_detail(
         (MODE_OFF, MODE_LABELS[MODE_OFF].capitalize(), result.off),
         (MODE_ON, MODE_LABELS[MODE_ON].capitalize(), result.on),
     ]
+    if q.expect_abstain:
+        shown = shown[1:]  # ответ без RAG у вопроса вне корпуса не собирается
     for key, variant in result.variants.items():
         title = (variant_titles or {}).get(key, key)
         shown.append((f"variant:{key}", f"С RAG, режим поиска «{title}»", variant))
@@ -772,6 +1013,10 @@ def format_question_detail(
                 )
             else:
                 lines.append("Материалы не использованы (ни один фрагмент не прошёл порог).")
+        if mode_key != MODE_OFF:
+            lines += _citation_detail_lines(mode)
+        if q.expect_abstain:
+            continue
         if mode.verdict:
             pairs = zip(mode.verdict.present, q.facts, strict=False)
             marks = "\n".join(
@@ -785,6 +1030,34 @@ def format_question_detail(
         else:
             lines.append(f"Оценка не получена: {mode.judge_error or 'нет данных'}")
     return "\n".join(lines)
+
+
+def _citation_detail_lines(mode: ModeResult) -> list[str]:
+    """Детали вопроса про режим «не знаю», цитаты и оценку их соответствия ответу."""
+    if mode.abstained:
+        return ["🛑 Бот ответил режимом «не знаю» (без обращения к модели)."]
+    lines: list[str] = []
+    if mode.citations:
+        lines.append(
+            f"Проверенные цитаты: {len(mode.citations)} (написано моделью: "
+            f"{mode.citations_written}):"
+        )
+        lines.extend(
+            f"• {c.get('title', '?')} — фрагмент {c.get('chunk_index', '?')}: "
+            f"«{c.get('quote', '')}»"
+            for c in mode.citations
+        )
+    elif mode.citations_unverified:
+        lines.append(f"⚠️ Цитаты не подтверждены (написано моделью: {mode.citations_written}).")
+    if mode.citation_verdict:
+        label = CITATION_VERDICT_LABELS.get(mode.citation_verdict.verdict, "?")
+        lines.append(f"Смысл ответа и цитат: {label}.")
+        lines.extend(
+            f"— без опоры в цитатах: {claim}" for claim in mode.citation_verdict.unsupported
+        )
+    elif mode.citation_judge_error:
+        lines.append(f"Оценка цитат не получена: {mode.citation_judge_error}")
+    return lines
 
 
 def split_text(text: str, limit: int) -> list[str]:

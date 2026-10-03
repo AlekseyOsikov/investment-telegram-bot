@@ -434,7 +434,8 @@ def test_progress_text_shows_question_number_and_stage():
 def test_every_stage_has_a_label():
     assert set(ev.STAGE_LABELS) == set(ev.STAGES)
     assert [ev.STAGE_LABELS[s] for s in ev.STAGES] == [
-        "ответ без RAG", "оценка ответа без RAG", "ответ с RAG", "оценка ответа с RAG"
+        "ответ без RAG", "оценка ответа без RAG", "ответ с RAG", "оценка ответа с RAG",
+        "оценка цитат ответа с RAG",
     ]
 
 
@@ -557,3 +558,235 @@ def test_split_multi_turn_of_a_set_where_every_question_has_history():
     questions = ev.parse_questions([_raw(history=["a?"]), _raw(history=["b?", "c?"])])
     standalone, multi_turn = ev.split_multi_turn(questions)
     assert standalone == [] and len(multi_turn) == 2
+
+
+# --- вопросы вне корпуса, цитаты и режим «не знаю» (add-rag-citations-and-abstain) ----------
+
+
+def _abstain_raw(**overrides) -> dict:
+    item = {"question": "Какая погода завтра?", "expect_abstain": True}
+    item.update(overrides)
+    return item
+
+
+def _abstain_question(number: int = 1) -> Question:
+    return Question(number=number, question=f"Вне корпуса {number}?", kind=ev.KIND_OUT_OF_CORPUS,
+                    facts=(), sources=(), expect_abstain=True)
+
+
+def _cited(*, citations=1, written=1, verdict: str | None = None, titles=("Doc1",),
+           unverified=False, abstained=False, **kwargs) -> ModeResult:
+    mode = _mode(0.5, rag_titles=titles, **kwargs)
+    mode.citations = [
+        {"quote": f"цитата {i}", "title": "Doc1", "chunk_index": i, "chunk_id": f"d:{i}"}
+        for i in range(citations)
+    ]
+    mode.citations_written = written
+    mode.citations_unverified = unverified
+    mode.abstained = abstained
+    if verdict:
+        mode.citation_verdict = ev.CitationVerdict(verdict, ("лишнее утверждение",) if
+                                                   verdict != ev.CITATION_SUPPORTED else ())
+    return mode
+
+
+def test_abstain_question_needs_only_the_text_and_gets_default_kind():
+    questions = ev.parse_questions([_abstain_raw()])
+    assert questions[0].expect_abstain and questions[0].kind == ev.KIND_OUT_OF_CORPUS
+    assert questions[0].facts == () and questions[0].sources == ()
+
+
+def test_abstain_question_still_needs_text_and_boolean_flag():
+    with pytest.raises(QuestionSetError, match="вопрос 1"):
+        ev.parse_questions([_abstain_raw(question=" ")])
+    with pytest.raises(QuestionSetError, match="expect_abstain"):
+        ev.parse_questions([_abstain_raw(expect_abstain="yes")])
+
+
+def test_regular_question_still_requires_facts_sources_and_real_kind():
+    with pytest.raises(QuestionSetError, match="фактов"):
+        ev.parse_questions([_raw(facts=[])])
+    with pytest.raises(QuestionSetError, match="источников"):
+        ev.parse_questions([_raw(sources=[])])
+    with pytest.raises(QuestionSetError, match="тип"):
+        ev.parse_questions([_raw(kind=ev.KIND_OUT_OF_CORPUS)])
+
+
+def test_mixed_set_is_accepted_and_numbers_stay_sequential():
+    questions = ev.parse_questions([_raw(), _abstain_raw()])
+    assert [q.number for q in questions] == [1, 2]
+    assert [q.expect_abstain for q in questions] == [False, True]
+
+
+def test_citation_judge_content_has_question_answer_quotes_and_no_mode_hint():
+    content = ev.build_citation_judge_user_content(
+        "Что такое X?", "Это Y.", ["цитата A", "цитата B"]
+    )
+    assert "Что такое X?" in content and "Это Y." in content
+    assert "1. цитата A" in content and "2. цитата B" in content
+    lowered = content.lower()
+    assert "без rag" not in lowered and "с rag" not in lowered and "материал" not in lowered
+
+
+def test_parse_citation_judge_response():
+    ok = ev.parse_citation_judge_response(
+        {"verdict": "partial", "unsupported_claims": ["утверждение A", "", 5, "утверждение B"]}
+    )
+    assert ok.verdict == ev.CITATION_PARTIAL
+    assert ok.unsupported == ("утверждение A", "утверждение B")
+    assert ev.parse_citation_judge_response({"verdict": "unknown"}) is None
+    assert ev.parse_citation_judge_response([]) is None
+    plain = ev.parse_citation_judge_response({"verdict": "supported"})
+    assert plain.unsupported == ()
+
+
+def test_new_mode_result_fields_round_trip_and_old_reports_still_load():
+    mode = _cited(citations=2, written=3, verdict=ev.CITATION_PARTIAL)
+    mode.citation_judge_error = None
+    restored = ModeResult.from_dict(json.loads(json.dumps(mode.to_dict())))
+    assert restored.citations == mode.citations and restored.citations_written == 3
+    assert restored.citation_verdict == mode.citation_verdict
+    old = ModeResult.from_dict({"answer": "x"})
+    assert old.citations == [] and old.abstained is False and old.citation_verdict is None
+    result = QuestionResult(
+        question=_abstain_question(), off=ModeResult(), on=_cited(abstained=True)
+    )
+    assert QuestionResult.from_dict(result.to_dict()).question.expect_abstain
+
+
+def test_citation_metrics_over_eligible_questions():
+    results = [
+        _result(
+            _mode(0.5),
+            _cited(citations=2, written=2, verdict=ev.CITATION_SUPPORTED),
+            number=1,
+        ),
+        _result(_mode(0.5), _cited(citations=1, written=2, verdict=ev.CITATION_PARTIAL), number=2),
+        _result(_mode(0.5), _cited(citations=0, written=0, unverified=True), number=3),
+        _result(_mode(0.5), _cited(citations=1, written=1), number=4),  # без оценки смысла
+    ]
+    agg = ev.aggregate(results)
+    assert agg["cit_eligible"] == 4 and agg["cit_sources"] == 4 and agg["cit_quotes"] == 3
+    assert agg["cit_no_quotes"] == [3]
+    assert agg["cit_ratio_answers"] == 3 and abs(agg["cit_avg_ratio"] - (1 + 0.5 + 1) / 3) < 1e-9
+    assert agg["cit_verdicts"] == {"supported": 1, "partial": 1, "unsupported": 0}
+    assert agg["cit_judge_missing"] == 1
+
+
+def test_abstain_metrics_split_correct_wrong_error_and_false_abstain():
+    results = [
+        QuestionResult(question=_abstain_question(1), off=ModeResult(), on=_cited(abstained=True)),
+        QuestionResult(question=_abstain_question(2), off=ModeResult(), on=_cited()),
+        QuestionResult(question=_abstain_question(3), off=ModeResult(), on=_mode(error="сбой")),
+        _result(_mode(0.5), _cited(abstained=True), number=4),
+    ]
+    agg = ev.aggregate(results)
+    assert agg["abstain_expected"] == 3 and agg["abstain_correct"] == 1
+    assert agg["abstain_wrong"] == [2] and agg["abstain_errors"] == [3]
+    assert agg["false_abstain"] == [4]
+    # ложный отказ не участвует в метриках цитат; вопросы вне корпуса — в сравнении по фактам
+    assert agg["cit_eligible"] == 0 and agg["facts_total"] == 1
+
+
+def test_abstain_questions_do_not_pollute_fact_comparison_or_exclusions():
+    results = [
+        _result(_mode(0.5), _mode(0.75, rag_titles=["Doc1"]), number=1),
+        QuestionResult(question=_abstain_question(2), off=ModeResult(), on=_cited(abstained=True)),
+    ]
+    agg = ev.aggregate(results)
+    assert agg["scored"] == 1 and agg["excluded"] == []
+    assert agg["not_fired"] == [] and agg["unavailable_modes"] == []
+
+
+def test_question_failed_for_abstain_question_only_on_answer_error():
+    ok = QuestionResult(question=_abstain_question(), off=ModeResult(), on=_cited(abstained=True))
+    bad = QuestionResult(question=_abstain_question(), off=ModeResult(), on=_mode(error="сбой"))
+    assert not ev.question_failed(ok) and ev.question_failed(bad)
+
+
+def test_question_failed_when_citation_judge_failed():
+    on = _cited(verdict=None)
+    on.citation_judge_error = "оценщик не ответил"
+    assert ev.question_failed(_result(_mode(0.5), on))
+
+
+def _report_of(results) -> dict:
+    return ev.build_report(started_at="a", finished_at="b", settings={}, results=results,
+                           planned=len(results))
+
+
+def test_summary_shows_citation_block_and_abstain_block():
+    results = [
+        _result(
+            _mode(0.5),
+            _cited(citations=2, written=2, verdict=ev.CITATION_SUPPORTED),
+            number=1,
+        ),
+        QuestionResult(question=_abstain_question(2), off=ModeResult(), on=_cited(abstained=True)),
+        _result(_mode(0.5), _cited(abstained=True), number=3),
+    ]
+    text = ev.format_summary(_report_of(results))
+    assert "Источники и цитаты" in text and "с источниками: 1 из 1" in text
+    assert "с проверенными цитатами: 1 из 1" in text
+    assert "подтверждается — 1" in text
+    assert "верных отказов 1 из 1" in text
+    assert "Ложный отказ" in text and "3" in text
+
+
+def test_summary_without_new_features_has_no_citation_or_abstain_blocks():
+    text = ev.format_summary(_report_of([_result(_mode(0.5), _mode(0.75, rag_titles=["Doc1"]))]))
+    assert "Режим «не знаю»" not in text
+
+
+def test_table_marks_sources_citations_verdict_and_abstain_outcomes():
+    results = [
+        _result(_mode(0.5), _cited(citations=1, written=2, verdict=ev.CITATION_PARTIAL), number=1),
+        QuestionResult(question=_abstain_question(2), off=ModeResult(), on=_cited(abstained=True)),
+        QuestionResult(question=_abstain_question(3), off=ModeResult(), on=_cited()),
+        _result(_mode(0.5), _cited(abstained=True), number=4),
+    ]
+    table = ev.format_table(_report_of(results))
+    assert "ист: ✓ цит: ✓ (1/2) · смысл: подтверждается частично" in table
+    assert "вне корпуса: отказ ✓" in table
+    assert "вне корпуса: ответ вместо отказа ✗" in table
+    assert "ложный отказ" in table
+
+
+def test_question_detail_shows_citations_verdict_and_abstain_expectation():
+    results = [
+        _result(
+            _mode(0.5),
+            _cited(citations=1, written=2, verdict=ev.CITATION_UNSUPPORTED),
+            number=1,
+        ),
+        QuestionResult(question=_abstain_question(2), off=ModeResult(), on=_cited(abstained=True)),
+    ]
+    report = _report_of(results)
+    first = ev.format_question_detail(report, 1)
+    assert "Проверенные цитаты: 1 (написано моделью: 2)" in first
+    assert "не подтверждается" in first and "лишнее утверждение" in first
+    second = ev.format_question_detail(report, 2)
+    assert "«не знаю»" in second and "Ожидаемые факты" not in second
+    assert "Без RAG" not in second
+
+
+def test_latest_report_name_picks_newest_report_by_time_in_name():
+    names = ["20261001T213859Z.json", "20261003T210704Z.json", "20261002T223439Z.json"]
+    assert ev.latest_report_name(names) == "20261003T210704Z.json"
+
+
+def test_latest_report_name_ignores_question_files_copies_and_temp_files():
+    names = [
+        "20261003T210704Z.json",
+        "questions.json",
+        "questions_dialog.json",
+        "Копия (1) questions.json",
+        "calibration_queries.txt",
+        "20261004T000000Z.json.tmp",
+    ]
+    assert ev.latest_report_name(names) == "20261003T210704Z.json"
+
+
+def test_latest_report_name_without_reports_is_none():
+    assert ev.latest_report_name([]) is None
+    assert ev.latest_report_name(["questions.json", "Копия (1) questions.json"]) is None
