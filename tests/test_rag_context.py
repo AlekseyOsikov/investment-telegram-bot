@@ -510,3 +510,19 @@ def test_fragment_without_citations_stays_in_the_list_without_quotes():
     assert lines[1].lstrip().startswith("«")
     assert lines[2].startswith("📚 Второй — фрагмент 5 (id a:5)")
     assert rag_context.UNVERIFIED_NOTE not in lines
+
+
+def test_verified_citation_carries_the_full_text_of_its_fragment():
+    long_text = _TEXT + " Дальше идёт продолжение фрагмента, которого нет в цитате."
+    chunks = [
+        _chunk(0.7, title="Первый", index=1, text=long_text),
+        _chunk(0.6, title="Второй", index=5, text="Облигация — долговая ценная бумага."),
+    ]
+    result = rag_context.build_citation_result(
+        "О\nЦитаты:\n[1] «распределение вложений между разными активами»\n"
+        "[2] «долговая ценная бумага»", chunks
+    )
+    assert [c.fragment for c in result.verified] == [
+        long_text, "Облигация — долговая ценная бумага."
+    ]
+    assert "Дальше идёт продолжение" not in result.body

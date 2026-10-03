@@ -258,6 +258,7 @@ def run_mode(
         citations_written=answer.citations_written,
         citations_unverified=answer.citations_unverified,
         abstained=answer.abstained,
+        fragments=ev.unique_fragments(answer.citations),
     )
 
 
@@ -344,11 +345,15 @@ def judge_citations(
     question: ev.Question,
     answer: str,
     quotes: list[str],
+    fragments: list[str],
     budget: QuestionBudget | None = None,
 ) -> tuple[ev.CitationVerdict | None, str | None]:
-    """Оценка совпадения смысла ответа и ПРОВЕРЕННЫХ цитат (вслепую по режиму: в запросе только
-    вопрос, ответ и цитаты). Возвращает (вердикт, None) или (None, причина)."""
-    user_content = ev.build_citation_judge_user_content(question.question, answer, quotes)
+    """Оценка опоры ответа на материалы (вслепую по режиму: в запросе только вопрос, ответ,
+    ПРОВЕРЕННЫЕ цитаты и полный текст фрагментов, из которых они взяты). Возвращает (вердикт, None)
+    или (None, причина)."""
+    user_content = ev.build_citation_judge_user_content(
+        question.question, answer, quotes, fragments
+    )
     data, reason = _judge_data(user_content, RAG_COMPARE_CITATION_JUDGE_SYSTEM_PROMPT, budget)
     if reason is not None:
         return None, reason
@@ -399,7 +404,11 @@ def _answer_and_judge(
                 mode.citation_judge_error = ev.QUESTION_TIMEOUT_REASON
             else:
                 mode.citation_verdict, mode.citation_judge_error = judge_citations(
-                    question, mode.answer, [c["quote"] for c in mode.citations], budget
+                    question,
+                    mode.answer,
+                    [c["quote"] for c in mode.citations],
+                    mode.fragments,
+                    budget,
                 )
     return mode
 
@@ -662,6 +671,8 @@ def _settings(level: str = rm.LEVEL_ANSWERS) -> dict:
     history_questions, history_reference = rm.history_questions_setting(REWRITE_HISTORY_QUESTIONS)
     return {
         "level": level,
+        # Оценщик цитат видит полный текст фрагментов цитат; в отчётах без ключа — только цитаты.
+        "citation_judge": ev.CITATION_JUDGE_FRAGMENTS,
         "strategy": RAG_SMART_AGENT_STRATEGY,
         "top_k": RAG_TOP_K,
         "candidates": RAG_CANDIDATES,

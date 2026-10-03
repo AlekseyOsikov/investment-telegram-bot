@@ -618,14 +618,70 @@ def test_mixed_set_is_accepted_and_numbers_stay_sequential():
     assert [q.expect_abstain for q in questions] == [False, True]
 
 
-def test_citation_judge_content_has_question_answer_quotes_and_no_mode_hint():
+def test_citation_judge_content_has_fragments_quotes_answer_and_no_mode_hint():
     content = ev.build_citation_judge_user_content(
-        "Что такое X?", "Это Y.", ["цитата A", "цитата B"]
+        "Что такое X?", "Это Y.", ["цитата A", "цитата B"],
+        ["Полный текст первого фрагмента.", "Полный текст второго фрагмента."],
     )
     assert "Что такое X?" in content and "Это Y." in content
+    assert "[1]\nПолный текст первого фрагмента." in content
+    assert "[2]\nПолный текст второго фрагмента." in content
     assert "1. цитата A" in content and "2. цитата B" in content
     lowered = content.lower()
     assert "без rag" not in lowered and "с rag" not in lowered and "материал" not in lowered
+
+
+def test_citation_judge_content_truncates_long_fragments_with_a_mark():
+    long_text = "я" * (ev.CITATION_JUDGE_FRAGMENT_MAX_CHARS + 500)
+    content = ev.build_citation_judge_user_content("В?", "О.", ["ц"], [long_text])
+    assert "я" * ev.CITATION_JUDGE_FRAGMENT_MAX_CHARS in content
+    assert "я" * (ev.CITATION_JUDGE_FRAGMENT_MAX_CHARS + 1) not in content
+    assert "усечён" in content
+    short = ev.build_citation_judge_user_content("В?", "О.", ["ц"], ["короткий"])
+    assert "усечён" not in short
+
+
+def _vcite(text: str, *, chunk_id: str = "", title: str = "Т", index: int = 1):
+    from agents.rag_context import RagSource, VerifiedCitation
+
+    return VerifiedCitation(
+        quote="цитата", source=RagSource(title=title, chunk_index=index, score=0.7,
+                                         chunk_id=chunk_id), fragment=text)
+
+
+def test_unique_fragments_dedupes_by_chunk_id_and_keeps_first_mention_order():
+    cites = [_vcite("A", chunk_id="x:1"), _vcite("B", chunk_id="x:2"), _vcite("A", chunk_id="x:1")]
+    assert ev.unique_fragments(cites) == ["A", "B"]
+
+
+def test_unique_fragments_without_chunk_id_uses_title_and_index_and_skips_empty_text():
+    cites = [_vcite("A", title="Д", index=1), _vcite("A", title="Д", index=1),
+             _vcite("B", title="Д", index=2), _vcite("", title="Д", index=3)]
+    assert ev.unique_fragments(cites) == ["A", "B"]
+
+
+def test_fragments_are_not_serialized_into_the_report():
+    mode = _cited(verdict=ev.CITATION_SUPPORTED)
+    mode.fragments = ["секретный текст фрагмента корпуса"]
+    data = mode.to_dict()
+    assert "fragments" not in data
+    assert "секретный текст" not in json.dumps(data, ensure_ascii=False)
+    assert ModeResult.from_dict(data).fragments == []
+    result = QuestionResult(question=_question(), off=ModeResult(), on=mode)
+    assert "fragments" not in json.dumps(result.to_dict(), ensure_ascii=False)
+
+
+def test_summary_labels_the_judge_version_by_report_settings():
+    results = [_result(_mode(0.5), _cited(citations=1, written=1, verdict=ev.CITATION_SUPPORTED))]
+    new_report = ev.build_report(
+        started_at="a", finished_at="b", results=results, planned=1,
+        settings={"citation_judge": ev.CITATION_JUDGE_FRAGMENTS},
+    )
+    assert "по тексту фрагментов" in ev.format_summary(new_report)
+    old_report = ev.build_report(started_at="a", finished_at="b", settings={}, results=results,
+                                 planned=1)
+    old_text = ev.format_summary(old_report)
+    assert "прежняя версия" in old_text and "по тексту фрагментов" not in old_text
 
 
 def test_parse_citation_judge_response():

@@ -254,6 +254,9 @@ CITATION_SUPPORTED = "supported"
 CITATION_PARTIAL = "partial"
 CITATION_UNSUPPORTED = "unsupported"
 CITATION_VERDICTS = (CITATION_SUPPORTED, CITATION_PARTIAL, CITATION_UNSUPPORTED)
+# Значение settings["citation_judge"] у отчётов, где оценщик видел полный текст фрагментов; в
+# отчётах без ключа оценка шла только по цитатам (вердикты несопоставимы).
+CITATION_JUDGE_FRAGMENTS = "fragments"
 CITATION_VERDICT_LABELS = {
     CITATION_SUPPORTED: "подтверждается",
     CITATION_PARTIAL: "подтверждается частично",
@@ -262,13 +265,46 @@ CITATION_VERDICT_LABELS = {
 _MAX_UNSUPPORTED_CLAIMS = 5
 
 
-def build_citation_judge_user_content(question: str, answer: str, quotes: list[str]) -> str:
-    """Запрос оценщику: вопрос, ответ и проверенные цитаты. Указания на режим (с материалами
-    или без) нет по построению — цитаты поданы как есть."""
-    numbered = "\n".join(f"{i}. {quote}" for i, quote in enumerate(quotes, start=1))
+# Предел длины одного фрагмента во входе оценщика цитат (размер чанка зависит от стратегии).
+CITATION_JUDGE_FRAGMENT_MAX_CHARS = 3000
+_TRUNCATED_MARK = " […фрагмент усечён]"
+
+
+def unique_fragments(citations: list) -> list[str]:
+    """Тексты фрагментов проверенных цитат (`VerifiedCitation.fragment`) без повторов, в порядке
+    первого упоминания; фрагмент определяется по chunk_id, а без него — по заголовку и номеру."""
+    seen: set = set()
+    result: list[str] = []
+    for cite in citations:
+        key = cite.source.chunk_id or (cite.source.title, cite.source.chunk_index)
+        if key in seen or not cite.fragment:
+            continue
+        seen.add(key)
+        result.append(cite.fragment)
+    return result
+
+
+def _judge_fragment(text: str) -> str:
+    text = text.strip()
+    if len(text) <= CITATION_JUDGE_FRAGMENT_MAX_CHARS:
+        return text
+    return text[:CITATION_JUDGE_FRAGMENT_MAX_CHARS].rstrip() + _TRUNCATED_MARK
+
+
+def build_citation_judge_user_content(
+    question: str, answer: str, quotes: list[str], fragments: list[str]
+) -> str:
+    """Запрос оценщику: вопрос, пронумерованные фрагменты (полный текст, источник истины),
+    пронумерованные проверенные цитаты (указатели на места фрагментов) и ответ. Указания на режим
+    (с материалами или без) нет по построению."""
+    numbered_fragments = "\n\n".join(
+        f"[{i}]\n{_judge_fragment(fragment)}" for i, fragment in enumerate(fragments, start=1)
+    )
+    numbered_quotes = "\n".join(f"{i}. {quote}" for i, quote in enumerate(quotes, start=1))
     return (
         f"Вопрос:\n{question}\n\n"
-        f"Цитаты:\n{numbered}\n\n"
+        f"Фрагменты:\n{numbered_fragments}\n\n"
+        f"Цитаты:\n{numbered_quotes}\n\n"
         f"Ответ ассистента:\n<<<\n{answer}\n>>>"
     )
 
@@ -338,9 +374,13 @@ class ModeResult:
     abstained: bool = False
     citation_verdict: CitationVerdict | None = None
     citation_judge_error: str | None = None
+    # Тексты фрагментов проверенных цитат (без повторов) — только на время прогона, для оценщика
+    # цитат. В отчёт НЕ пишутся (to_dict их убирает) и из отчёта не читаются.
+    fragments: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         data = asdict(self)
+        data.pop("fragments", None)
         data["verdict"] = self.verdict.to_dict() if self.verdict else None
         data["citation_verdict"] = (
             self.citation_verdict.to_dict() if self.citation_verdict else None
@@ -825,7 +865,8 @@ def format_summary(report: dict) -> str:
         f"\nПоиск: сработал в {agg['fired']} из {agg['on_answered']} ответов с RAG; "
         f"попал в ожидаемый документ в {agg['hit']} из {agg['hit_candidates']}."
     )
-    lines += _citation_summary_lines(agg)
+    by_fragments = report.get("settings", {}).get("citation_judge") == CITATION_JUDGE_FRAGMENTS
+    lines += _citation_summary_lines(agg, by_fragments=by_fragments)
     if agg["not_fired"]:
         lines.append(
             "Поиск не сработал (материалы не использованы) на вопросах: "
@@ -852,7 +893,7 @@ def format_summary(report: dict) -> str:
     return "\n".join(lines)
 
 
-def _citation_summary_lines(agg: dict) -> list[str]:
+def _citation_summary_lines(agg: dict, by_fragments: bool = True) -> list[str]:
     """Блок сводки про источники, цитаты и режим «не знаю»; пусто, если оценивать нечего."""
     lines: list[str] = []
     eligible = agg["cit_eligible"]
@@ -864,7 +905,11 @@ def _citation_summary_lines(agg: dict) -> list[str]:
             f"• с проверенными цитатами: {agg['cit_quotes']} из {eligible}\n"
             f"• средняя доля проверенных цитат среди написанных: {_pct(agg['cit_avg_ratio'])} "
             f"(по {agg['cit_ratio_answers']} ответам)\n"
-            "• смысл ответа и цитат: "
+            + (
+                "• опора ответа на материалы (оценка по тексту фрагментов): "
+                if by_fragments
+                else "• смысл ответа и цитат (оценка только по цитатам, прежняя версия): "
+            )
             + ", ".join(
                 f"{CITATION_VERDICT_LABELS[key]} — {verdicts[key]}" for key in CITATION_VERDICTS
             )
@@ -1051,7 +1096,7 @@ def _citation_detail_lines(mode: ModeResult) -> list[str]:
         lines.append(f"⚠️ Цитаты не подтверждены (написано моделью: {mode.citations_written}).")
     if mode.citation_verdict:
         label = CITATION_VERDICT_LABELS.get(mode.citation_verdict.verdict, "?")
-        lines.append(f"Смысл ответа и цитат: {label}.")
+        lines.append(f"Опора ответа на материалы: {label}.")
         lines.extend(
             f"— без опоры в цитатах: {claim}" for claim in mode.citation_verdict.unsupported
         )

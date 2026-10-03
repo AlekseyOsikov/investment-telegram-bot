@@ -417,8 +417,13 @@ class RawCitation:
 
 @dataclass(frozen=True)
 class VerifiedCitation:
+    """Проверенная цитата: сам отрывок, его источник и ПОЛНЫЙ текст фрагмента, из которого он
+    взят. Текст нужен только оценщику в /research_rag_compare (в память, историю и отчёт на диск
+    он не попадает; результат ask() живёт лишь в памяти)."""
+
     quote: str
     source: RagSource
+    fragment: str = ""
 
 
 @dataclass(frozen=True)
@@ -497,7 +502,11 @@ def build_citation_result(answer: str, chunks: list) -> CitationResult:
     body, raw = parse_citations(answer)
     sources = source_records(chunks)
     verified = [
-        VerifiedCitation(quote=cite.quote, source=sources[cite.number - 1])
+        VerifiedCitation(
+            quote=cite.quote,
+            source=sources[cite.number - 1],
+            fragment=chunks[cite.number - 1].text,
+        )
         for cite in raw
         if verify_citation(cite, chunks)
     ]
