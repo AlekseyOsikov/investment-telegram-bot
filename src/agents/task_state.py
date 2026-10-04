@@ -209,6 +209,11 @@ class TaskStage:
     собраны, а подтвердить её нельзя до того, как она проговорена — иначе модель
     закрыла бы гейт первым же ходом, и он перестал бы что-либо гарантировать.
     Порядок ключей в required_keys для таких этапов значим.
+
+    rag_search — разрешён ли на этапе поиск по справочным материалам (слой rag у
+    /smart_agent). На сборе вводных и приёмке реплики пользователя — ответы на вопросы
+    бота, а не вопросы к корпусу: поиск пуст, а режим «не знаю» без вызова модели
+    остановил бы сам этап. Признак не влияет на переходы и гейты.
     """
 
     name: str
@@ -220,6 +225,7 @@ class TaskStage:
     instruction: str
     gate: tuple[str, str] | None = None
     sequential_keys: tuple[str, ...] = ()
+    rag_search: bool = True
 
     def gate_satisfied(self, data: dict) -> bool:
         """Выполнено ли условие гейта. Этап без гейта — всегда да."""
@@ -254,9 +260,10 @@ class TaskScenario:
         return -1
 
 
-def _validation_stage(result_name: str) -> TaskStage:
+def _validation_stage(result_name: str, rag_search: bool = False) -> TaskStage:
     """Этап проверки одинаков во всех сценариях — отличается только тем, как
-    называется проверяемый результат."""
+    называется проверяемый результат, и разрешён ли на нём поиск по материалам
+    (приёмка — ответ на вопрос бота; у справочного разбора `asset` поиск включён)."""
     return TaskStage(
         name=STAGE_VALIDATION,
         label="проверка",
@@ -264,6 +271,7 @@ def _validation_stage(result_name: str) -> TaskStage:
         required_keys=(VERDICT_KEY,),
         optional_keys=(),
         next_stages=(STAGE_EXECUTION, STAGE_DONE),
+        rag_search=rag_search,
         # Приёмка результата — решение пользователя, а не вывод из данных.
         gate=(VERDICT_KEY, VERDICT_ACCEPTED),
         instruction=(
@@ -308,6 +316,7 @@ SCENARIOS: dict[str, TaskScenario] = {
                 next_stages=(STAGE_EXECUTION,),
                 gate=(BRIEF_VERDICT_KEY, BRIEF_CONFIRMED),
                 sequential_keys=(BRIEF_KEY, BRIEF_VERDICT_KEY),
+                rag_search=False,
                 instruction=(
                     "Собери недостающие пункты, задавая по одному уточняющему вопросу "
                     "за раз. Когда все пункты собраны, НЕ предлагай структуру "
@@ -350,6 +359,7 @@ SCENARIOS: dict[str, TaskScenario] = {
                 required_keys=("asset", "horizon", "role_in_portfolio"),
                 optional_keys=("constraints",),
                 next_stages=(STAGE_EXECUTION,),
+                rag_search=True,
                 # Гейта подтверждения вводных здесь намеренно НЕТ (в отличие от
                 # portfolio/review): это справочный разбор, а не рекомендация по
                 # структуре, и подтверждение трёх параметров было бы формальностью
@@ -376,7 +386,7 @@ SCENARIOS: dict[str, TaskScenario] = {
                     f"результата. {_NO_SUMS_RULE}"
                 ),
             ),
-            _validation_stage("разбор"),
+            _validation_stage("разбор", rag_search=True),
             _DONE_STAGE,
         ),
     ),
@@ -399,6 +409,7 @@ SCENARIOS: dict[str, TaskScenario] = {
                 next_stages=(STAGE_EXECUTION,),
                 gate=(BRIEF_VERDICT_KEY, BRIEF_CONFIRMED),
                 sequential_keys=(BRIEF_KEY, BRIEF_VERDICT_KEY),
+                rag_search=False,
                 instruction=(
                     "Уточни текущий состав портфеля ТОЛЬКО в долях или процентах, что "
                     "именно беспокоит пользователя и какие есть ограничения — по "
@@ -631,6 +642,20 @@ def missing_keys(task: dict) -> list[str]:
     рассказывает пользователю, если он просит перейти дальше раньше времени."""
     data = task.get("data", {})
     return [key for key in current_stage(task).required_keys if not str(data.get(key, "")).strip()]
+
+
+def search_allowed(task: dict | None) -> bool:
+    """Разрешён ли поиск по справочным материалам на следующем вопросе (design.md изменения
+    add-stage-aware-rag-and-dialog-runner, решение 2). Признак этапа действует только для
+    активной задачи: нет задачи, пауза или завершение — поиск идёт по общим правилам.
+    Решение берётся по сохранённому этапу, то есть по тому, на котором задача стояла к моменту
+    вопроса. Неизвестный сценарий или этап не должен ронять ответ — поиск разрешён."""
+    if not task or task.get("paused") or is_done(task):
+        return True
+    try:
+        return current_stage(task).rag_search
+    except Exception:  # noqa: BLE001 — повреждённое состояние не должно отключать слой
+        return True
 
 
 def is_done(task: dict) -> bool:

@@ -427,3 +427,70 @@ def test_sanitize_falls_back_on_unknown_stage():
 
     assert task["task_type"] == "asset"
     assert task["stage"] == ts.STAGE_PLANNING
+
+
+# --------------------------------------------------------------------------- #
+# Признак «поиск по материалам разрешён» (add-stage-aware-rag-and-dialog-runner)
+# --------------------------------------------------------------------------- #
+
+
+def test_rag_search_flag_by_scenario_and_stage():
+    expected = {
+        ("portfolio", ts.STAGE_PLANNING): False,
+        ("portfolio", ts.STAGE_EXECUTION): True,
+        ("portfolio", ts.STAGE_VALIDATION): False,
+        ("review", ts.STAGE_PLANNING): False,
+        ("review", ts.STAGE_EXECUTION): True,
+        ("review", ts.STAGE_VALIDATION): False,
+        ("asset", ts.STAGE_PLANNING): True,
+        ("asset", ts.STAGE_EXECUTION): True,
+        ("asset", ts.STAGE_VALIDATION): True,
+    }
+    for (scenario, stage), allowed in expected.items():
+        assert ts.SCENARIOS[scenario].stage(stage).rag_search is allowed, (scenario, stage)
+    # Завершающий этап и любой новый этап по умолчанию — поиск разрешён.
+    for scenario in ts.SCENARIOS.values():
+        assert scenario.stage(ts.STAGE_DONE).rag_search is True
+
+
+def test_search_allowed_follows_current_stage():
+    task = ts.new_task("portfolio", "портфель на пенсию")
+    assert ts.search_allowed(task) is False  # planning
+
+    assert ts.search_allowed(portfolio_at_execution()) is True
+
+    asset = ts.new_task("asset", "разбор облигаций")
+    assert ts.search_allowed(asset) is True
+
+
+def test_search_allowed_ignores_flag_without_active_task():
+    assert ts.search_allowed(None) is True
+
+    paused = ts.new_task("portfolio", "портфель на пенсию")
+    paused["paused"] = True
+    assert ts.search_allowed(paused) is True
+
+    done = ts.new_task("portfolio", "портфель на пенсию")
+    done["stage"] = ts.STAGE_DONE
+    assert ts.search_allowed(done) is True
+
+
+def test_search_allowed_survives_broken_state():
+    broken = {"task_type": "unknown", "stage": "no-such-stage"}
+    # Неизвестный сценарий откатывается на portfolio/planning — главное, без исключения.
+    assert ts.search_allowed(broken) in (True, False)
+    assert ts.search_allowed({"task_type": 123, "stage": None}) in (True, False)
+
+
+def test_rag_search_flag_does_not_change_transitions():
+    task = ts.new_task("portfolio", "портфель на пенсию")
+    assert ts.missing_keys(task) == [
+        "goal_type",
+        "horizon",
+        "risk",
+        "constraints",
+        ts.BRIEF_KEY,
+        ts.BRIEF_VERDICT_KEY,
+    ]
+    task = apply(task, PORTFOLIO_INPUTS).task
+    assert task["stage"] == ts.STAGE_PLANNING  # без сводки и подтверждения — не уходит

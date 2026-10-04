@@ -29,6 +29,7 @@ STATUS_OFF = "off"  # слой выключен пользователем
 STATUS_NO_INDEX = "no_index"  # индекс выбранной стратегии не построен
 STATUS_OK = "ok"  # слой включён, индекс есть
 STATUS_UNAVAILABLE = "unavailable"  # последний поиск завершился сбоем
+STATUS_SKIPPED = "skipped"  # на последнем вопросе поиск пропущен этапом активной задачи
 
 FAILURE_WARNING = (
     "⚠️ Справочные материалы на этот вопрос не использованы: поиск по ним не удался. "
@@ -45,6 +46,7 @@ ABSTAIN_TEXT = (
     "советник; материалы носят образовательный характер."
 )
 NO_MATERIALS_NOTE = "ℹ️ В справочных материалах ничего подходящего не нашлось."
+STAGE_SKIP_NOTE = "ℹ️ Поиск по материалам на этом этапе не выполняется."
 UNVERIFIED_NOTE = "⚠️ Цитаты не подтверждены: ответ может не опираться на материалы."
 
 # Цитаты: пределы для правил и для показа (design.md add-rag-citations-and-abstain, п.3).
@@ -97,6 +99,10 @@ class Materials:
     # при searched=True — «ничего не нашлось» (режим «не знаю»), при False — слой выключен,
     # индекса нет или поиск упал (ответ как без слоя; design.md add-rag-citations-and-abstain, п.1).
     searched: bool = False
+    # Поиск пропущен этапом активной задачи (task_state.search_allowed): слой включён и индекс
+    # есть, но этап собирает вводные или принимает результат. chunks пусты, searched=False —
+    # режим «не знаю», правило цитат и повтор за цитатами не включаются.
+    skipped_by_stage: bool = False
 
 
 def filter_by_score(chunks: list, min_score: float) -> list:
@@ -381,22 +387,41 @@ def describe_status(status: str, reason: str | None = None) -> str:
         return "включён, индекс не построен (make index)"
     if status == STATUS_UNAVAILABLE:
         return f"включён, недоступен: {reason}" if reason else "включён, недоступен"
+    if status == STATUS_SKIPPED:
+        return "включён, на последнем вопросе поиск пропущен этапом задачи"
     return "включён"
 
 
 # --- Режим «не знаю» -------------------------------------------------------------------------
 
 
-def should_abstain(materials: Materials, tools_can_participate: bool) -> bool:
-    """Ответить фиксированным «не знаю» без вызова модели: поиск состоялся, чанков нет, и слой
-    рыночных данных не может участвовать в ответе (выключен или не настроен). Слой выключен,
-    индекса нет, сбой поиска (searched=False) — не отказ."""
-    return materials.searched and not materials.chunks and not tools_can_participate
+def should_abstain(
+    materials: Materials, tools_can_participate: bool, task_active: bool = False
+) -> bool:
+    """Ответить фиксированным «не знаю» без вызова модели: поиск состоялся, чанков нет, слой
+    рыночных данных не может участвовать в ответе (выключен или не настроен) и задача не активна.
+    Пока задача активна, отказа без модели нет на любом этапе: реплики вроде «предложи, что
+    поменять» или «принимаю» — не вопросы к корпусу, и отказ остановил бы саму задачу (живой
+    прогон scripts/dialog_eval.py; design.md add-stage-aware-rag-and-dialog-runner, решение 6).
+    Слой выключен, индекса нет, сбой поиска (searched=False) — не отказ."""
+    return (
+        materials.searched
+        and not materials.chunks
+        and not tools_can_participate
+        and not task_active
+    )
 
 
-def needs_no_materials_note(materials: Materials, tools_can_participate: bool) -> bool:
-    """Поиск состоялся, чанков нет, но модель всё же вызывается (доступны инструменты)."""
-    return materials.searched and not materials.chunks and tools_can_participate
+def needs_no_materials_note(
+    materials: Materials, tools_can_participate: bool, task_active: bool = False
+) -> bool:
+    """Поиск состоялся, чанков нет, но модель всё же вызывается (доступны инструменты или
+    задача активна)."""
+    return (
+        materials.searched
+        and not materials.chunks
+        and (tools_can_participate or task_active)
+    )
 
 
 # --- Цитаты: разбор и проверка по тексту фрагментов --------------------------------------------
@@ -540,10 +565,12 @@ def format_answer_service_lines(
     *,
     unverified: bool = False,
     no_materials_note: bool = False,
+    stage_skip_note: bool = False,
 ) -> list[str]:
     """Строки слоя rag для служебного сообщения после ответа: источники с проверенными цитатами;
     при непроверенных цитатах — поданные фрагменты и пометка; при пустом поиске с вызванной
-    моделью — пометка об отсутствии материалов. Ответ «не знаю» и ответ без слоя строк не дают."""
+    моделью — пометка об отсутствии материалов; при пропуске поиска этапом задачи — строка об
+    этом. Ответ «не знаю» и ответ без слоя строк не дают."""
     lines: list[str] = []
     if citations:
         lines += format_citation_lines(sources, citations)
@@ -553,4 +580,6 @@ def format_answer_service_lines(
             lines.append(UNVERIFIED_NOTE)
     if no_materials_note:
         lines.append(NO_MATERIALS_NOTE)
+    if stage_skip_note:
+        lines.append(STAGE_SKIP_NOTE)
     return lines

@@ -526,3 +526,54 @@ def test_verified_citation_carries_the_full_text_of_its_fragment():
         long_text, "Облигация — долговая ценная бумага."
     ]
     assert "Дальше идёт продолжение" not in result.body
+
+
+def test_stage_skip_note_text_and_only_that_line():
+    assert rag_context.STAGE_SKIP_NOTE == "ℹ️ Поиск по материалам на этом этапе не выполняется."
+    lines = rag_context.format_answer_service_lines([], [], stage_skip_note=True)
+    assert lines == [rag_context.STAGE_SKIP_NOTE]
+    # Прежние форматы не меняются.
+    assert rag_context.format_answer_service_lines([], []) == []
+    assert rag_context.format_answer_service_lines([], [], no_materials_note=True) == [
+        rag_context.NO_MATERIALS_NOTE
+    ]
+
+
+def test_stage_skipped_materials_do_not_abstain_or_ask_for_citations():
+    skipped = rag_context.Materials(skipped_by_stage=True)
+    assert skipped.searched is False and skipped.chunks == []
+    # Ни «не знаю» без модели, ни пометки «ничего не нашлось» — поиска не было.
+    assert not rag_context.should_abstain(skipped, tools_can_participate=False)
+    assert not rag_context.needs_no_materials_note(skipped, tools_can_participate=True)
+
+
+def test_describe_status_for_stage_skip():
+    text = rag_context.describe_status(rag_context.STATUS_SKIPPED)
+    assert "пропущен этапом" in text
+
+
+def test_active_task_never_abstains_without_the_model():
+    searched = rag_context.Materials(searched=True)
+    # Без задачи и без tools — прежний отказ.
+    assert rag_context.should_abstain(searched, tools_can_participate=False)
+    assert rag_context.should_abstain(searched, tools_can_participate=False, task_active=False)
+    # Активная задача — модель вызывается на любом этапе.
+    assert not rag_context.should_abstain(searched, tools_can_participate=False, task_active=True)
+    assert not rag_context.should_abstain(searched, tools_can_participate=True, task_active=True)
+
+
+def test_no_materials_note_when_task_active_and_search_found_nothing():
+    searched = rag_context.Materials(searched=True)
+    assert rag_context.needs_no_materials_note(searched, False, task_active=True)
+    assert rag_context.needs_no_materials_note(searched, True, task_active=False)
+    assert not rag_context.needs_no_materials_note(searched, False, task_active=False)
+    # Поиска не было (слой выключен, сбой, пропуск этапом) — пометки нет даже при активной задаче.
+    assert not rag_context.needs_no_materials_note(rag_context.Materials(), False, task_active=True)
+    skipped = rag_context.Materials(skipped_by_stage=True)
+    assert not rag_context.needs_no_materials_note(skipped, False, task_active=True)
+
+
+def test_active_task_does_not_change_found_materials_path():
+    found = rag_context.Materials(chunks=[object()], searched=True)
+    assert not rag_context.should_abstain(found, False, task_active=True)
+    assert not rag_context.needs_no_materials_note(found, False, task_active=True)

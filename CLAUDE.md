@@ -32,7 +32,7 @@ MCP-инструменты, опрос цен, RAG-индексация). Про
 - `price_watch/` — `/watch*`, опрос цен и сводки по расписанию.
 - `rag/` — офлайн-индексация документов (`make index`); индекс читают research-команды и слой `rag`
   у `/smart_agent`.
-- `scripts/` — одноразовая оснастка (не часть бота): `rag_calibrate.py` — калибровка `RAG_MIN_SCORE` (запросы — в `data/rag_eval/`, не коммитятся).
+- `scripts/` — одноразовая оснастка (не часть бота): `rag_calibrate.py` — калибровка `RAG_MIN_SCORE` (запросы — в `data/rag_eval/`, не коммитятся); `dialog_eval.py` — прогон длинных диалогов `/smart_agent` с задачей и материалами (сценарии и отчёты — в `data/dialog_eval/`, не коммитятся; правила — `src/research/dialog_eval.py`).
 
 ## Команды
 

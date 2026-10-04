@@ -711,6 +711,7 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
         result.citations,
         unverified=result.citations_unverified,
         no_materials_note=result.no_materials_note,
+        stage_skip_note=result.stage_skip_note,
     )
     service_lines += result.warnings
     service_lines += _task_service_lines(agent)

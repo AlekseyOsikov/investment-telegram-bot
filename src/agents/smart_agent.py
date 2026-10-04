@@ -344,6 +344,9 @@ class SmartAgentAnswer:
     citations_unverified: bool = False
     abstained: bool = False
     no_materials_note: bool = False
+    # Поиск пропущен этапом активной задачи (спека smart-agent-rag, «Этап активной задачи может
+    # отключить поиск по материалам») — строка в служебном сообщении.
+    stage_skip_note: bool = False
 
 
 def _empty_profile() -> dict:
@@ -468,6 +471,8 @@ class SmartAgent:
         # или он не удался) и причина сбоя переписывания — только в памяти, для показа
         # состояния (design.md изменения add-rag-rerank-and-rewrite, решения 7 и 9).
         self._last_rag_search: rag_context.SearchInfo | None = None
+        # Поиск на последнем вопросе пропущен этапом задачи (get_rag_status → STATUS_SKIPPED).
+        self._last_rag_skipped = False
 
     @staticmethod
     def _default_enabled_layers() -> dict[str, bool]:
@@ -1074,8 +1079,9 @@ class SmartAgent:
     @staticmethod
     def _rag_messages(materials: rag_context.Materials) -> list[dict[str, str]] | None:
         """Правила обращения с материалами — когда фрагменты в запросе есть; при состоявшемся
-        поиске без фрагментов (модель вызвана только с доступными инструментами, иначе ответ —
-        «не знаю» без вызова) — указание не выдавать ответ за подтверждённый материалами."""
+        поиске без фрагментов (модель вызвана при доступных инструментах или активной задаче,
+        иначе ответ — «не знаю» без вызова) — указание не выдавать ответ за подтверждённый
+        материалами."""
         if materials.chunks:
             return [rag_context.build_rules_message()]
         if materials.searched:
@@ -1328,6 +1334,7 @@ class SmartAgent:
         аргумента None."""
         self._last_rag_failure = None
         self._last_rag_search = None
+        self._last_rag_skipped = False
         if not self._enabled_layers[LAYER_RAG]:
             return rag_context.Materials()
         try:
@@ -1394,6 +1401,30 @@ class SmartAgent:
         )
         return rag_context.Materials(chunks=selection.chunks, searched=True)
 
+    def _task_active(self) -> bool:
+        """Задача активна: есть активный профиль, слой working включён (выключенный замораживает
+        автомат), задача существует, не на паузе и не завершена. Пока она активна, режим «не знаю»
+        без вызова модели не применяется (rag_context.should_abstain), а признак этапа решает,
+        искать ли материалы (_search_skipped_by_stage) — два независимых условия."""
+        if self._active_profile is None or not self._enabled_layers[LAYER_WORKING]:
+            return False
+        task = self._profiles[self._active_profile]["working"]
+        return task is not None and not task.get("paused") and not task_state.is_done(task)
+
+    def _search_skipped_by_stage(self) -> bool:
+        """Этап активной задачи отключает поиск (task_state.search_allowed) — при активном
+        профиле, включённом слое working (выключенный замораживает автомат, и его состояние не
+        участвует в контексте) и включённом слое rag с построенным индексом: при выключенном слое
+        или без индекса поиска не было бы и так, строка о пропуске пользователю не нужна."""
+        if not self._task_active() or not self._enabled_layers[LAYER_RAG]:
+            return False
+        try:
+            if not index_store.index_exists(self._rag_strategy, self._rag_index_dir):
+                return False
+        except Exception:  # noqa: BLE001 — решение о пропуске не должно ронять ответ
+            return False
+        return not task_state.search_allowed(self._profiles[self._active_profile]["working"])
+
     def get_rag_status(self) -> tuple[str, str | None]:
         """Статус слоя rag для /smart_agent_show — (STATUS_*, причина сбоя). Выключенный
         слой и отсутствие индекса определяются по ТЕКУЩЕМУ состоянию (настройка, диск);
@@ -1408,6 +1439,8 @@ class SmartAgent:
             return rag_context.STATUS_NO_INDEX, None
         if self._last_rag_failure:
             return rag_context.STATUS_UNAVAILABLE, self._last_rag_failure
+        if self._last_rag_skipped:
+            return rag_context.STATUS_SKIPPED, None
         return rag_context.STATUS_OK, None
 
     def rewrite_question(
@@ -1505,7 +1538,19 @@ class SmartAgent:
 
         # Слой rag: ОДИН поиск на вопрос, до выбора пути ответа и до запуска процессов
         # MCP — оба пути используют один и тот же результат (design.md, решение 2).
-        materials = self._retrieve_materials(user_text)
+        # Этап активной задачи (сбор вводных, приёмка) может отключить поиск: реплика — ответ на
+        # вопрос бота, а не вопрос к корпусу; пустой Materials не включает ни «не знаю», ни
+        # правило цитат (design.md add-stage-aware-rag-and-dialog-runner, решение 3).
+        # Задача активна — «не знаю» без модели не применяется (решение 6 design.md); считается
+        # по состоянию ДО хода, как и признак этапа.
+        task_active = self._task_active()
+        if self._search_skipped_by_stage():
+            self._last_rag_failure = None
+            self._last_rag_search = None
+            self._last_rag_skipped = True
+            materials = rag_context.Materials(skipped_by_stage=True)
+        else:
+            materials = self._retrieve_materials(user_text)
         self._last_rag_block = (
             rag_context.build_materials_block(materials.chunks) if materials.chunks else None
         )
@@ -1516,7 +1561,7 @@ class SmartAgent:
 
         # Режим «не знаю»: поиск состоялся, ничего не нашёл, инструменты не участвуют — модель
         # не вызывается и ничего не выдумывает (спека smart-agent-rag).
-        if rag_context.should_abstain(materials, tools_can_participate):
+        if rag_context.should_abstain(materials, tools_can_participate, task_active):
             self._tools_status = {}
             self._last_tool_calls = []
             return self._finish_answer(
@@ -1604,7 +1649,7 @@ class SmartAgent:
             citations=citations,
             citations_written=citations_written,
             no_materials_note=rag_context.needs_no_materials_note(
-                materials, tools_can_participate
+                materials, tools_can_participate, task_active
             ),
         )
 
@@ -1653,6 +1698,7 @@ class SmartAgent:
             citations_unverified=bool(chunks) and not citations,
             abstained=abstained,
             no_materials_note=no_materials_note,
+            stage_skip_note=bool(materials and materials.skipped_by_stage),
         )
 
     def get_tools_status(self) -> dict[str, tuple[str, str | None]]:
