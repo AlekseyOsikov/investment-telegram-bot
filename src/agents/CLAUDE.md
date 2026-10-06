@@ -18,7 +18,8 @@
   не было цикла импорта.
 - `compare_command.py` — `/agent_compare`, `/agent_compare_report`, `/agent_compare_reset`.
 - `smart_agent.py` (`SmartAgent`) — владение состоянием, диск, вызовы LLM; правила вынесены в
-  `task_state.py` (автомат), `invariants.py` (инварианты), `market_tools.py` (тексты и цикл слоя
+  `memory_state.py` (константы слоёв/полей профиля, чистый разбор и сборка JSON-файла памяти,
+  миграция старых форматов; `smart_agent.py` их реэкспортирует), `task_state.py` (автомат), `invariants.py` (инварианты), `market_tools.py` (тексты и цикл слоя
   `tools`), `rag_context.py` (правила и тексты слоя `rag`, второй этап отбора), `rag_rewrite.py`
   (переписывание вопроса в поисковый запрос: промпт, нормализация ответа, слияние кандидатов). Принцип разделения везде один: правила и тексты — в отдельном модуле, владение
   состоянием и вызовы LLM — в `SmartAgent`/`Agent`.
