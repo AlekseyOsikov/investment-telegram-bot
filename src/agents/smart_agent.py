@@ -48,7 +48,7 @@
 хранит "meta" — явно заданные пользователем предпочтения персонализации (стиль,
 уровень опыта, формат ответа, отношение к риску, горизонт, интересы, что не
 затрагивать, см. PROFILE_FIELDS) — они подключаются к каждому запросу отдельным
-системным сообщением (см. _profile_meta_message), но влияют ТОЛЬКО на стиль/формат
+системным сообщением (см. context_builder.profile_meta_message), но влияют ТОЛЬКО на стиль/формат
 ответа, а не на обязательные предупреждения основного SYSTEM_PROMPT (см. «Правила
 предметной области» в CLAUDE.md). Как и working/long_term, meta пишется ТОЛЬКО явно
 пользователем (анкета при создании профиля или /smart_agent_profile_set) — никакой
@@ -156,6 +156,7 @@ from providers.rewrite_client import rewrite_backend as default_rewrite_backend
 from rag import index_store
 
 from . import (
+    context_builder,
     invariants,
     market_tools,
     memory_state,
@@ -762,108 +763,22 @@ class SmartAgent:
 
     # --- Сборка контекста и вызов LLM --- #
 
-    def _profile_meta_message(self, meta: dict[str, str]) -> dict[str, str] | None:
-        """Системное сообщение с профилем персонализации активного чата — влияет
-        ТОЛЬКО на стиль/формат/объём ответа, о чём сообщение явно предупреждает
-        модель, а не отменяет обязательные предупреждения основного system_prompt
-        (см. докстринг класса и «Правила предметной области» в CLAUDE.md). Возвращает
-        None, если ни одно поле профиля не заполнено — пустое сообщение не нужно."""
-        lines = [
-            f"- {PROFILE_FIELD_LABELS[name]}: {meta[name]}"
-            for name in PROFILE_FIELDS
-            if meta.get(name)
-        ]
-        if not lines:
-            return None
-        return {
-            "role": "system",
-            "content": (
-                "Профиль пользователя (сохранён им явно). Учитывай эти предпочтения "
-                "ТОЛЬКО для стиля, формата и объёма ответа — они не отменяют "
-                "обязательные предупреждения и осторожные формулировки из основной "
-                "инструкции:\n" + "\n".join(lines)
-            ),
-        }
-
     def _build_context_messages(
         self,
         tools_messages: list[dict[str, str]] | None = None,
         rag_messages: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
-        """Собирает контекст LLM из явно ВКЛЮЧЁННЫХ слоёв (self._enabled_layers)
-        активного профиля — в отличие от Agent, здесь нет автоматического выбора
-        одной стратегии: пользователь сам решает и что сохранять (см. remember/
-        start_task), и какие слои участвуют в конкретном запросе (см.
-        set_layer_enabled). Порядок слоёв в сообщении — от самого жёсткого и
-        стабильного к самому свежему: инварианты -> профиль -> инструменты ->
-        долговременная память -> рабочая задача -> краткосрочный диалог.
-
-        tools_messages — готовые сообщения слоя tools (доступные источники,
-        недоступные источники, выключенные источники — см. agents/market_tools.py и
-        design.md изменения add-smart-agent-bybit-tools); может быть несколько СРАЗУ
-        (например, «доступен MOEX» + «недоступен Bybit»). Их передаёт ask() только
-        когда слой включён и хотя бы один источник настроен, поэтому здесь проверка
-        слоя не повторяется. Инварианты остаются первыми и прямо получают приоритет
-        над этими сообщениями.
-
-        rag_messages — правила обращения со справочными материалами (rag_context.
-        build_rules_message); ask() передаёт их только когда фрагменты в запрос
-        действительно попали, поэтому проверка слоя здесь не повторяется. Идут сразу
-        после сообщений tools, до долговременной памяти; сами фрагменты — в последнем
-        user-сообщении (см. _question_message).
-        """
-        messages = [{"role": "system", "content": self._system_prompt}]
-        if self._active_profile is None:
-            return messages
-        profile = self._profiles[self._active_profile]
-
-        # Инварианты идут ПЕРВЫМИ, до профиля персонализации: это ограничения, а
-        # профиль — предпочтения подачи, и приоритет между ними проговорён прямо в
-        # тексте сообщения (см. invariants.build_context_message).
-        if self._enabled_layers[LAYER_INVARIANTS] and profile["invariants"]:
-            messages.append(invariants.build_context_message(profile["invariants"]))
-
-        if self._enabled_layers[LAYER_PROFILE]:
-            meta_message = self._profile_meta_message(profile["meta"])
-            if meta_message:
-                messages.append(meta_message)
-
-        if tools_messages:
-            messages.extend(tools_messages)
-
-        if rag_messages:
-            messages.extend(rag_messages)
-
-        if self._enabled_layers[LAYER_LONG_TERM] and profile["long_term"]:
-            facts_text = "\n".join(f"- {fact['text']}" for fact in profile["long_term"])
-            messages.append(
-                {
-                    "role": "system",
-                    "content": (
-                        "Долговременная память о пользователе (часть сохранена им "
-                        "явно командой /smart_agent_remember, часть извлечена из "
-                        f"диалога):\n{facts_text}"
-                    ),
-                }
-            )
-
-        if self._enabled_layers[LAYER_WORKING] and profile["working"] is not None:
-            # Весь текст про этап/шаг/ожидание/недостающие пункты собирает сам
-            # автомат (agents/task_state.py) — там же, где определены условия
-            # перехода, чтобы модель и код не расходились в том, чего не хватает.
-            messages.append(
-                {
-                    "role": "system",
-                    "content": task_state.build_context_message(profile["working"]),
-                }
-            )
-
-        if self._enabled_layers[LAYER_SHORT_TERM]:
-            window_size = 2 * self._short_term_pairs
-            short_term = profile["short_term"]
-            messages.extend(short_term[-window_size:] if window_size > 0 else [])
-
-        return messages
+        """Контекст LLM из включённых слоёв активного профиля — правила и порядок в
+        context_builder.build_context_messages."""
+        profile = None if self._active_profile is None else self._profiles[self._active_profile]
+        return context_builder.build_context_messages(
+            self._system_prompt,
+            profile,
+            self._enabled_layers,
+            self._short_term_pairs,
+            tools_messages,
+            rag_messages,
+        )
 
     @staticmethod
     def _extract_usage(response) -> dict[str, int] | None:
@@ -890,18 +805,6 @@ class SmartAgent:
         )
 
     @staticmethod
-    def _rag_messages(materials: rag_context.Materials) -> list[dict[str, str]] | None:
-        """Правила обращения с материалами — когда фрагменты в запросе есть; при состоявшемся
-        поиске без фрагментов (модель вызвана при доступных инструментах или активной задаче,
-        иначе ответ — «не знаю» без вызова) — указание не выдавать ответ за подтверждённый
-        материалами."""
-        if materials.chunks:
-            return [rag_context.build_rules_message()]
-        if materials.searched:
-            return [rag_context.build_no_materials_message()]
-        return None
-
-    @staticmethod
     def _question_message(user_text: str, materials: rag_context.Materials) -> dict[str, str]:
         """Последнее user-сообщение: фрагменты и затем исходный вопрос. В short_term
         при этом пишется ИСХОДНЫЙ user_text (см. ask()) — тексты чанков в память не
@@ -919,7 +822,9 @@ class SmartAgent:
         ровно прежнее поведение ask() до появления слоя tools. materials — результат
         поиска слоя rag на этот вопрос (None — как пустой)."""
         materials = materials or rag_context.Materials()
-        messages = self._build_context_messages(tools_messages, self._rag_messages(materials))
+        messages = self._build_context_messages(
+            tools_messages, context_builder.rag_messages(materials)
+        )
         self._last_context_messages = list(messages)
         messages.append(self._question_message(user_text, materials))
 
@@ -940,7 +845,7 @@ class SmartAgent:
         Без инструментов — черновик уже содержит их результаты. Возвращает (проверенные цитаты,
         число написанных, usage). Любой сбой гасится: ответ у пользователя уже есть."""
         try:
-            messages = self._build_context_messages(None, self._rag_messages(materials))
+            messages = self._build_context_messages(None, context_builder.rag_messages(materials))
             messages.append(self._question_message(user_text, materials))
             messages.append({"role": "assistant", "content": draft})
             messages.append({"role": "user", "content": rag_context.CITATION_RETRY_PROMPT})
@@ -997,7 +902,9 @@ class SmartAgent:
             labels = [market_tools.SOURCE_LABELS[source_id] for source_id in unavailable]
             tools_messages.append(market_tools.build_unavailable_context_message(labels))
 
-        messages = self._build_context_messages(tools_messages, self._rag_messages(materials))
+        messages = self._build_context_messages(
+            tools_messages, context_builder.rag_messages(materials)
+        )
         self._last_context_messages = list(messages)
         messages.append(self._question_message(user_text, materials))
 
