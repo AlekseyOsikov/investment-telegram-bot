@@ -268,6 +268,19 @@ class SmartAgentAnswer:
 _MSK = timezone(timedelta(hours=3))
 
 
+@dataclass
+class _CitedAnswer:
+    """Итог разбора цитат в ask(): текст без блока цитат, проверенные цитаты, сколько цитат
+    написала модель и суммарные токены и вызовы с учётом повтора."""
+
+    answer: str
+    citations: list[rag_context.VerifiedCitation]
+    citations_written: int
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    llm_calls: int
+
+
 def _moscow_today() -> date:
     return datetime.now(_MSK).date()
 
@@ -1228,24 +1241,10 @@ class SmartAgent:
         # Agent.ask(), см. докстринг agents/agent.py про кириллицу в BPE-токенайзерах.
         request_tokens_approx = len(user_text) // 2
 
-        # Слой rag: ОДИН поиск на вопрос, до выбора пути ответа и до запуска процессов
-        # MCP — оба пути используют один и тот же результат (design.md, решение 2).
-        # Этап активной задачи (сбор вводных, приёмка) может отключить поиск: реплика — ответ на
-        # вопрос бота, а не вопрос к корпусу; пустой Materials не включает ни «не знаю», ни
-        # правило цитат (design.md add-stage-aware-rag-and-dialog-runner, решение 3).
         # Задача активна — «не знаю» без модели не применяется (решение 6 design.md); считается
         # по состоянию ДО хода, как и признак этапа.
         task_active = self._task_active()
-        if self._search_skipped_by_stage():
-            self._last_rag_failure = None
-            self._last_rag_search = None
-            self._last_rag_skipped = True
-            materials = rag_context.Materials(skipped_by_stage=True)
-        else:
-            materials = self._retrieve_materials(user_text)
-        self._last_rag_block = (
-            rag_context.build_materials_block(materials.chunks) if materials.chunks else None
-        )
+        materials = self._search_for_question(user_text)
 
         mode = self._market_tools_mode()
         tools_can_participate = mode == market_tools.STATUS_OK
@@ -1265,6 +1264,61 @@ class SmartAgent:
                 abstained=True,
             )
 
+        outcome, unavailable = self._complete_answer(user_text, materials, mode, warnings)
+        self._record_tools_status(mode, unavailable, outcome)
+
+        answer = outcome.text or "Модель вернула пустой ответ. Попробуй переформулировать вопрос."
+
+        # Цитаты: блок модели отделяется от ответа и проверяется по тексту поданных фрагментов;
+        # без проверенных цитат — один повтор (спека smart-agent-rag, «Цитаты в ответе…»).
+        cited = self._apply_citations(user_text, materials, outcome, answer)
+
+        return self._finish_answer(
+            cited.answer,
+            user_text,
+            request_tokens_approx,
+            warnings=warnings,
+            llm_calls=cited.llm_calls,
+            prompt_tokens=cited.prompt_tokens,
+            completion_tokens=cited.completion_tokens,
+            tool_calls=list(outcome.calls),
+            materials=materials,
+            citations=cited.citations,
+            citations_written=cited.citations_written,
+            no_materials_note=rag_context.needs_no_materials_note(
+                materials, tools_can_participate, task_active
+            ),
+        )
+
+    def _search_for_question(self, user_text: str) -> rag_context.Materials:
+        """Слой rag: ОДИН поиск на вопрос, до выбора пути ответа и до запуска процессов
+        MCP — оба пути используют один и тот же результат (design.md, решение 2). Этап
+        активной задачи (сбор вводных, приёмка) может отключить поиск: реплика — ответ на
+        вопрос бота, а не вопрос к корпусу; пустой Materials не включает ни «не знаю», ни
+        правило цитат (design.md add-stage-aware-rag-and-dialog-runner, решение 3). Запоминает
+        блок фрагментов для /smart_agent_show."""
+        if self._search_skipped_by_stage():
+            self._last_rag_failure = None
+            self._last_rag_search = None
+            self._last_rag_skipped = True
+            materials = rag_context.Materials(skipped_by_stage=True)
+        else:
+            materials = self._retrieve_materials(user_text)
+        self._last_rag_block = (
+            rag_context.build_materials_block(materials.chunks) if materials.chunks else None
+        )
+        return materials
+
+    def _complete_answer(
+        self,
+        user_text: str,
+        materials: rag_context.Materials,
+        mode: str,
+        warnings: list[str],
+    ) -> tuple[market_tools.ToolLoopResult, dict[str, str]]:
+        """Вызов модели основного ответа: путь с инструментами или без. Дописывает в `warnings`
+        предупреждения слоя tools (недоступный источник, сбой обмена, лимит шагов); возвращает
+        итог и недоступные источники (id → причина)."""
         unavailable: dict[str, str] = {}
         if mode == market_tools.STATUS_OK:
             outcome, unavailable = asyncio.run(self._tool_completion_async(user_text, materials))
@@ -1288,10 +1342,14 @@ class SmartAgent:
             warnings.append(market_tools.PARTIAL_DATA_WARNING)
         if outcome.step_limit_reached:
             warnings.append(market_tools.step_limit_warning(self._max_tool_steps))
+        return outcome, unavailable
 
-        # Статус для /smart_agent_show, ПО КАЖДОМУ настроенному источнику. Выключенный
-        # слой и незаданный каталог здесь не хранятся: get_tools_status() определяет их
-        # по текущей настройке, а не по прошлому вопросу.
+    def _record_tools_status(
+        self, mode: str, unavailable: dict[str, str], outcome: market_tools.ToolLoopResult
+    ) -> None:
+        """Статус для /smart_agent_show, ПО КАЖДОМУ настроенному источнику. Выключенный
+        слой и незаданный каталог здесь не хранятся: get_tools_status() определяет их
+        по текущей настройке, а не по прошлому вопросу."""
         if mode == market_tools.STATUS_OK:
             for source in self._configured_sources():
                 if source.id in unavailable:
@@ -1304,10 +1362,15 @@ class SmartAgent:
             self._tools_status = {}
         self._last_tool_calls = list(outcome.calls)
 
-        answer = outcome.text or "Модель вернула пустой ответ. Попробуй переформулировать вопрос."
-
-        # Цитаты: блок модели отделяется от ответа и проверяется по тексту поданных фрагментов;
-        # без проверенных цитат — один повтор (спека smart-agent-rag, «Цитаты в ответе…»).
+    def _apply_citations(
+        self,
+        user_text: str,
+        materials: rag_context.Materials,
+        outcome: market_tools.ToolLoopResult,
+        answer: str,
+    ) -> _CitedAnswer:
+        """Разбор блока «Цитаты:» и проверка по тексту поданных фрагментов; без проверенных
+        цитат — один повтор за цитатами (токены повтора прибавляются к суммам вопроса)."""
         citations: list[rag_context.VerifiedCitation] = []
         citations_written = 0
         prompt_tokens, completion_tokens = outcome.prompt_tokens, outcome.completion_tokens
@@ -1327,22 +1390,8 @@ class SmartAgent:
                 if usage:
                     prompt_tokens = (prompt_tokens or 0) + usage["prompt_tokens"]
                     completion_tokens = (completion_tokens or 0) + usage["completion_tokens"]
-
-        return self._finish_answer(
-            answer,
-            user_text,
-            request_tokens_approx,
-            warnings=warnings,
-            llm_calls=llm_calls,
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            tool_calls=list(outcome.calls),
-            materials=materials,
-            citations=citations,
-            citations_written=citations_written,
-            no_materials_note=rag_context.needs_no_materials_note(
-                materials, tools_can_participate, task_active
-            ),
+        return _CitedAnswer(
+            answer, citations, citations_written, prompt_tokens, completion_tokens, llm_calls
         )
 
     def _finish_answer(
