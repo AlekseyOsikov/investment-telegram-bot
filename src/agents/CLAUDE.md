@@ -20,7 +20,8 @@
 - `smart_agent.py` (`SmartAgent`) — владение состоянием, диск, вызовы LLM; правила вынесены в
   `memory_state.py` (константы слоёв/полей профиля, чистый разбор и сборка JSON-файла памяти,
   миграция старых форматов; `smart_agent.py` их реэкспортирует), `task_state.py` (автомат), `invariants.py` (инварианты), `market_tools.py` (тексты и цикл слоя
-  `tools`), `rag_context.py` (правила и тексты слоя `rag`, второй этап отбора), `rag_rewrite.py`
+  `tools`), `rag_context.py` (правила и тексты слоя `rag`, второй этап отбора), `rag_search.py`
+  (конвейер поиска слоя `rag`), `rag_rewrite.py`
   (переписывание вопроса в поисковый запрос: промпт, нормализация ответа, слияние кандидатов). Принцип разделения везде один: правила и тексты — в отдельном модуле, владение
   состоянием и вызовы LLM — в `SmartAgent`/`Agent`.
 - `smart_agent_command.py` — `/smart_agent`, `/smart_agent_profile*`, `/smart_agent_remember|forget|
@@ -129,8 +130,10 @@
 калибровка порога — `openspec/changes/archive/*add-smart-agent-rag/design.md` и
 `*add-rag-rerank-and-rewrite/design.md`. Использует индекс `rag/` (см. `src/rag/CLAUDE.md`).
 Правила и тексты — `rag_context.py` и `rag_rewrite.py` (чистые модули, тесты
-`tests/test_rag_context.py`, `tests/test_rag_rewrite.py`); поиск и состояние —
-`SmartAgent._retrieve_materials()`.
+`tests/test_rag_context.py`, `tests/test_rag_rewrite.py`); конвейер поиска (переписывание,
+эмбеддинг, кандидаты, отбор; `RagSearchConfig`, `retrieve()`) — `rag_search.py` (тесты
+`tests/test_rag_search.py`, внешние вызовы подставляются параметрами); состояние чата
+(`_last_rag_*`) и вход — `SmartAgent._retrieve_materials()`.
 
 - **Один поиск на вопрос, до ветвления на пути ответа** (в `ask()`, до `_market_tools_mode()` и до
   запуска MCP-процессов): [переписывание вопроса, если настроено] → эмбеддинг поискового текста
