@@ -43,6 +43,7 @@ from telegram.ext import (
 )
 
 from config import (
+    MAIN_CLIENT,
     MAIN_CLIENT_LABEL,
     MAIN_MODEL,
     MAX_INPUT_CHARS,
@@ -50,6 +51,7 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from main_client_settings import disable_thinking_extra_body
 from providers.main_client import main_client
 
 from ._shared import (
@@ -70,7 +72,7 @@ WAITING_TASK, CHOOSING_SCENARIO = range(2)
 # оставляя видимый ответ пустым (см. content_or_reasoning_fallback в research/_shared.py).
 # "thinking" не входит в типизированную сигнатуру chat.completions.create в openai SDK,
 # поэтому передаётся через extra_body — как и в reasoning.py.
-DISABLE_THINKING = {"thinking": {"type": "disabled"}}
+DISABLE_THINKING = disable_thinking_extra_body(MAIN_CLIENT)  # None для Ollama
 
 # Нарочно нейтральный системный промпт: этот режим исследует влияние temperature на
 # произвольных задачах, а не отвечает на инвестиционные вопросы, поэтому здесь не

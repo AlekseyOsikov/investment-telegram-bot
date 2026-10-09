@@ -104,6 +104,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from main_client_settings import connection_error_text
 from mcp_integration.tools_command import build_mcp_tools_handler
 from price_watch.commands import build_price_watch_handlers
 from price_watch.scheduler import start_scheduler, stop_scheduler
@@ -391,10 +392,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
     except APIConnectionError:
         logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
-        await update.message.reply_text(
-            f"🌐 Не получилось подключиться к серверу {MAIN_CLIENT_LABEL}. "
-            "Проверь соединение и попробуй позже."
-        )
+        await update.message.reply_text(connection_error_text(MAIN_CLIENT_LABEL))
         return
     except APIStatusError as exc:
         logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)

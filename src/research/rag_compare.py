@@ -49,6 +49,7 @@ from agents.smart_agent import LAYER_RAG, SmartAgent
 from config import (
     EMBEDDINGS_MODEL,
     MAIN_API_KEY_ENV_VAR,
+    MAIN_CLIENT,
     MAIN_CLIENT_LABEL,
     MAIN_MODEL,
     RAG_CANDIDATES,
@@ -74,6 +75,7 @@ from config import (
     REWRITE_SEARCH_MODE,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from main_client_settings import disable_thinking_extra_body
 from providers.main_client import main_client
 from providers.rewrite_client import rewrite_backend
 from rag import index_store
@@ -282,7 +284,7 @@ def _judge_call(
         timeout=timeout,
         response_format={"type": "json_object"},
         temperature=0,
-        extra_body={"thinking": {"type": "disabled"}},
+        extra_body=disable_thinking_extra_body(MAIN_CLIENT),
     )
     content = response.choices[0].message.content
     if not content:

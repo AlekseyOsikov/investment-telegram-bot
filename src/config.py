@@ -3,7 +3,7 @@
 Подключения к LLM-провайдерам (API-ключ, базовый URL, клиент openai.OpenAI, идентификаторы
 моделей) вынесены в отдельные модули — providers/deepseek_client.py и
 providers/kimi_client.py. Какой из них обслуживает основной поток бота, определяет
-MAIN_CLIENT (см. ниже) — от него зависит, какой из двух API-ключей обязателен для
+MAIN_CLIENT (см. ниже; deepseek|kimi|ollama) — от него зависит, какой из API-ключей обязателен для
 старта, а какой нужен только техническому режиму /research_models и не должен блокировать
 запуск остального бота (эту проверку выполняет каждый клиентский модуль сам, см. их
 докстринги). Сам выбор клиента для основного потока (объект main_client) собирается в
@@ -25,6 +25,13 @@ import warnings
 from dotenv import load_dotenv
 from telegram.warnings import PTBUserWarning
 
+from main_client_settings import (
+    default_main_model,
+    main_api_key_env_var,
+    main_client_label,
+    validate_main_settings,
+)
+
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -34,22 +41,19 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 # research/constraints.py) — все они используют providers/main_client.py.
 # research/models.py не зависит от MAIN_CLIENT: он всегда сравнивает обе пары моделей
 # обоих провайдеров.
-_SUPPORTED_MAIN_CLIENTS = ("deepseek", "kimi")
 MAIN_CLIENT = os.getenv("MAIN_CLIENT", "deepseek").strip().lower()
 
 # Модель основного потока — единственная переменная, а не своя на каждого провайдера,
 # т.к. одновременно обслуживает только один из них (тот, что выбран в MAIN_CLIENT).
 # Дефолт зависит от MAIN_CLIENT, чтобы работать "из коробки" при любом выборе провайдера.
-_DEFAULT_MAIN_MODEL_BY_CLIENT = {"deepseek": "deepseek-v4-flash", "kimi": "kimi-k3"}
-MAIN_MODEL = os.getenv(
-    "MAIN_MODEL", _DEFAULT_MAIN_MODEL_BY_CLIENT.get(MAIN_CLIENT, "deepseek-v4-flash")
-)
+# Для ollama дефолта нет (пустая строка) — _validate_config() требует явную модель.
+MAIN_MODEL = os.getenv("MAIN_MODEL", default_main_model(MAIN_CLIENT))
 
 # Только для сообщений пользователю/логов основного потока (main.py и три research-режима
 # из комментария выше) — чтобы они называли реально выбранного провайдера, а не всегда
 # "DeepSeek", и подсказывали правильную переменную окружения при ошибке авторизации.
-MAIN_CLIENT_LABEL = "DeepSeek" if MAIN_CLIENT == "deepseek" else "Kimi"
-MAIN_API_KEY_ENV_VAR = "DEEPSEEK_API_KEY" if MAIN_CLIENT == "deepseek" else "KIMI_API_KEY"
+MAIN_CLIENT_LABEL = main_client_label(MAIN_CLIENT)
+MAIN_API_KEY_ENV_VAR = main_api_key_env_var(MAIN_CLIENT)
 
 # Доступ к исследовательским/техническим командам — /research_*, /agent_compare*,
 # /agent_mode, /agent_context. Это инструменты отладки и экспериментов с API, а не
@@ -742,12 +746,9 @@ def _validate_config() -> None:
         )
         sys.exit(1)
 
-    if MAIN_CLIENT not in _SUPPORTED_MAIN_CLIENTS:
-        logger.error(
-            "Недопустимое значение MAIN_CLIENT=%r. Допустимые значения: %s.",
-            MAIN_CLIENT,
-            ", ".join(_SUPPORTED_MAIN_CLIENTS),
-        )
+    main_error = validate_main_settings(MAIN_CLIENT, MAIN_MODEL)
+    if main_error:
+        logger.error(main_error)
         sys.exit(1)
 
     if AGENT_CONTEXT_STRATEGY not in _SUPPORTED_AGENT_STRATEGIES:

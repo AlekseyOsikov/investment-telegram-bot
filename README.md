@@ -1,7 +1,8 @@
-# Investment Telegram Bot (DeepSeek / Kimi)
+# Investment Telegram Bot (DeepSeek / Kimi / Ollama)
 
 Telegram-бот-ассистент по инвестициям и личным финансам поверх
-[DeepSeek API](https://platform.deepseek.com/) или [Kimi (Moonshot AI) API](https://platform.moonshot.ai/) —
+[DeepSeek API](https://platform.deepseek.com/), [Kimi (Moonshot AI) API](https://platform.moonshot.ai/)
+или локальную модель [Ollama](https://ollama.com/) —
 провайдер и модель основного потока выбираются переменными окружения `MAIN_CLIENT`/
 `MAIN_MODEL` (по умолчанию DeepSeek). Пользователь пишет вопрос в личном чате — бот
 пересылает его выбранному провайдеру и возвращает ответ как есть.
@@ -59,8 +60,8 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 
 - Приём текстовых сообщений в личных чатах Telegram (групповые чаты и
   не-текстовый контент игнорируются).
-- Пересылка запроса выбранному провайдеру (DeepSeek или Kimi, OpenAI-совместимый
-  интерфейс) с системным промптом, задающим доменную роль и обязательные
+- Пересылка запроса выбранному провайдеру (DeepSeek, Kimi или локальный Ollama,
+  OpenAI-совместимый интерфейс) с системным промптом, задающим доменную роль и обязательные
   дисклеймеры.
 - Индикация статуса «печатает…» на время ожидания ответа.
 - Команды `/start` и `/help`.
@@ -610,6 +611,28 @@ mcp-moex`). Путь к каталогу задаётся переменной `
 второго — опционален и нужен только для сценариев `/research_models`, которые
 всегда сравнивают модели обоих провайдеров.
 
+**Ollama (локальная модель):** при `MAIN_CLIENT=ollama` ключи не нужны, но обязательно
+задать `MAIN_MODEL` (имя из `ollama list`); адрес сервера — `OLLAMA_BASE_URL`. Данные основного
+потока не покидают машину, если сервер локальный. Увеличьте контекст на стороне Ollama
+(`OLLAMA_CONTEXT_LENGTH`), для слоя `tools` у `/smart_agent` нужна модель с поддержкой вызова
+инструментов; перед использованием проверьте ответы на типовых вопросах (осторожные формулировки
+и дисклеймер).
+
+Замер на CPU (16 потоков, 60 ГБ RAM, без дискретной GPU), основной поток, ~1 короткий вопрос:
+
+| Модель | Время | Заметки |
+|---|---|---|
+| `llama3.1:8b` | ~16 с | быстрая, ответы проще |
+| `gpt-oss:20b` | ~31 с | хороший русский, вызывает инструменты в простом тесте |
+| `qwen3:30b-a3b` | ~43 с | лучший русский текст и оговорки о риске |
+| `qwen2.5:7b` | ~21 с | **не рекомендуется**: уходит в китайский |
+
+`/smart_agent` на локальной модели отвечает за 100–250 с (много технических вызовов),
+поэтому ставьте `REQUEST_TIMEOUT_SECONDS=240` и выше. Слой `tools` на проверенных моделях не
+вызывал инструмент цены (`get_current_price`) в `/smart_agent` — отключите его
+(`/smart_agent_toggle tools`) или используйте облачного провайдера. Замер небольшой
+(3 вопроса на модель), для своих задач проверьте сами.
+
 **DeepSeek:**
 1. Зарегистрируйтесь на [platform.deepseek.com](https://platform.deepseek.com/).
 2. Пополните баланс (при необходимости) в разделе биллинга.
@@ -633,7 +656,7 @@ cp .env.example .env
 ```dotenv
 TELEGRAM_BOT_TOKEN=ваш_токен_от_botfather
 
-MAIN_CLIENT=deepseek          # или "kimi"
+MAIN_CLIENT=deepseek          # или "kimi", или "ollama" (тогда MAIN_MODEL обязателен, ключи не нужны)
 MAIN_MODEL=deepseek-v4-flash  # модель основного потока для выбранного MAIN_CLIENT
 
 DEEPSEEK_API_KEY=ваш_ключ_deepseek
@@ -695,7 +718,7 @@ REWRITE_MODEL=                  # модель переписывания (дл�
 REWRITE_TIMEOUT_SECONDS=8       # предел одного вызова переписывания (дальше — поиск по вопросу как есть)
 REWRITE_SEARCH_MODE=both        # both — искать по исходному и переписанному; rewritten — только по переписанному
 REWRITE_HISTORY_QUESTIONS=0     # сколько прошлых ВОПРОСОВ пользователя (0–10) передавать переписыванию; 0 — не передавать
-OLLAMA_BASE_URL=http://localhost:11434/v1  # чат-сервер Ollama для REWRITE_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434/v1  # чат-сервер Ollama для MAIN_CLIENT=ollama и REWRITE_PROVIDER=ollama
 RAG_COMPARE_LEVEL=answers       # /research_rag_compare, ОДИН из двух: answers (ответы и оценка) | search (только поиск)
 RAG_COMPARE_MODES=              # режимы поиска: baseline,filter,rewrite,rewrite_filter,rewrite_context,concat
 RAG_COMPARE_REPORT_DIR=data/rag_eval  # куда /research_rag_compare сохраняет отчёты

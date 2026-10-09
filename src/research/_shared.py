@@ -24,6 +24,7 @@ from openai import (
 from telegram.ext import ConversationHandler
 
 from config import MAIN_API_KEY_ENV_VAR, MAIN_CLIENT_LABEL
+from main_client_settings import connection_error_text
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ def api_error_to_message(exc: Exception, label: str, api_key_env_var: str) -> st
         return f"⏳ {label} не ответил вовремя. Попробуй отправить запрос ещё раз."
     if isinstance(exc, APIConnectionError):
         logger.error("Не удалось подключиться к %s API.", label)
-        return f"🌐 Не получилось подключиться к серверу {label}. Проверь соединение и попробуй позже."
+        return connection_error_text(label)
     if isinstance(exc, APIStatusError):
         logger.error("%s API вернул ошибку: %s", label, exc)
         return f"⚠️ Сервер {label} вернул ошибку. Попробуй позже."

@@ -8,7 +8,7 @@
 ## Что это за проект
 
 Telegram-бот для инвестиционных рекомендаций на `python-telegram-bot` (v20+, async). Основной
-поток — stateless-прокси: вопрос в личном чате → LLM (OpenAI-совместимый DeepSeek или Kimi) →
+поток — stateless-прокси: вопрос в личном чате → LLM (OpenAI-совместимый DeepSeek, Kimi или локальный Ollama) →
 ответ как есть. Поверх — независимые функции со своими правилами (агенты с памятью, research-режимы,
 MCP-инструменты, опрос цен, RAG-индексация). Проект развивается в сторону инвестиционного
 ассистента — архитектурные решения пересматривай по мере роста, а не считай окончательными.
@@ -20,7 +20,7 @@ MCP-инструменты, опрос цен, RAG-индексация). Про
 - `providers/` — `deepseek_client.py`, `kimi_client.py` (клиенты и модели для `/research_models`),
   `main_client.py` (выбор `main_client` по `MAIN_CLIENT`; основной поток и research-режимы без
   собственного выбора модели импортируют клиента отсюда), `embeddings_client.py` (Ollama-эмбеддинги
-  для `rag/`; НЕ связан с `MAIN_CLIENT`), `ollama_client.py` (чат-клиент Ollama) и
+  для `rag/`; НЕ связан с `MAIN_CLIENT`), `ollama_client.py` (чат-клиент Ollama; он же `main_client` при `MAIN_CLIENT=ollama`) и
   `rewrite_client.py` (клиент и модель переписывания вопроса по `REWRITE_PROVIDER`; не связан с
   `MAIN_CLIENT` и эмбеддингами).
 - `main.py` — `/start`, `/help`, `handle_message`, точка входа, регистрация всех обработчиков.
@@ -92,16 +92,21 @@ src/main.py`) покрывают только чистые функции без
 - `load_dotenv()` — только в `config.py`; `providers/*_client.py` делают `import config` ради
   побочного эффекта (dotenv и `logging.basicConfig()` должны отработать раньше чтения окружения) и
   сами `load_dotenv()` не вызывают.
-- `MAIN_CLIENT` (`deepseek`|`kimi`, по умолчанию `deepseek`) выбирает провайдера основного потока и
+- `MAIN_CLIENT` (`deepseek`|`kimi`|`ollama`, по умолчанию `deepseek`) выбирает провайдера основного потока и
   research-режимов без собственного выбора модели; `MAIN_MODEL` — модель (по умолчанию зависит от
-  провайдера). `main_client` собирается в `providers/main_client.py`, а не в `config.py` — чтобы не
+  провайдера; для `ollama` дефолта нет — пустая модель завершает запуск). Чистые правила выбора
+  (допустимые значения, дефолты, подписи, валидация, тексты ошибок) — `main_client_settings.py`. `main_client` собирается в `providers/main_client.py`, а не в `config.py` — чтобы не
   было цикла импорта. `MAIN_CLIENT_LABEL` — подпись провайдера для текстов.
 - **Обязательность ключа зависит от `MAIN_CLIENT`** (сохранять): `deepseek_client.py` завершает
-  процесс, только если `MAIN_CLIENT == "deepseek"` и нет `DEEPSEEK_API_KEY`; симметрично для Kimi.
+  процесс, только если `MAIN_CLIENT == "deepseek"` и нет `DEEPSEEK_API_KEY`; симметрично для Kimi;
+  для `ollama` ключ не нужен (оба облачных ключа опциональны), обязателен `MAIN_MODEL`. Облачные
+  параметры вызовов (`extra_body={"thinking": ...}`) в Ollama не отправляются.
   Ключ невыбранного провайдера опционален (нужен `/research_models`), его отсутствие — только
   предупреждение, клиент создаётся с плейсхолдером (пустой `api_key` уронил бы конструктор
   `OpenAI()`). `TELEGRAM_BOT_TOKEN` и допустимость `MAIN_CLIENT` проверяет `_validate_config()`.
   Новые провайдер-специфичные переменные — в `providers/*_client.py`, общие — в `config.py`.
+  `MAIN_CLIENT=ollama`: `OLLAMA_BASE_URL` общий с переписыванием вопроса; при удалённом адресе
+  вопросы, память агентов и результаты инструментов уходят на этот сервер — решение оператора.
 - `RESEARCH` (булево, по умолчанию `true`) — решение ОПЕРАТОРА, не пользователя. При `false` не
   регистрируются и не упоминаются в `/help`: `/research_constraints|reasoning|temperature|models|
   chunking_stats|chunking_compare|rag_compare|rag_compare_stop|rag_compare_report`,

@@ -2,8 +2,8 @@
 
 main.py и research-режимы, которые сами не выбирают конкретную модель
 (research/reasoning.py, research/temperature.py, research/constraints.py) —
-импортируют main_client отсюда вместо того, чтобы обращаться к deepseek_client.py или
-kimi_client.py напрямую. Благодаря этому смена MAIN_CLIENT в .env не требует правок в
+импортируют main_client отсюда вместо того, чтобы обращаться к deepseek_client.py,
+kimi_client.py или ollama_client.py (MAIN_CLIENT=ollama — локальная модель) напрямую. Благодаря этому смена MAIN_CLIENT в .env не требует правок в
 этих модулях: main_client всегда указывает на клиента, соответствующего MAIN_CLIENT.
 (research/models.py — исключение: он всегда сравнивает обе пары моделей обоих
 провайдеров явно и от MAIN_CLIENT не зависит.)
@@ -20,5 +20,11 @@ from config import MAIN_CLIENT
 
 from .deepseek_client import deepseek_client
 from .kimi_client import kimi_client
+from .ollama_client import ollama_client
 
-main_client = deepseek_client if MAIN_CLIENT == "deepseek" else kimi_client
+# Допустимость MAIN_CLIENT проверяет config._validate_config() (до этого импорта).
+main_client = {
+    "deepseek": deepseek_client,
+    "kimi": kimi_client,
+    "ollama": ollama_client,
+}[MAIN_CLIENT]
