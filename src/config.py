@@ -672,6 +672,29 @@ _SUPPORTED_RAG_COMPARE_LEVELS = ("answers", "search")
 RAG_COMPARE_LEVEL = os.getenv("RAG_COMPARE_LEVEL", "answers").strip().lower()
 RAG_COMPARE_MODES = os.getenv("RAG_COMPARE_MODES", "").strip()
 
+# Сравнение МОДЕЛЕЙ с RAG (/research_rag_models, research/rag_models.py, design.md изменения
+# add-rag-models-compare). Настройки ОПЕРАТОРА: пользователь чата модели, судью, число вопросов и
+# повторов не выбирает (как REWRITE_MODEL — это не рантайм-смена модели бота).
+# RAG_MODELS_COMPARE — пары «провайдер:модель» через запятую (провайдер: ollama | deepseek | kimi;
+# разбор по ПЕРВОМУ двоеточию: ollama:gpt-oss:20b; у облачных пустая модель — умолчание
+# провайдера); не меньше двух. RAG_MODELS_JUDGE — одна пара модели-судьи. Пустые значения —
+# сравнение не настроено (команда ответит подсказкой), бот работает как раньше.
+# RAG_MODELS_QUESTIONS — сколько вопросов по корпусу берётся из набора (1–5; вопрос вне корпуса
+# добавляется сверх), RAG_MODELS_REPEATS — сколько раз каждая модель отвечает на вопрос (≥ 1).
+RAG_MODELS_COMPARE = os.getenv("RAG_MODELS_COMPARE", "").strip()
+RAG_MODELS_JUDGE = os.getenv("RAG_MODELS_JUDGE", "").strip()
+_RAG_MODELS_QUESTIONS_RAW = os.getenv("RAG_MODELS_QUESTIONS", "4").strip()
+_RAG_MODELS_REPEATS_RAW = os.getenv("RAG_MODELS_REPEATS", "3").strip()
+try:
+    RAG_MODELS_QUESTIONS = int(_RAG_MODELS_QUESTIONS_RAW)
+except ValueError:
+    # Нецелое значение отвергает _validate_config() понятным сообщением (а не трейсбеком).
+    RAG_MODELS_QUESTIONS = -1
+try:
+    RAG_MODELS_REPEATS = int(_RAG_MODELS_REPEATS_RAW)
+except ValueError:
+    RAG_MODELS_REPEATS = -1
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 
@@ -941,6 +964,20 @@ def _validate_config() -> None:
             "Недопустимое значение RAG_COMPARE_LEVEL=%r. Допустимо: %s.",
             RAG_COMPARE_LEVEL,
             ", ".join(_SUPPORTED_RAG_COMPARE_LEVELS),
+        )
+        sys.exit(1)
+
+    if not 1 <= RAG_MODELS_QUESTIONS <= 5:
+        logger.error(
+            "Недопустимое значение RAG_MODELS_QUESTIONS=%r: нужно целое число от 1 до 5.",
+            _RAG_MODELS_QUESTIONS_RAW,
+        )
+        sys.exit(1)
+
+    if RAG_MODELS_REPEATS < 1:
+        logger.error(
+            "Недопустимое значение RAG_MODELS_REPEATS=%r: нужно целое число не меньше 1.",
+            _RAG_MODELS_REPEATS_RAW,
         )
         sys.exit(1)
 

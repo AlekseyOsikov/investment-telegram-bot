@@ -32,6 +32,13 @@
   `openspec/specs/rag-retrieval-comparison/`): правила, метрики и тексты — чистый
   `rag_modes_eval.py` (тесты `tests/test_rag_modes_eval.py`).
 
+- `rag_models.py` + `rag_models_eval.py` — `/research_rag_models`, `/research_rag_models_stop`,
+  `/research_rag_models_report [номер]`: сравнение моделей (локальной и облачной) на тех же
+  контрольных вопросах с RAG (спека — `openspec/specs/rag-models-comparison/`; обоснования —
+  `openspec/changes/*add-rag-models-compare/design.md`). Правила, метрики и тексты — чистый
+  `rag_models_eval.py` (тесты `tests/test_rag_models_eval.py`), обращения к LLM, прогон, диск и
+  Telegram — `rag_models.py`. См. раздел ниже.
+
 - `dialog_eval.py` — НЕ команда бота (флаг `RESEARCH` не нужен, в `/help` не попадает): чистые
   правила скрипта `scripts/dialog_eval.py` — длинные диалоги `/smart_agent` с рабочей задачей и
   материалами (спека `openspec/specs/smart-agent-dialog-eval/`; тесты `tests/test_dialog_eval.py`).
@@ -157,6 +164,51 @@
   вопросы вне корпуса пропускаются. Старые отчёты без новых полей читаются.
 - Прогон тратит ≈40 вызовов LLM (≈3,5 минуты) и использует Ollama в режиме с RAG; запустить его
   может любой пользователь при `RESEARCH=true` — как и остальные research-команды.
+
+## `/research_rag_models`
+
+- **Настройки — только оператор** (`RAG_MODELS_COMPARE`, `RAG_MODELS_JUDGE`, `RAG_MODELS_QUESTIONS`,
+  `RAG_MODELS_REPEATS`); команда не принимает аргументов. Пары разбираются по ПЕРВОМУ двоеточию
+  (`ollama:gpt-oss:20b`), `ollama` требует явной модели, у облачных пустая модель — умолчание
+  провайдера; ≥ 2 моделей, дубликаты запрещены. Ошибки настроек и нехватка ключей — сообщение в
+  чат при запуске команды (`rme.ModelSettingError`), бот при этом стартует.
+- **Условия опыта.** ОДИН общий поиск на вопрос (`search_materials`, `rewrite_backend=None`);
+  материалы (`Materials`, неизменяемые) подаются всем моделям и повторам через
+  `SmartAgent.ask(user_text, materials=…)` — поэтому `elapsed` и токены в секунду меряют только
+  генерацию, а поиск (`search_seconds`) и источники фрагментов пишутся на уровне вопроса. Каждый
+  ответ — СВЕЖИЙ изолированный `SmartAgent` с клиентом/моделью пары (`rc.LlmBackend`, клиент
+  `with_options(max_retries=0)`). Порядок: вопрос → повтор → модели по очереди (чередование); судья
+  (`rc.judge`/`rc.judge_citations` с `backend=`) — после каждого ответа, строго последовательно
+  (Kimi: один запрос). Сбой поиска исключает вопрос из ВСЕХ метрик с причиной в сводке, к
+  моделям по нему не обращаются. Сбой судьи — `judge_error`, не сбой генерации.
+- **Метрики.** Скорость = `completion_tokens / elapsed` (`None` без токенов); медиана/мин/макс — без
+  холодного обращения (первое реально вызвавшее модель обращение к модели в прогоне, `cold`);
+  ответ «не знаю» без вызова модели (`llm_calls == 0`) прогрева не даёт. Живая проверка
+  (2026-10-09): `usage` есть у Ollama `/v1` и DeepSeek, токены рассуждений входят в
+  `completion_tokens` у обоих (design.md, решение 5). Качество и цитаты — те же правила, что у
+  `/research_rag_compare`. «Победитель» не объявляется, размер выборки всегда в сводке.
+- **Судья.** Температура 0, кроме Kimi: `kimi-k3` принимает только фиксированную (400 «only 0.6 is
+  allowed»), поэтому для `kimi` параметр не отправляется (`rc.judge_temperature_kwargs`). `thinking`
+  отключается по провайдеру бэкенда.
+- **Пределы времени.** Бюджет вопроса = `RAG_COMPARE_QUESTION_TIMEOUT_SECONDS × моделей × повторы / 2`;
+  предел одного обращения — `min(REQUEST_TIMEOUT_SECONDS, остаток бюджета)`. Медленная локальная
+  модель (60–120 с на ответ) требует `REQUEST_TIMEOUT_SECONDS` ≥ 240 и увеличенного
+  `RAG_COMPARE_QUESTION_TIMEOUT_SECONDS`; исчерпанный бюджет помечает остальные обращения вопроса
+  «превышен лимит времени вопроса» (в том числе облачной модели) — бюджет не должен быть впритык.
+  Автоостановка — `RAG_COMPARE_MAX_CONSECUTIVE_FAILURES` вопросов подряд, где ВСЕ обращения
+  провалились или поиск недоступен.
+- **Один прогон на бот, общий с `/research_rag_compare`**: флаг и прогресс — функции
+  `rc.acquire_run/release_run/is_run_in_progress/request_stop` в `rag_compare.py`; остановка любой
+  из двух команд отменяет текущий прогон (`reply_stop_result` общий).
+- **Отчёт** — `<UTC>_models.json` (`kind="models"`, `version`) в `RAG_COMPARE_REPORT_DIR`; имя не
+  подходит под шаблон отчётов `/research_rag_compare`, поэтому `/research_rag_compare_report` его
+  не видит и наоборот (`rme.latest_models_report_name`). Хранит ВСЕ повторы всех моделей; тексты
+  фрагментов не пишутся. Отчёт другого вида/версии — `rc.ReportError` → сообщение. Сводка называет
+  провайдера судьи и строку о передаче вопросов, ответов и фрагментов судье.
+- Нагрузка: ≈ 30 ответов и до ≈ 50 вызовов судьи на прогон (5 вопросов × 3 повтора × 2 модели).
+  Для честного замера локальной модели — `OLLAMA_KEEP_ALIVE=-1`, `OLLAMA_MAX_LOADED_MODELS=2`,
+  `OLLAMA_CONTEXT_LENGTH` (на стороне Ollama; бот их не передаёт); `prompt_tokens` у потолка
+  контекста — признак молчаливого усечения.
 
 ## `/research_constraints`
 

@@ -4,6 +4,7 @@ from main_client_settings import (
     connection_error_text,
     default_main_model,
     disable_thinking_extra_body,
+    judge_temperature_kwargs,
     main_api_key_env_var,
     main_client_label,
     validate_main_settings,
@@ -52,3 +53,10 @@ def test_connection_error_text_cloud_unchanged():
 def test_thinking_not_sent_to_ollama():
     assert disable_thinking_extra_body("ollama") is None
     assert disable_thinking_extra_body("deepseek") == {"thinking": {"type": "disabled"}}
+
+
+def test_judge_temperature_is_zero_except_kimi():
+    # Kimi (k3) принимает только фиксированную температуру — параметр не отправляется.
+    assert judge_temperature_kwargs("deepseek") == {"temperature": 0}
+    assert judge_temperature_kwargs("ollama") == {"temperature": 0}
+    assert judge_temperature_kwargs("kimi") == {}

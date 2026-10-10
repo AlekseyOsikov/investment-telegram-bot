@@ -38,8 +38,10 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from openai import OpenAI, RateLimitError
 from telegram import Message, Update
 from telegram.error import TelegramError
 from telegram.ext import CommandHandler, ContextTypes, filters
@@ -75,7 +77,12 @@ from config import (
     REWRITE_SEARCH_MODE,
     TELEGRAM_MESSAGE_LIMIT,
 )
-from main_client_settings import disable_thinking_extra_body
+from main_client_settings import (
+    disable_thinking_extra_body,
+    judge_temperature_kwargs,
+    main_api_key_env_var,
+    main_client_label,
+)
 from providers.main_client import main_client
 from providers.rewrite_client import rewrite_backend
 from rag import index_store
@@ -98,6 +105,20 @@ _REPORT_SUFFIX = ".json"
 # зависшем провайдере (60 с × 3 попытки на каждый вызов). Копия делит http-клиент с main_client.
 _fast_client = main_client.with_options(max_retries=0)
 
+
+@dataclass(frozen=True)
+class LlmBackend:
+    """Клиент, модель и провайдер для обращения к LLM в прогоне. По умолчанию — основной поток
+    бота (`DEFAULT_BACKEND`); `/research_rag_models` подставляет клиент и модель пары и судьи.
+    Клиент должен быть без автоповторов SDK (быстрый отказ)."""
+
+    client: OpenAI
+    model: str
+    provider: str
+
+
+DEFAULT_BACKEND = LlmBackend(_fast_client, MAIN_MODEL, MAIN_CLIENT)
+
 # Состояние единственного прогона на весь бот. Читается и меняется только в потоке цикла
 # событий (обработчики и фоновая задача), поэтому блокировка не нужна.
 _run_in_progress = False
@@ -107,6 +128,80 @@ _finalizing = False  # цикл вопросов закончен, идёт со
 _progress_done = 0
 _progress_total = 0
 _background_tasks: set[asyncio.Task] = set()  # ссылка, чтобы задачу не собрал сборщик мусора
+
+
+def is_run_in_progress() -> bool:
+    """Идёт ли прогон сравнения (любой: `/research_rag_compare` или `/research_rag_models`) —
+    флаг общий на весь бот: оба нагружают Ollama и судью, а Kimi допускает один запрос."""
+    return _run_in_progress
+
+
+def acquire_run(total: int) -> bool:
+    """Занимает флаг «прогон идёт» и обнуляет прогресс; False — прогон уже идёт. Вызывается в
+    потоке цикла событий без await между проверкой и занятием."""
+    global _run_in_progress, _stop_reason, _finalizing, _progress_done, _progress_total
+    if _run_in_progress:
+        return False
+    _run_in_progress = True
+    _stop_reason = None
+    _finalizing = False
+    _progress_done, _progress_total = 0, total
+    return True
+
+
+def release_run() -> None:
+    """Снимает флаг «прогон идёт» и очищает состояние остановки."""
+    global _run_in_progress, _run_task, _stop_reason, _finalizing
+    _run_in_progress = False
+    _run_task = None
+    _stop_reason = None
+    _finalizing = False
+
+
+def set_run_task(task: asyncio.Task | None) -> None:
+    global _run_task
+    _run_task = task
+
+
+def set_progress_done(done: int) -> None:
+    global _progress_done
+    _progress_done = done
+
+
+def set_finalizing() -> None:
+    global _finalizing
+    _finalizing = True
+
+
+def run_progress() -> tuple[int, int]:
+    """(обработано вопросов, всего) идущего прогона."""
+    return _progress_done, _progress_total
+
+
+def track_background_task(task: asyncio.Task) -> None:
+    """Хранит ссылку на фоновую задачу, чтобы её не собрал сборщик мусора."""
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+def request_stop() -> str:
+    """Останавливает идущий прогон (общий для обеих команд). Возвращает ключ ответа:
+    'idle' — прогона нет, 'finalizing' — уже завершается, 'requested' — остановка уже
+    запрошена, 'stopping' — остановка начата сейчас."""
+    global _stop_reason
+    if not _run_in_progress or _run_task is None:
+        return "idle"
+    if _finalizing:
+        return "finalizing"
+    if _stop_reason is not None:
+        return "requested"
+    _stop_reason = "по команде пользователя"
+    _run_task.cancel()
+    return "stopping"
+
+
+def current_stop_reason() -> str | None:
+    return _stop_reason
 
 
 class ReportError(Exception):
@@ -144,10 +239,14 @@ class QuestionBudget:
 # --------------------------------------------------------------------------- #
 
 
-def _error_reason(exc: Exception) -> str:
-    """Компактная причина сбоя для отчёта: для ошибок OpenAI SDK — русский текст, иначе
-    тип исключения и сообщение."""
-    translated = api_error_to_message(exc, MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR)
+def _error_reason(exc: Exception, backend: LlmBackend | None = None) -> str:
+    """Компактная причина сбоя для отчёта: для ошибок OpenAI SDK — русский текст (с провайдером
+    обращения: по умолчанию основной поток), иначе тип исключения и сообщение."""
+    if backend is None or backend.provider == MAIN_CLIENT:
+        label, env_var = MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
+    else:
+        label, env_var = main_client_label(backend.provider), main_api_key_env_var(backend.provider)
+    translated = api_error_to_message(exc, label, env_var)
     if translated:
         return translated
     logger.exception("Неожиданный сбой в прогоне сравнения RAG.", exc_info=exc)
@@ -193,25 +292,32 @@ def run_mode(
     rag_enabled: bool,
     timeout: float | None = None,
     retrieval_mode: str | None = None,
+    backend: LlmBackend | None = None,
+    materials: rag_context.Materials | None = None,
 ) -> ev.ModeResult:
     """Ответ одного режима: свежий SmartAgent во временном каталоге (пустая память, профиль
     без полей, источники MCP выключены), слой rag включён или выключен. Настройки поиска —
     из config.py, как в рабочем режиме. Обращение к модели — клиентом без автоповторов и с
     таймаутом `timeout` (по умолчанию REQUEST_TIMEOUT_SECONDS). Сбой провайдера становится
-    причиной в результате, а не исключением."""
+    причиной в результате, а не исключением. `backend` — клиент и модель ответа (по умолчанию
+    основной поток); с ним переписывание вопроса выключено (одинаковые условия для моделей) и
+    SmartAgent берёт клиент/модель из пары. `materials` — готовые материалы вопроса (общий
+    поиск `/research_rag_models`): ask() не ищет сам."""
     # retrieval_mode (rm.MODE_*) меняет только то, чем режим поиска отличается от рабочей
     # конфигурации (отбор, переписывание), см. _mode_agent_kwargs; None — рабочая конфигурация.
     mode_kwargs = _mode_agent_kwargs(retrieval_mode) if retrieval_mode else {}
+    if backend is not None:
+        mode_kwargs.update(client=backend.client, model=backend.model, rewrite_backend=None)
     with tempfile.TemporaryDirectory(prefix="rag_compare_") as tmp:
+        agent_kwargs = {"client": _fast_client, **mode_kwargs}
         agent = SmartAgent(
             _EVAL_CHAT_ID,
-            client=_fast_client,
             timeout=timeout if timeout is not None else REQUEST_TIMEOUT_SECONDS,
             memory_dir=tmp,
             mcp_moex_dir="",
             mcp_bybit_dir="",
             cbr_enabled=False,
-            **mode_kwargs,
+            **agent_kwargs,
         )
         agent.create_profile(_EVAL_PROFILE, {})
         agent.set_layer_enabled(LAYER_RAG, rag_enabled)
@@ -221,14 +327,21 @@ def run_mode(
         try:
             # Жёсткий предел по часам: таймаут HTTP-клиента — это пауза между чтениями и не
             # ограничивает общее время (см. ev.call_with_deadline).
-            answer = ev.call_with_deadline(lambda: agent.ask(question_text), limit)
+            answer = ev.call_with_deadline(
+                lambda: agent.ask(question_text)
+                if materials is None
+                else agent.ask(question_text, materials=materials),
+                limit,
+            )
         except ev.DeadlineExceeded:
             return ev.ModeResult(
                 error=f"провайдер не ответил за {limit:.0f} с (превышен предел ожидания)",
                 elapsed=time.monotonic() - started,
             )
         except Exception as exc:  # noqa: BLE001 — сбой одного вопроса не должен ронять прогон
-            return ev.ModeResult(error=_error_reason(exc), elapsed=time.monotonic() - started)
+            return ev.ModeResult(
+                error=_error_reason(exc, backend), elapsed=time.monotonic() - started
+            )
         elapsed = time.monotonic() - started
 
     return ev.ModeResult(
@@ -264,18 +377,39 @@ def run_mode(
     )
 
 
+# Пауза перед повтором вызова оценщика при 429 (лимит запросов провайдера, чаще всего Kimi).
+# Повторы идут внутри предела по часам вокруг вызова, так что бюджет вопроса их ограничивает.
+_JUDGE_RATE_LIMIT_PAUSES = (5.0, 15.0)
+
+
+def _judge_call_with_rate_limit_retry(*args, **kwargs) -> dict | None:
+    """_judge_call с повтором после паузы при RateLimitError: оценка не должна теряться из-за
+    кратковременного лимита запросов."""
+    for pause in (*_JUDGE_RATE_LIMIT_PAUSES, None):
+        try:
+            return _judge_call(*args, **kwargs)
+        except RateLimitError:
+            if pause is None:
+                raise
+            logger.warning("Оценщик получил 429, повтор через %.0f с.", pause)
+            time.sleep(pause)
+    return None  # недостижимо
+
+
 def _judge_call(
     user_content: str,
     max_tokens: int,
     timeout: float,
     system_prompt: str = RAG_COMPARE_JUDGE_SYSTEM_PROMPT,
+    backend: LlmBackend | None = None,
 ) -> dict | None:
     """Один вызов оценщика. «thinking» отключён, как в research/temperature.py: оценщику нужен
     короткий JSON, а на моделях с рассуждениями весь лимит токенов уходил на скрытые
     размышления (finish_reason == "length", content пуст) — оценка терялась. Пустой content
     всё равно возможен (лимит) — его обрабатывает judge() повтором."""
-    response = _fast_client.chat.completions.create(
-        model=MAIN_MODEL,
+    backend = backend or DEFAULT_BACKEND
+    response = backend.client.chat.completions.create(
+        model=backend.model,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -283,8 +417,8 @@ def _judge_call(
         max_tokens=max_tokens,
         timeout=timeout,
         response_format={"type": "json_object"},
-        temperature=0,
-        extra_body=disable_thinking_extra_body(MAIN_CLIENT),
+        extra_body=disable_thinking_extra_body(backend.provider),
+        **judge_temperature_kwargs(backend.provider),
     )
     content = response.choices[0].message.content
     if not content:
@@ -294,7 +428,10 @@ def _judge_call(
 
 
 def _judge_data(
-    user_content: str, system_prompt: str, budget: QuestionBudget | None
+    user_content: str,
+    system_prompt: str,
+    budget: QuestionBudget | None,
+    backend: LlmBackend | None = None,
 ) -> tuple[dict | None, str | None]:
     """Вызов оценщика с одним повтором на удвоенном лимите токенов при обрезанном JSON или
     пустом ответе — только пока не исчерпан бюджет вопроса. Таймаут каждого вызова — остаток
@@ -305,7 +442,10 @@ def _judge_data(
         limit = budget.call_timeout() if budget else REQUEST_TIMEOUT_SECONDS
         # Жёсткий предел по часам вокруг вызова (таймаут клиента его не гарантирует).
         return ev.call_with_deadline(
-            lambda: _judge_call(user_content, max_tokens, limit, system_prompt), limit
+            lambda: _judge_call_with_rate_limit_retry(
+                    user_content, max_tokens, limit, system_prompt, backend
+                ),
+                limit,
         )
 
     data: dict | None = None
@@ -324,17 +464,20 @@ def _judge_data(
     except ev.DeadlineExceeded:
         return None, "оценщик не ответил в пределах времени вопроса"
     except Exception as exc:  # noqa: BLE001 — сбой оценки не должен ронять прогон
-        return None, _error_reason(exc)
+        return None, _error_reason(exc, backend)
     return data, None
 
 
 def judge(
-    question: ev.Question, answer: str, budget: QuestionBudget | None = None
+    question: ev.Question,
+    answer: str,
+    budget: QuestionBudget | None = None,
+    backend: LlmBackend | None = None,
 ) -> tuple[ev.Verdict | None, str | None]:
     """Оценка ответа по чек-листу фактов (вслепую по режиму). Возвращает (оценка, None) или
     (None, причина)."""
     user_content = ev.build_judge_user_content(question.question, question.facts, answer)
-    data, reason = _judge_data(user_content, RAG_COMPARE_JUDGE_SYSTEM_PROMPT, budget)
+    data, reason = _judge_data(user_content, RAG_COMPARE_JUDGE_SYSTEM_PROMPT, budget, backend)
     if reason is not None:
         return None, reason
     verdict = ev.parse_judge_response(data, len(question.facts))
@@ -349,6 +492,7 @@ def judge_citations(
     quotes: list[str],
     fragments: list[str],
     budget: QuestionBudget | None = None,
+    backend: LlmBackend | None = None,
 ) -> tuple[ev.CitationVerdict | None, str | None]:
     """Оценка опоры ответа на материалы (вслепую по режиму: в запросе только вопрос, ответ,
     ПРОВЕРЕННЫЕ цитаты и полный текст фрагментов, из которых они взяты). Возвращает (вердикт, None)
@@ -356,7 +500,9 @@ def judge_citations(
     user_content = ev.build_citation_judge_user_content(
         question.question, answer, quotes, fragments
     )
-    data, reason = _judge_data(user_content, RAG_COMPARE_CITATION_JUDGE_SYSTEM_PROMPT, budget)
+    data, reason = _judge_data(
+        user_content, RAG_COMPARE_CITATION_JUDGE_SYSTEM_PROMPT, budget, backend
+    )
     if reason is not None:
         return None, reason
     verdict = ev.parse_citation_judge_response(data)
@@ -782,7 +928,6 @@ async def _run_comparison(
     `unavailable` — режимы, которые не удалось выполнить, с причиной (в отчёт);
     `skipped_numbers` — номера многоходовых вопросов, пропущенных на уровне answers (в отчёт,
     чтобы команда чтения отчёта отвечала по ним понятно)."""
-    global _run_in_progress, _run_task, _stop_reason, _finalizing, _progress_done
     modes = list(modes or [])
     unavailable = dict(unavailable or {})
     search_level = level == rm.LEVEL_SEARCH
@@ -841,7 +986,7 @@ async def _run_comparison(
                             modes,
                         )
                     )
-                _progress_done = index
+                set_progress_done(index)
                 limit = RAG_COMPARE_MAX_CONSECUTIVE_FAILURES
                 stop_now = (
                     rm.should_stop(results, limit)
@@ -864,9 +1009,9 @@ async def _run_comparison(
             # Остановка командой: отмена доставлена один раз — снимаем её и доводим итог.
             asyncio.current_task().uncancel()
             cancel_event.set()  # брошенный рабочий поток не начнёт следующий этап
-            stop_reason = _stop_reason or "по команде пользователя"
+            stop_reason = current_stop_reason() or "по команде пользователя"
 
-        _finalizing = True
+        set_finalizing()
         status = ev.STATUS_STOPPED if stop_reason else ev.STATUS_COMPLETED
         index_missing = [p for r in results for p in r.missing_sources]
         if search_level:
@@ -926,10 +1071,7 @@ async def _run_comparison(
             logger.exception("Не удалось сообщить о сбое прогона в чат.")
     finally:
         reporter.closed = True
-        _run_in_progress = False
-        _run_task = None
-        _stop_reason = None
-        _finalizing = False
+        release_run()
         if tmp_dir:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -955,9 +1097,6 @@ def _report_texts(report: dict) -> list[str]:
 async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/research_rag_compare — проверяет набор и индекс, запускает фоновый прогон и сразу
     отвечает; итог придёт отдельными сообщениями."""
-    global _run_in_progress, _run_task, _stop_reason, _finalizing
-    global _progress_done, _progress_total
-
     # Все проверки до первого await синхронные: между проверкой флага и его установкой
     # другой обработчик вклиниться не может.
     if not os.path.isfile(QUESTIONS_PATH):
@@ -1029,10 +1168,12 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 + ") в сравнении режимов поиска не участвуют — их проверяет уровень ответов."
             )
 
-    if _run_in_progress:
+    if is_run_in_progress():
+        done, total = run_progress()
         await update.message.reply_text(
-            f"⏳ Прогон уже идёт: обработано {_progress_done} из {_progress_total} вопросов.\n"
-            "Итог придёт в чат, который его запустил. Остановить — /research_rag_compare_stop."
+            f"⏳ Прогон уже идёт: обработано {done} из {total} вопросов.\n"
+            "Итог придёт в чат, который его запустил. Остановить — /research_rag_compare_stop "
+            "(или /research_rag_models_stop для сравнения моделей)."
         )
         return
 
@@ -1046,10 +1187,7 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     index_titles = index_store.list_titles(RAG_SMART_AGENT_STRATEGY, RAG_INDEX_DIR)
     unindexed = [q.number for q in questions if ev.sources_not_indexed(q.sources, index_titles)]
 
-    _run_in_progress = True
-    _stop_reason = None
-    _finalizing = False
-    _progress_done, _progress_total = 0, len(questions)
+    acquire_run(len(questions))
     try:
         if unindexed:
             await update.message.reply_text(
@@ -1088,32 +1226,28 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
             )
         )
     except BaseException:
-        _run_in_progress = False
+        release_run()
         raise
-    _run_task = task
-    _background_tasks.add(task)
-    task.add_done_callback(_background_tasks.discard)
+    set_run_task(task)
+    track_background_task(task)
+
+
+async def reply_stop_result(update: Update, result: str) -> None:
+    """Ответ на команду остановки по результату `request_stop()` (общий для обеих команд)."""
+    texts = {
+        "idle": "Прогон сравнения сейчас не идёт.",
+        "finalizing": "Прогон уже завершается — итог придёт в чат запуска.",
+        "requested": "Остановка уже запрошена, итог придёт в чат запуска.",
+        "stopping": "⛔ Останавливаю прогон. Частичный итог придёт в чат, который его запустил.",
+    }
+    await update.message.reply_text(texts[result])
 
 
 async def rag_compare_stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/research_rag_compare_stop — останавливает идущий прогон немедленно: отменяет фоновую
     задачу (начатый вызов LLM доживает в потоке до своего таймаута, результат отбрасывается),
     частичный итог придёт в чат, запустивший прогон."""
-    global _stop_reason
-    if not _run_in_progress or _run_task is None:
-        await update.message.reply_text("Прогон сравнения сейчас не идёт.")
-        return
-    if _finalizing:
-        await update.message.reply_text("Прогон уже завершается — итог придёт в чат запуска.")
-        return
-    if _stop_reason is not None:
-        await update.message.reply_text("Остановка уже запрошена, итог придёт в чат запуска.")
-        return
-    _stop_reason = "по команде пользователя"
-    _run_task.cancel()
-    await update.message.reply_text(
-        "⛔ Останавливаю прогон. Частичный итог придёт в чат, который его запустил."
-    )
+    await reply_stop_result(update, request_stop())
 
 
 async def rag_compare_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1169,6 +1303,15 @@ async def rag_compare_report_command(update: Update, context: ContextTypes.DEFAU
 
     for part in ev.split_text(text, TELEGRAM_MESSAGE_LIMIT):
         await update.message.reply_text(part)
+
+
+# Общие части для /research_rag_models (research/rag_models.py): прогресс одним сообщением,
+# отправка длинного текста, настройки поиска и время в отчёте, текст «N вопросов».
+ProgressReporter = _ProgressReporter
+send_parts = _send_parts
+run_settings = _settings
+now_utc = _now
+plural_questions = _plural_questions
 
 
 def build_rag_compare_handlers() -> list[CommandHandler]:

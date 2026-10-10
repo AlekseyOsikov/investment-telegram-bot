@@ -114,6 +114,7 @@ from research.chunking_stats import build_chunking_stats_handler
 from research.constraints import build_constraints_conversation_handler
 from research.models import build_models_conversation_handler
 from research.rag_compare import build_rag_compare_handlers
+from research.rag_models import build_rag_models_handlers
 from research.reasoning import build_reasoning_conversation_handler
 from research.temperature import build_temperature_conversation_handler
 
@@ -230,6 +231,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "придёт в чат запуска)",
             "/research_rag_compare_report [номер] — показать последний отчёт сравнения или "
             "детали вопроса с этим номером (оба ответа, оценка, источники)",
+            "/research_rag_models — в фоне сравнить модели, заданные оператором (например, "
+            "локальную и облачную), на контрольных вопросах с RAG: качество (оценка судьёй), "
+            "скорость в токенах в секунду и стабильность по нескольким повторам (нужен "
+            "построенный индекс; идёт минуты и тратит токены; вопросы, ответы и фрагменты "
+            "корпуса уходят модели-судье)",
+            "/research_rag_models_stop — остановить идущий прогон сравнения моделей (частичный "
+            "итог придёт в чат запуска)",
+            "/research_rag_models_report [номер] — сводка последнего сравнения моделей или "
+            "детали вопроса: ответы всех моделей и повторов рядом",
         ]
     command_lines += [
         "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
@@ -443,6 +453,8 @@ def main() -> None:
         application.add_handler(build_chunking_stats_handler())
         application.add_handler(build_chunking_compare_conversation_handler())
         for handler in build_rag_compare_handlers():
+            application.add_handler(handler)
+        for handler in build_rag_models_handlers():
             application.add_handler(handler)
     application.add_handler(build_agent_conversation_handler())
     application.add_handler(build_agent_reset_handler())

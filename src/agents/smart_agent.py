@@ -1088,7 +1088,9 @@ class SmartAgent:
         /smart_agent_show); None — материалов не было."""
         return self._last_rag_block
 
-    def ask(self, user_text: str) -> SmartAgentAnswer:
+    def ask(
+        self, user_text: str, materials: rag_context.Materials | None = None
+    ) -> SmartAgentAnswer:
         """Отправляет вопрос в LLM вместе с контекстом активного профиля, собранным
         из явно включённых слоёв (см. _build_context_messages), и возвращает ответ.
         Требует уже выбранный активный профиль — вызывающий Telegram-код
@@ -1128,6 +1130,11 @@ class SmartAgent:
         short_term пишется ответ без блока. Если поиск состоялся и ничего не нашёл, а слой
         tools не может участвовать, модель НЕ вызывается: ответ — rag_context.ABSTAIN_TEXT.
 
+        `materials` — готовые материалы вопроса (результат `search_materials()`): поиск в `ask()` не
+        выполняется, блок фрагментов запоминается как обычно, остальной путь ответа не
+        меняется. Нужен только сравнению моделей (research/rag_models.py): один поиск на вопрос,
+        одинаковые фрагменты для всех моделей и повторов. Без параметра — прежнее поведение.
+
         МЕТОД СИНХРОННЫЙ, но внутри путь с инструментами вызывает asyncio.run() — он
         бросит RuntimeError, если вызвать ask() в потоке с уже работающим циклом
         событий. Единственный вызывающий (agents/smart_agent_command.py) оборачивает
@@ -1151,7 +1158,12 @@ class SmartAgent:
         # Задача активна — «не знаю» без модели не применяется (решение 6 design.md); считается
         # по состоянию ДО хода, как и признак этапа.
         task_active = self._task_active()
-        materials = self._search_for_question(user_text)
+        if materials is None:
+            materials = self._search_for_question(user_text)
+        else:
+            self._last_rag_block = (
+                rag_context.build_materials_block(materials.chunks) if materials.chunks else None
+            )
 
         mode = self._market_tools_mode()
         tools_can_participate = mode == market_tools.STATUS_OK

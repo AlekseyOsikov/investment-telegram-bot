@@ -24,7 +24,8 @@ MCP-инструменты, опрос цен, RAG-индексация). Про
   `rewrite_client.py` (клиент и модель переписывания вопроса по `REWRITE_PROVIDER`; не связан с
   `MAIN_CLIENT` и эмбеддингами).
 - `main.py` — `/start`, `/help`, `handle_message`, точка входа, регистрация всех обработчиков.
-- `research/` — технические режимы исследования API (`RESEARCH`).
+- `research/` — технические режимы исследования API (`RESEARCH`), в т.ч. сравнение ответов с RAG и
+  без (`/research_rag_compare`) и сравнение моделей с RAG (`/research_rag_models`).
 - `agents/` — `Agent` (`/agent`), `/agent_compare`, `SmartAgent` (`/smart_agent`, в т.ч. слой `rag` —
   справочные материалы из индекса `rag/`).
 - `mcp_integration/` — MCP-клиенты: `/mcp_tools`, инструменты рыночных данных для `/smart_agent`,
@@ -109,7 +110,8 @@ src/main.py`) покрывают только чистые функции без
   вопросы, память агентов и результаты инструментов уходят на этот сервер — решение оператора.
 - `RESEARCH` (булево, по умолчанию `true`) — решение ОПЕРАТОРА, не пользователя. При `false` не
   регистрируются и не упоминаются в `/help`: `/research_constraints|reasoning|temperature|models|
-  chunking_stats|chunking_compare|rag_compare|rag_compare_stop|rag_compare_report`,
+  chunking_stats|chunking_compare|rag_compare|rag_compare_stop|rag_compare_report|rag_models|
+  rag_models_stop|rag_models_report`,
   `/agent_compare`, `/agent_compare_report`,
   `/agent_compare_reset`, `/agent_mode`, `/agent_context`, `/mcp_tools` (`RESEARCH_ENABLED` в
   `main.py`); команда при этом молча игнорируется, как любая незарегистрированная. Не затрагивает
@@ -138,6 +140,15 @@ src/main.py`) покрывают только чистые функции без
   предупреждение при запуске (переписывание пропускается, бот работает). Порог привязан и к
   переписыванию: при включении или смене модели переписывания пересчитывать (`scripts/rag_calibrate.py
   --rewrite`). Режимы сравнения `/research_rag_compare` — `RAG_COMPARE_LEVEL`/`RAG_COMPARE_MODES`.
+  Сравнение моделей `/research_rag_models` — настройки ОПЕРАТОРА `RAG_MODELS_COMPARE` (пары
+  `провайдер:модель`, ≥ 2; для `ollama` модель обязательна, разбор по первому двоеточию),
+  `RAG_MODELS_JUDGE` (одна пара), `RAG_MODELS_QUESTIONS` (1–5), `RAG_MODELS_REPEATS` (≥ 1);
+  числа проверяет `_validate_config()`, пары и ключи облачных провайдеров — команда при запуске
+  (пустые настройки бот не ломают). Это настройка оператора (как `REWRITE_MODEL`), а не
+  рантайм-смена модели пользователем чата: модели и судью команда не принимает. Новый канал
+  данных: ВОПРОСЫ, ОТВЕТЫ моделей и ТЕКСТЫ цитируемых фрагментов корпуса уходят модели-судье (при
+  облачном судье покидают машину; строка об этом — в сводке отчёта), а ответы облачной модели
+  пары строит её провайдер.
   `MCP_SERVER_COMMAND`/`MCP_SERVER_ARGS` и всё про MCP-серверы — настройка оператора (аргументы
   через `shlex.split`, запуск без shell).
 - `PRICE_WATCH_ACTIVE = PRICE_WATCH and bool(MCP_MOEX_DIR)`; `PRICE_WATCH_DB` приводится к

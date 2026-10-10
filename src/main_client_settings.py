@@ -49,6 +49,13 @@ def disable_thinking_extra_body(client: str) -> dict | None:
     return {"thinking": {"type": "disabled"}}
 
 
+def judge_temperature_kwargs(client: str) -> dict:
+    """Температура вызова-оценщика: 0 (воспроизводимая оценка), кроме Kimi — его модели принимают
+    только фиксированное значение (k3: «only 0.6 is allowed», иначе 400), поэтому параметр не
+    отправляется и действует температура провайдера."""
+    return {} if client == "kimi" else {"temperature": 0}
+
+
 def validate_main_settings(client: str, model: str) -> str | None:
     """Возвращает текст ошибки конфигурации или None, если настройки допустимы."""
     if client not in SUPPORTED_MAIN_CLIENTS:
