@@ -51,6 +51,9 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from llm_queue.commands import enqueue_message
+from llm_queue.gate import JobContext
+from llm_queue.rules import KIND_RESEARCH, RESEARCH
 from main_client_settings import disable_thinking_extra_body
 from providers.main_client import main_client
 
@@ -282,27 +285,40 @@ def _run_temperature_scenario(
 
 async def _send_scenario_result(
     message,
+    context: ContextTypes.DEFAULT_TYPE,
     label: str,
     handler_fn,
     task: str,
     extra: object,
 ) -> None:
     """Запускает сценарий и отправляет результат + статистику + клавиатуру дальше."""
-    await message.chat.send_action(action=ChatAction.TYPING)
-    result_text, error_text, stats_text = _run_temperature_scenario(handler_fn, task, extra)
 
-    await message.reply_text(f"📊 Сценарий: {label}")
-    if error_text:
-        await message.reply_text(error_text)
-    else:
-        for i in range(0, len(result_text), TELEGRAM_MESSAGE_LIMIT):
-            await message.reply_text(result_text[i : i + TELEGRAM_MESSAGE_LIMIT])
-        if stats_text:
-            await message.reply_text(stats_text)
+    async def run(ctx: JobContext) -> None:
+        await message.chat.send_action(action=ChatAction.TYPING)
+        result_text, error_text, stats_text = await ctx.run_thread(
+            _run_temperature_scenario, handler_fn, task, extra
+        )
 
-    await message.reply_text(
-        "👉 Что дальше?", reply_markup=_build_temperature_scenario_keyboard()
-    )
+        await message.reply_text(f"📊 Сценарий: {label}")
+        if error_text:
+            await message.reply_text(error_text)
+        else:
+            for i in range(0, len(result_text), TELEGRAM_MESSAGE_LIMIT):
+                await message.reply_text(result_text[i : i + TELEGRAM_MESSAGE_LIMIT])
+            if stats_text:
+                await message.reply_text(stats_text)
+
+        await message.reply_text(
+            "👉 Что дальше?", reply_markup=_build_temperature_scenario_keyboard()
+        )
+
+    # Сценарий — задача очереди с низким приоритетом (llm_queue/): цикл событий не блокируется.
+    # Если вопрос не принят (лимит чата, «бот занят»), клавиатура возвращается пользователю.
+    accepted = await enqueue_message(message, context, KIND_RESEARCH, task, run, priority=RESEARCH)
+    if not accepted:
+        await message.reply_text(
+            "👉 Что дальше?", reply_markup=_build_temperature_scenario_keyboard()
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -365,7 +381,7 @@ async def temperature_scenario_callback(update: Update, context: ContextTypes.DE
 
     scenario_id = data.rsplit(":", 1)[-1]
     label, handler_fn = SCENARIO_HANDLERS[scenario_id]
-    await _send_scenario_result(query.message, label, handler_fn, task, None)
+    await _send_scenario_result(query.message, context, label, handler_fn, task, None)
     return CHOOSING_SCENARIO
 
 

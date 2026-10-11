@@ -50,6 +50,8 @@ from config import (
     RAG_SMART_AGENT_STRATEGY,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from llm_queue.commands import get_gate
+from llm_queue.gate import LlmGate
 from providers.deepseek_client import DEEPSEEK_API_KEY, DEEPSEEK_MODEL_FLASH, deepseek_client
 from providers.kimi_client import KIMI_API_KEY, KIMI_MODEL_K3, kimi_client
 from providers.ollama_client import ollama_client
@@ -325,10 +327,14 @@ async def _run_comparison(
     models: list[tuple[rme.ModelSpec, rc.LlmBackend]],
     judge: tuple[rme.ModelSpec, rc.LlmBackend],
     repeats: int,
+    *,
+    gate: LlmGate,
 ) -> None:
     """Фоновая задача прогона. Заканчивается всеми вопросами, автоостановкой или остановкой
     командой (в двух последних случаях сохраняется ЧАСТИЧНЫЙ отчёт). Флаг «прогон идёт»
-    снимается в finally."""
+    снимается в finally. Весь вопрос набора — модели, повторы и судья — идёт под ОДНИМ слотом
+    очереди (`rc.run_under_slot`): запросы пользователей выполняются между вопросами, а не
+    внутри них, поэтому замер скорости не включает чужие обращения."""
     loop = asyncio.get_running_loop()
     reporter = rc.ProgressReporter(loop, progress_message)
     started_at = rc.now_utc()
@@ -341,6 +347,8 @@ async def _run_comparison(
         RAG_COMPARE_QUESTION_TIMEOUT_SECONDS, len(models), repeats
     )
     specs = [spec for spec, _ in models]
+    slot_wait = 0.0
+    users_before = gate.user_jobs_done
     try:
         try:
             for index, question in enumerate(questions, start=1):
@@ -354,19 +362,20 @@ async def _run_comparison(
                     reporter.post(_progress_text(done, total, number, stage, text))
 
                 on_stage("подготовка")
-                runs.append(
-                    await asyncio.to_thread(
-                        evaluate_question,
-                        question,
-                        models,
-                        judge[1],
-                        repeats,
-                        budget_seconds,
-                        cold_seen,
-                        on_stage,
-                        cancel_event.is_set,
-                    )
+                run, waited = await rc.run_under_slot(
+                    gate,
+                    evaluate_question,
+                    question,
+                    models,
+                    judge[1],
+                    repeats,
+                    budget_seconds,
+                    cold_seen,
+                    on_stage,
+                    cancel_event.is_set,
                 )
+                runs.append(run)
+                slot_wait += waited
                 rc.set_progress_done(index)
                 limit = RAG_COMPARE_MAX_CONSECUTIVE_FAILURES
                 if rme.should_stop(runs, limit):
@@ -395,6 +404,7 @@ async def _run_comparison(
             status=status,
             stop_reason=stop_reason,
         )
+        report["queue"] = ev.queue_report_fields(slot_wait, gate.user_jobs_done - users_before)
         await asyncio.to_thread(save_report, report)
         if stop_reason:
             final_note = f"⛔ Прогон остановлен: обработано {len(runs)} из {total} вопросов."
@@ -507,6 +517,7 @@ async def rag_models_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
                 models,
                 judge,
                 RAG_MODELS_REPEATS,
+                gate=get_gate(context.application),
             )
         )
     except BaseException:

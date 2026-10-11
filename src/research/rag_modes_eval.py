@@ -571,6 +571,9 @@ def format_retrieval_summary(report: dict) -> str:
     if report.get("index_missing"):
         lines.append("Не найдены в индексе: " + "; ".join(report["index_missing"]) + ".")
     lines.append(f"\n{ev.DISCLAIMER}\nДетали вопроса: /research_rag_compare_report <номер>.")
+    queue_line = ev.queue_summary_line(report)
+    if queue_line:
+        lines.append(queue_line)
     return "\n".join(lines)
 
 

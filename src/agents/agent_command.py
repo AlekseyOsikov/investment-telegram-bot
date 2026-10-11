@@ -92,6 +92,9 @@ from config import (
     MAX_INPUT_CHARS,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from llm_queue.commands import cancel_chat_questions, enqueue_job, saved_notice
+from llm_queue.gate import JobContext
+from llm_queue.rules import KIND_AGENT, AskCancelled
 
 from .active_mode import (
     AGENT_MODE,
@@ -160,8 +163,10 @@ def _format_token_stats(result: AgentAnswer) -> str:
     )
 
 
-async def _exit_agent_mode(update: Update) -> int:
-    """Общий выход из режима агента — по кнопке и по /cancel (см. build_..._handler)."""
+async def _exit_agent_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Общий выход из режима агента — по кнопке и по /cancel (см. build_..._handler).
+    Ожидающие и выполняемые вопросы чата снимаются, ответ на них не придёт (llm_queue)."""
+    cancel_chat_questions(context, update.effective_chat.id)
     clear_active_mode(update.effective_chat.id)
     await update.message.reply_text(
         "Режим агента завершён. Возвращаюсь в обычный режим.",
@@ -201,10 +206,9 @@ async def agent_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Принимает вопрос пользователя, вызывает агента и отправляет ответ обратно."""
     user_text = update.message.text
-    chat_id = update.effective_chat.id
 
     if user_text == EXIT_BUTTON_TEXT:
-        return await _exit_agent_mode(update)
+        return await _exit_agent_mode(update, context)
 
     if not user_text or not user_text.strip():
         await update.message.reply_text(
@@ -219,10 +223,32 @@ async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_T
         )
         return WAITING_QUESTION
 
+    async def run(ctx: JobContext) -> None:
+        await _answer_question(update, context, ctx, user_text)
+
+    # Вызов модели выполняется задачей очереди (llm_queue/); при отказе (лимит чата,
+    # «бот занят») пользователь уже получил сообщение. Состояние диалога то же.
+    await enqueue_job(update, context, KIND_AGENT, user_text, run)
+    return WAITING_QUESTION
+
+
+async def _answer_question(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, ctx: JobContext, user_text: str
+) -> None:
+    """Задача очереди /agent: вызов агента в потоке, перевод ошибок SDK, отправка ответа.
+    Тексты ошибок прежние (см. agent_receive_question до введения очереди)."""
+    chat_id = update.effective_chat.id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     try:
-        result = _get_agent(chat_id).ask(user_text)
+        result = await ctx.run_thread(
+            _get_agent(chat_id).ask,
+            user_text,
+            ctx.should_cancel,
+            late=saved_notice(context, chat_id),
+        )
+    except AskCancelled:
+        return  # вопрос снят до записи обмена: история не менялась
     except AuthenticationError:
         logger.error(
             "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
@@ -232,7 +258,7 @@ async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_T
             "Администратору бота нужно проверить API-ключ.",
             reply_markup=AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except RateLimitError:
         logger.warning("Превышен лимит запросов к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
@@ -240,14 +266,14 @@ async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_T
             "Попробуй, пожалуйста, через минуту.",
             reply_markup=AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except (APITimeoutError, TimeoutError):
         logger.warning("Тайм-аут запроса к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
             f"⏳ {MAIN_CLIENT_LABEL} не ответил вовремя. Попробуй отправить вопрос ещё раз.",
             reply_markup=AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except APIConnectionError:
         logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
@@ -255,7 +281,7 @@ async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_T
             "Проверь соединение и попробуй позже.",
             reply_markup=AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except APIStatusError as exc:
         # BadRequestError (400) — подкласс APIStatusError, отдельного except для него не
         # заводим (перехватился бы этой же веткой), а разбираем частный случай прямо
@@ -284,21 +310,21 @@ async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_T
                     "Используй /agent_reset, чтобы очистить историю и продолжить.",
                     reply_markup=AGENT_KEYBOARD,
                 )
-                return WAITING_QUESTION
+                return
 
         logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
         await update.message.reply_text(
             f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже.",
             reply_markup=AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except Exception:  # noqa: BLE001 — последний рубеж, чтобы бот не падал целиком
         logger.exception("Непредвиденная ошибка при обращении к %s API (агент).", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
             "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже.",
             reply_markup=AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
 
     # Клавиатуру достаточно прикрепить к последнему куску ответа — Telegram и так
     # держит её показанной до следующего reply_markup, но делаем это явно на каждом
@@ -310,12 +336,10 @@ async def agent_receive_question(update: Update, context: ContextTypes.DEFAULT_T
 
     await update.message.reply_text(_format_token_stats(result), reply_markup=AGENT_KEYBOARD)
 
-    return WAITING_QUESTION
-
 
 async def agent_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Fallback /cancel — тот же выход из режима агента, что и по кнопке (см. _exit_agent_mode)."""
-    return await _exit_agent_mode(update)
+    return await _exit_agent_mode(update, context)
 
 
 async def agent_reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -326,6 +350,7 @@ async def agent_reset_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     состояние.
     """
     chat_id = update.effective_chat.id
+    cancel_chat_questions(context, chat_id, "reset")  # вопрос не должен записаться после очистки
     _get_agent(chat_id).reset()
     await update.message.reply_text(
         "🗑 История диалога с агентом очищена. Следующий вопрос агент увидит как первый."

@@ -131,7 +131,7 @@ build_smart_agent_profile_conversation_handler() и по одному CommandHan
 
 from __future__ import annotations
 
-import asyncio
+import functools
 import logging
 
 from openai import (
@@ -167,6 +167,9 @@ from config import (
     MAX_INPUT_CHARS,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from llm_queue.commands import cancel_chat_questions, enqueue_job, saved_notice
+from llm_queue.gate import JobContext
+from llm_queue.rules import KIND_SMART_AGENT, AskCancelled
 
 from . import invariants, market_tools, rag_context, task_state
 from .active_mode import (
@@ -516,7 +519,9 @@ async def _handle_profile_field_answer(
 # --------------------------------------------------------------------------- #
 
 
-async def _exit_smart_agent_mode(update: Update) -> int:
+async def _exit_smart_agent_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    # Ожидающий и выполняемый вопросы чата снимаются, ответ на них не придёт (llm_queue).
+    cancel_chat_questions(context, update.effective_chat.id)
     clear_active_mode(update.effective_chat.id)
     await update.message.reply_text(
         "Режим smart-агента завершён. Возвращаюсь в обычный режим.",
@@ -614,7 +619,7 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
     chat_id = update.effective_chat.id
 
     if user_text == EXIT_BUTTON_TEXT:
-        return await _exit_smart_agent_mode(update)
+        return await _exit_smart_agent_mode(update, context)
 
     if not user_text or not user_text.strip():
         await update.message.reply_text(
@@ -640,14 +645,46 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
         )
         return PROFILE_PICK
 
+    async def run(ctx: JobContext) -> None:
+        await _answer_question(update, context, ctx, agent, user_text)
+
+    # Вызов агента выполняется задачей очереди (llm_queue/); ответ и служебное сообщение
+    # отправляются из задачи. Состояние диалога то же.
+    await enqueue_job(update, context, KIND_SMART_AGENT, user_text, run)
+    return WAITING_QUESTION
+
+
+async def _answer_question(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    ctx: JobContext,
+    agent: SmartAgent,
+    user_text: str,
+) -> None:
+    """Задача очереди /smart_agent: ask() в потоке с флагом отмены, перевод ошибок SDK,
+    ответ и служебное сообщение. Тексты ошибок прежние."""
+    chat_id = update.effective_chat.id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     try:
-        # В рабочем потоке, а не прямо в обработчике: путь с инструментами внутри
-        # ask() запускает asyncio.run(), который не работает в потоке с уже
-        # запущенным циклом событий, — заодно основной цикл не блокируется на время
-        # запроса к LLM (см. докстринг SmartAgent.ask про безопасность потоков).
-        result = await asyncio.to_thread(agent.ask, user_text)
+        # В рабочем потоке, а не прямо в задаче: путь с инструментами внутри ask()
+        # запускает asyncio.run(), который не работает в потоке с уже запущенным циклом
+        # событий, — заодно основной цикл не блокируется на время запроса к LLM (см.
+        # докстринг SmartAgent.ask про безопасность потоков и отмену).
+        result = await ctx.run_thread(
+            functools.partial(agent.ask, user_text, should_cancel=ctx.should_cancel),
+            late=saved_notice(context, chat_id),
+        )
+    except AskCancelled:
+        if not ctx.cancelled:
+            # Не /queue_cancel: активный профиль сменили или удалили посреди вопроса —
+            # обмен не записан (иначе попал бы в память другого профиля).
+            await update.message.reply_text(
+                "⚠️ Профиль сменили, пока шёл ответ: вопрос снят, обмен не записан. "
+                "Задай вопрос ещё раз.",
+                reply_markup=SMART_AGENT_KEYBOARD,
+            )
+        return  # вопрос снят до записи обмена: память не менялась
     except AuthenticationError:
         logger.error(
             "Ошибка аутентификации %s API — проверьте %s.", MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR
@@ -657,7 +694,7 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
             "Администратору бота нужно проверить API-ключ.",
             reply_markup=SMART_AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except RateLimitError:
         logger.warning("Превышен лимит запросов к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
@@ -665,14 +702,14 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
             "Попробуй, пожалуйста, через минуту.",
             reply_markup=SMART_AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except (APITimeoutError, TimeoutError):
         logger.warning("Тайм-аут запроса к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
             f"⏳ {MAIN_CLIENT_LABEL} не ответил вовремя. Попробуй отправить вопрос ещё раз.",
             reply_markup=SMART_AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except APIConnectionError:
         logger.error("Не удалось подключиться к %s API.", MAIN_CLIENT_LABEL)
         await update.message.reply_text(
@@ -680,14 +717,14 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
             "Проверь соединение и попробуй позже.",
             reply_markup=SMART_AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except APIStatusError as exc:
         logger.error("%s API вернул ошибку: %s", MAIN_CLIENT_LABEL, exc)
         await update.message.reply_text(
             f"⚠️ Сервер {MAIN_CLIENT_LABEL} вернул ошибку. Попробуй позже.",
             reply_markup=SMART_AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
     except Exception:  # noqa: BLE001 — последний рубеж, чтобы бот не падал целиком
         logger.exception(
             "Непредвиденная ошибка при обращении к %s API (smart-агент).", MAIN_CLIENT_LABEL
@@ -696,7 +733,7 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
             "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже.",
             reply_markup=SMART_AGENT_KEYBOARD,
         )
-        return WAITING_QUESTION
+        return
 
     answer = result.text
     chunks = [answer[i : i + TELEGRAM_MESSAGE_LIMIT] for i in range(0, len(answer), TELEGRAM_MESSAGE_LIMIT)]
@@ -714,18 +751,18 @@ async def smart_agent_receive_question(update: Update, context: ContextTypes.DEF
         stage_skip_note=result.stage_skip_note,
     )
     service_lines += result.warnings
-    service_lines += _task_service_lines(agent)
+    # Технический вызов автомата (второй запрос к модели) — в потоке под тем же слотом, а не в
+    # цикле событий; после отмены задачи он не стартует (await прерван).
+    service_lines += await ctx.run_thread(_task_service_lines, agent)
     service_lines.append(_format_token_stats(result))
     await update.message.reply_text("\n".join(service_lines), reply_markup=SMART_AGENT_KEYBOARD)
-
-    return WAITING_QUESTION
 
 
 async def smart_agent_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.pop(_UD_NEW_NAME, None)
     context.user_data.pop(_UD_NEW_VALUES, None)
     context.user_data.pop(_UD_NEW_FIELD_INDEX, None)
-    return await _exit_smart_agent_mode(update)
+    return await _exit_smart_agent_mode(update, context)
 
 
 # --------------------------------------------------------------------------- #
@@ -1490,6 +1527,8 @@ async def smart_agent_reset_command(update: Update, context: ContextTypes.DEFAUL
         await update.message.reply_text(error)
         return
 
+    # Вопрос в очереди не должен записаться в только что очищенную память.
+    cancel_chat_questions(context, update.effective_chat.id, "reset")
     agent.reset_all()
     await update.message.reply_text(
         f"🗑 Память профиля «{agent.get_active_profile_name()}» (все три слоя) очищена.\n"

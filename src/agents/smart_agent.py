@@ -136,6 +136,7 @@ from config import (
     REWRITE_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
 )
+from llm_queue.rules import AskCancelled, raise_if_cancelled
 from mcp_integration.market_session import (
     BYBIT_MODEL_TOOL_ALLOWLIST,
     CBR_MODEL_TOOL_ALLOWLIST,
@@ -292,6 +293,19 @@ class SmartAgent:
     meta/short_term/working/long_term), указатель активного профиля и общий на чат
     enabled_layers — хранится в JSON-файле AGENT_MEMORY_DIR/<chat_id>.json, отдельном
     от файла истории /agent того же чата (AGENT_HISTORY_DIR/<chat_id>.json)."""
+
+    # Флаг отмены текущего ask() (llm_queue): задаётся на время вызова, вне его — None.
+    _should_cancel: Callable[[], bool] | None = None
+    # Профиль, активный на момент начала ask(): смена профиля посреди вопроса не должна
+    # записать обмен в чужую память (команды в чате теперь выполняются, пока идёт вопрос).
+    _ask_profile: str | None = None
+
+    def _raise_if_cancelled(self) -> None:
+        """Точка отмены ask(): флаг очереди или смена/удаление активного профиля с начала вопроса.
+        В обоих случаях бросает AskCancelled до записи — память не меняется."""
+        raise_if_cancelled(self._should_cancel)
+        if self._ask_profile is not None and self._active_profile != self._ask_profile:
+            raise AskCancelled()
 
     def __init__(
         self,
@@ -795,6 +809,9 @@ class SmartAgent:
         """Один вызов модели для ОСНОВНОГО ответа. Без tools (None или пусто) запрос
         идентичен прежнему — ключ `tools` в него не попадает; служебные вызовы
         (_call_json_api) идут мимо этого метода и инструментов не получают."""
+        # Точка кооперативной отмены (llm_queue): перед КАЖДЫМ обращением к модели ответа,
+        # в том числе перед итерацией цикла инструментов и перед повтором цитат.
+        self._raise_if_cancelled()
         kwargs = {"tools": tools} if tools else {}
         return self._client.chat.completions.create(
             model=self._model,
@@ -1089,7 +1106,10 @@ class SmartAgent:
         return self._last_rag_block
 
     def ask(
-        self, user_text: str, materials: rag_context.Materials | None = None
+        self,
+        user_text: str,
+        materials: rag_context.Materials | None = None,
+        should_cancel: Callable[[], bool] | None = None,
     ) -> SmartAgentAnswer:
         """Отправляет вопрос в LLM вместе с контекстом активного профиля, собранным
         из явно включённых слоёв (см. _build_context_messages), и возвращает ответ.
@@ -1135,15 +1155,37 @@ class SmartAgent:
         меняется. Нужен только сравнению моделей (research/rag_models.py): один поиск на вопрос,
         одинаковые фрагменты для всех моделей и повторов. Без параметра — прежнее поведение.
 
+        `should_cancel` — кооперативная отмена вопроса очередью (llm_queue/): проверяется
+        перед каждым обращением к модели ответа (в том числе перед итерацией цикла
+        инструментов) и ПЕРЕД записью пары в short_term; при `True` выбрасывается
+        `AskCancelled`, память не меняется. Те же точки проверяют, что активный профиль не сменили и
+        не удалили с начала вопроса (иначе пара попала бы в память другого профиля). После начала
+        записи отмена не действует.
+
         МЕТОД СИНХРОННЫЙ, но внутри путь с инструментами вызывает asyncio.run() — он
         бросит RuntimeError, если вызвать ask() в потоке с уже работающим циклом
-        событий. Единственный вызывающий (agents/smart_agent_command.py) оборачивает
-        вызов в asyncio.to_thread(), заодно не блокируя основной цикл на время запроса
-        к LLM. Потокобезопасность держится на том, что обновления PTB обрабатываются
-        последовательно (concurrent_updates не включён в main.py): состояние агента
-        чата не трогают два потока сразу. Если это когда-нибудь изменится — здесь
-        понадобится блокировка на чат.
+        событий. Единственный вызывающий (agents/smart_agent_command.py) выполняет его
+        в потоке (`JobContext.run_thread`, под слотом очереди), заодно не блокируя основной
+        цикл на время запроса к LLM. Потокобезопасность держится НЕ на последовательности
+        обновлений PTB, а на шлюзе очереди: лимит вопросов чата (`LLM_MAX_PENDING_PER_USER`)
+        и замок чата не дают двум вопросам одного чата выполняться одновременно, поэтому
+        состояние агента чата не трогают два потока сразу; отменённый вопрос держит слот и
+        замок до завершения потока. Вызов вне очереди из двух потоков одного чата
+        небезопасен — понадобится блокировка на чат.
         """
+        self._should_cancel = should_cancel
+        self._ask_profile = self._active_profile
+        try:
+            return self._ask(user_text, materials)
+        finally:
+            self._should_cancel = None
+            self._ask_profile = None
+
+    def _ask(
+        self, user_text: str, materials: rag_context.Materials | None
+    ) -> SmartAgentAnswer:
+        """Тело `ask()` (см. его докстринг)."""
+        self._raise_if_cancelled()
         if self._active_profile is None:
             raise RuntimeError(
                 "SmartAgent.ask() вызван без активного профиля — вызывающий код "
@@ -1165,6 +1207,8 @@ class SmartAgent:
                 rag_context.build_materials_block(materials.chunks) if materials.chunks else None
             )
 
+        self._raise_if_cancelled()  # после поиска, до ответа модели
+
         mode = self._market_tools_mode()
         tools_can_participate = mode == market_tools.STATUS_OK
         warnings: list[str] = [materials.warning] if materials.warning else []
@@ -1174,6 +1218,7 @@ class SmartAgent:
         if rag_context.should_abstain(materials, tools_can_participate, task_active):
             self._tools_status = {}
             self._last_tool_calls = []
+            self._raise_if_cancelled()  # последняя точка отмены перед записью
             return self._finish_answer(
                 rag_context.ABSTAIN_TEXT,
                 user_text,
@@ -1192,6 +1237,7 @@ class SmartAgent:
         # без проверенных цитат — один повтор (спека smart-agent-rag, «Цитаты в ответе…»).
         cited = self._apply_citations(user_text, materials, outcome, answer)
 
+        self._raise_if_cancelled()  # последняя точка отмены перед записью
         return self._finish_answer(
             cited.answer,
             user_text,

@@ -54,9 +54,17 @@ from config import (
     SYSTEM_PROMPT,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from llm_queue.commands import enqueue_message
+from llm_queue.gate import JobContext
+from llm_queue.rules import KIND_RESEARCH, RESEARCH
 from providers.main_client import main_client
 
-from ._shared import build_cancel_handler, content_or_reasoning_fallback, extract_usage, run_scenario
+from ._shared import (
+    build_cancel_handler,
+    content_or_reasoning_fallback,
+    extract_usage,
+    run_scenario,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -290,22 +298,32 @@ async def _send_scenario_result(
 ) -> None:
     """Запускает сценарий и отправляет результат + статистику + клавиатуру дальше."""
     label = SCENARIO_HANDLERS[scenario_id][0]
-    await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
-    result_text, error_text, stats_text = _run_constraints_scenario(scenario_id, question, extra)
+    next_prompt = "👉 Выберите следующий сценарий или завершите исследование:"
 
-    await message.reply_text(f"📊 Сценарий: {label}{label_suffix}")
-    if error_text:
-        await message.reply_text(error_text)
-    else:
-        for i in range(0, len(result_text), TELEGRAM_MESSAGE_LIMIT):
-            await message.reply_text(result_text[i : i + TELEGRAM_MESSAGE_LIMIT])
-        if stats_text:
-            await message.reply_text(stats_text)
+    async def run(ctx: JobContext) -> None:
+        await context.bot.send_chat_action(chat_id=message.chat_id, action=ChatAction.TYPING)
+        result_text, error_text, stats_text = await ctx.run_thread(
+            _run_constraints_scenario, scenario_id, question, extra
+        )
 
-    await message.reply_text(
-        "👉 Выберите следующий сценарий или завершите исследование:",
-        reply_markup=_build_constraints_keyboard(),
+        await message.reply_text(f"📊 Сценарий: {label}{label_suffix}")
+        if error_text:
+            await message.reply_text(error_text)
+        else:
+            for i in range(0, len(result_text), TELEGRAM_MESSAGE_LIMIT):
+                await message.reply_text(result_text[i : i + TELEGRAM_MESSAGE_LIMIT])
+            if stats_text:
+                await message.reply_text(stats_text)
+
+        await message.reply_text(next_prompt, reply_markup=_build_constraints_keyboard())
+
+    # Сценарий — задача очереди с низким приоритетом (llm_queue/): цикл событий не блокируется.
+    # Если вопрос не принят (лимит чата, «бот занят»), клавиатура возвращается пользователю.
+    accepted = await enqueue_message(
+        message, context, KIND_RESEARCH, question, run, priority=RESEARCH
     )
+    if not accepted:
+        await message.reply_text(next_prompt, reply_markup=_build_constraints_keyboard())
 
 
 # --------------------------------------------------------------------------- #

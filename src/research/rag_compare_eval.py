@@ -661,6 +661,36 @@ def build_report(
     }
 
 
+def queue_report_fields(slot_wait_seconds: float, user_questions: int) -> dict:
+    """Поле отчёта о соседстве прогона с очередью пользователей (llm_queue/): сколько прогон
+    ждал слот и сколько вопросов пользователей обработано за время прогона. Старые отчёты
+    без поля читаются как раньше (`queue_summary_line` вернёт None)."""
+    return {
+        "slot_wait_seconds": round(max(0.0, float(slot_wait_seconds)), 1),
+        "user_questions": max(0, int(user_questions)),
+    }
+
+
+def queue_summary_line(report: dict) -> str | None:
+    """Строка сводки об очереди, если пользователи были: ожидание слота и число их вопросов;
+    без поля или без ожидания и вопросов — None."""
+    queue = report.get("queue")
+    if not isinstance(queue, dict):
+        return None
+    try:
+        waited = float(queue.get("slot_wait_seconds") or 0)
+        users = int(queue.get("user_questions") or 0)
+    except (TypeError, ValueError):
+        return None
+    if users <= 0 and waited < 1:
+        return None
+    return (
+        f"Очередь: за время прогона обработано вопросов пользователей — {users}; "
+        f"суммарное ожидание слота прогоном — {waited:.0f} с (в бюджет вопросов и замеры "
+        "времени не входит)."
+    )
+
+
 def progress_text(
     done: int,
     total: int,
@@ -889,6 +919,9 @@ def format_summary(report: dict) -> str:
     if agg["excluded"]:
         details = "; ".join(f"{e['number']} ({e['reason']})" for e in agg["excluded"])
         lines.append(f"Исключено из расчёта: {len(agg['excluded'])} — {details}.")
+    queue_line = queue_summary_line(report)
+    if queue_line:
+        lines.append(queue_line)
     lines.append(f"\n{DISCLAIMER}\nДетали вопроса: /research_rag_compare_report <номер>.")
     return "\n".join(lines)
 

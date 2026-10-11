@@ -695,6 +695,31 @@ try:
 except ValueError:
     RAG_MODELS_REPEATS = -1
 
+# Очередь обращений к основной модели (llm_queue/, design.md изменения add-llm-request-queue).
+# Настройки ОПЕРАТОРА: пользователь чата их не меняет. LLM_MAX_CONCURRENCY — сколько задач
+# выполняется одновременно (согласовать с OLLAMA_NUM_PARALLEL сервера модели: бот ему значение
+# не передаёт), LLM_MAX_PENDING_PER_USER — сколько вопросов одного чата ждёт/выполняется,
+# LLM_QUEUE_MAX — предел ожидающих вопросов пользователей (сверх — отказ «бот занят»),
+# LLM_QUEUE_TTL_SECONDS — сколько вопрос может ждать слот. Нецелые значения превращаются в -1,
+# и _validate_config() отвергает их понятным сообщением; допустимы только целые ≥ 1.
+_LLM_MAX_CONCURRENCY_RAW = os.getenv("LLM_MAX_CONCURRENCY", "1").strip()
+_LLM_MAX_PENDING_PER_USER_RAW = os.getenv("LLM_MAX_PENDING_PER_USER", "1").strip()
+_LLM_QUEUE_MAX_RAW = os.getenv("LLM_QUEUE_MAX", "10").strip()
+_LLM_QUEUE_TTL_SECONDS_RAW = os.getenv("LLM_QUEUE_TTL_SECONDS", "1800").strip()
+
+
+def _int_or_invalid(raw: str) -> int:
+    try:
+        return int(raw)
+    except ValueError:
+        return -1
+
+
+LLM_MAX_CONCURRENCY = _int_or_invalid(_LLM_MAX_CONCURRENCY_RAW)
+LLM_MAX_PENDING_PER_USER = _int_or_invalid(_LLM_MAX_PENDING_PER_USER_RAW)
+LLM_QUEUE_MAX = _int_or_invalid(_LLM_QUEUE_MAX_RAW)
+LLM_QUEUE_TTL_SECONDS = _int_or_invalid(_LLM_QUEUE_TTL_SECONDS_RAW)
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 
@@ -980,6 +1005,18 @@ def _validate_config() -> None:
             _RAG_MODELS_REPEATS_RAW,
         )
         sys.exit(1)
+
+    for _name, _value, _raw in (
+        ("LLM_MAX_CONCURRENCY", LLM_MAX_CONCURRENCY, _LLM_MAX_CONCURRENCY_RAW),
+        ("LLM_MAX_PENDING_PER_USER", LLM_MAX_PENDING_PER_USER, _LLM_MAX_PENDING_PER_USER_RAW),
+        ("LLM_QUEUE_MAX", LLM_QUEUE_MAX, _LLM_QUEUE_MAX_RAW),
+        ("LLM_QUEUE_TTL_SECONDS", LLM_QUEUE_TTL_SECONDS, _LLM_QUEUE_TTL_SECONDS_RAW),
+    ):
+        if _value < 1:
+            logger.error(
+                "Недопустимое значение %s=%r: нужно целое число не меньше 1.", _name, _raw
+            )
+            sys.exit(1)
 
     if RAG_COMPARE_QUESTION_TIMEOUT_SECONDS <= 0:
         logger.error(

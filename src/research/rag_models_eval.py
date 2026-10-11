@@ -738,6 +738,9 @@ def format_summary(report: dict) -> str:
         + (", ".join(str(n) for n in question_numbers(report)) or "нет")
         + ")."
     )
+    queue_line = ev.queue_summary_line(report)
+    if queue_line:
+        lines.append(queue_line)
     return "\n".join(lines)
 
 

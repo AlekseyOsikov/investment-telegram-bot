@@ -49,6 +49,9 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from llm_queue.commands import enqueue_message
+from llm_queue.gate import JobContext
+from llm_queue.rules import KIND_RESEARCH, RESEARCH
 from main_client_settings import disable_thinking_extra_body
 from providers.main_client import main_client
 
@@ -390,6 +393,7 @@ def _run_reasoning_scenario(
 
 async def _send_scenario_result(
     message,
+    context: ContextTypes.DEFAULT_TYPE,
     label: str,
     handler_fn,
     task: str,
@@ -397,19 +401,29 @@ async def _send_scenario_result(
     reply_markup: InlineKeyboardMarkup,
 ) -> None:
     """Запускает сценарий и отправляет результат + статистику + клавиатуру дальше."""
-    await message.chat.send_action(action=ChatAction.TYPING)
-    result_text, error_text, stats_text = _run_reasoning_scenario(handler_fn, task, extra)
 
-    await message.reply_text(f"📊 Способ: {label}")
-    if error_text:
-        await message.reply_text(error_text)
-    else:
-        for i in range(0, len(result_text), TELEGRAM_MESSAGE_LIMIT):
-            await message.reply_text(result_text[i : i + TELEGRAM_MESSAGE_LIMIT])
-        if stats_text:
-            await message.reply_text(stats_text)
+    async def run(ctx: JobContext) -> None:
+        await message.chat.send_action(action=ChatAction.TYPING)
+        result_text, error_text, stats_text = await ctx.run_thread(
+            _run_reasoning_scenario, handler_fn, task, extra
+        )
 
-    await message.reply_text("👉 Что дальше?", reply_markup=reply_markup)
+        await message.reply_text(f"📊 Способ: {label}")
+        if error_text:
+            await message.reply_text(error_text)
+        else:
+            for i in range(0, len(result_text), TELEGRAM_MESSAGE_LIMIT):
+                await message.reply_text(result_text[i : i + TELEGRAM_MESSAGE_LIMIT])
+            if stats_text:
+                await message.reply_text(stats_text)
+
+        await message.reply_text("👉 Что дальше?", reply_markup=reply_markup)
+
+    # Сценарий — задача очереди с низким приоритетом (llm_queue/): цикл событий не блокируется.
+    # Если вопрос не принят (лимит чата, «бот занят»), клавиатура возвращается пользователю.
+    accepted = await enqueue_message(message, context, KIND_RESEARCH, task, run, priority=RESEARCH)
+    if not accepted:
+        await message.reply_text("👉 Что дальше?", reply_markup=reply_markup)
 
 
 # --------------------------------------------------------------------------- #
@@ -481,7 +495,7 @@ async def reasoning_scenario_callback(update: Update, context: ContextTypes.DEFA
 
     label, handler_fn = SCENARIO_HANDLERS[scenario_id]
     await _send_scenario_result(
-        query.message, label, handler_fn, task, None, _build_reasoning_scenario_keyboard()
+        query.message, context, label, handler_fn, task, None, _build_reasoning_scenario_keyboard()
     )
     return CHOOSING_SCENARIO
 
@@ -509,7 +523,13 @@ async def reasoning_expert_callback(update: Update, context: ContextTypes.DEFAUL
     expert_id = data.rsplit(":", 1)[-1]
     label = f"Группа экспертов — {EXPERT_ROLES[expert_id][0]}"
     await _send_scenario_result(
-        query.message, label, call_reasoning_expert, task, expert_id, _build_expert_keyboard()
+        query.message,
+        context,
+        label,
+        call_reasoning_expert,
+        task,
+        expert_id,
+        _build_expert_keyboard(),
     )
     return CHOOSING_EXPERT
 

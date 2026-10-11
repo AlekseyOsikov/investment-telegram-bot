@@ -846,3 +846,35 @@ def test_latest_report_name_ignores_question_files_copies_and_temp_files():
 def test_latest_report_name_without_reports_is_none():
     assert ev.latest_report_name([]) is None
     assert ev.latest_report_name(["questions.json", "Копия (1) questions.json"]) is None
+
+
+# --- очередь LLM-задач: поле отчёта и строка сводки (llm_queue) ---
+
+
+def test_queue_report_fields_rounds_and_clamps():
+    assert ev.queue_report_fields(12.34, 3) == {"slot_wait_seconds": 12.3, "user_questions": 3}
+    assert ev.queue_report_fields(-1, -2) == {"slot_wait_seconds": 0.0, "user_questions": 0}
+
+
+def test_queue_summary_line_absent_for_old_and_idle_reports():
+    assert ev.queue_summary_line({}) is None
+    assert ev.queue_summary_line({"queue": "garbage"}) is None
+    assert ev.queue_summary_line({"queue": {"slot_wait_seconds": 0.2, "user_questions": 0}}) is None
+
+
+def test_queue_summary_line_names_wait_and_user_questions():
+    line = ev.queue_summary_line({"queue": {"slot_wait_seconds": 95.0, "user_questions": 2}})
+    assert "2" in line and "95 с" in line
+
+
+def test_format_summary_mentions_queue_only_when_present():
+    base = ev.build_report(
+        started_at="2026-01-01T00:00:00",
+        finished_at="2026-01-01T00:01:00",
+        settings={},
+        results=[],
+        planned=0,
+    )
+    assert "Очередь:" not in ev.format_summary(base)
+    base["queue"] = ev.queue_report_fields(30, 1)
+    assert "Очередь:" in ev.format_summary(base)

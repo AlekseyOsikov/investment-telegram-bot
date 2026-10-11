@@ -157,6 +157,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -175,6 +176,7 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     SYSTEM_PROMPT,
 )
+from llm_queue.rules import raise_if_cancelled
 from providers.main_client import main_client
 
 from .context_strategies import STRATEGIES
@@ -782,7 +784,9 @@ class Agent:
         """
         STRATEGIES[self._strategy].after_turn(self, user_text, answer_text)
 
-    def ask(self, user_text: str) -> AgentAnswer:
+    def ask(
+        self, user_text: str, should_cancel: Callable[[], bool] | None = None
+    ) -> AgentAnswer:
         """Отправляет вопрос пользователя в LLM вместе с контекстом чата, построенным
         текущей стратегией (см. "Управление контекстом" в докстринге модуля, не вся
         сохранённая история активной ветки), и возвращает ответ.
@@ -802,8 +806,16 @@ class Agent:
         ответа API — неудачный вызов не искажает сохранённый диалог. Статистика по
         токенам в возвращённом AgentAnswer — см. докстринг модуля про то, откуда
         берётся каждое из значений.
+
+        `should_cancel` — кооперативная отмена вопроса очередью (llm_queue/): проверяется
+        перед догоном facts, перед LLM-вызовом и перед записью пары в историю; при `True`
+        выбрасывается `AskCancelled`, состояние не меняется. После начала записи отмена не
+        действует (обмен сохранён целиком); технический вызов после ответа в этом случае
+        пропускается — бэклог догонит `_before_turn` следующего вопроса.
         """
+        raise_if_cancelled(should_cancel)
         self._before_turn()
+        raise_if_cancelled(should_cancel)
 
         # Делитель 2, а не общепринятые для английского языка 4 символа/токен — см.
         # докстринг модуля про то, почему кириллица в BPE-токенайзерах менее эффективна.
@@ -821,13 +833,17 @@ class Agent:
         content = response.choices[0].message.content
         answer = content or "Модель вернула пустой ответ. Попробуй переформулировать вопрос."
 
+        # Последняя точка отмены: дальше — запись пары, она не прерывается.
+        raise_if_cancelled(should_cancel)
+
         usage = self._extract_usage(response)
         context_tokens = usage["prompt_tokens"] if usage else None
         response_tokens = usage["completion_tokens"] if usage else None
 
         self._active_messages().append({"role": "user", "content": user_text})
         self._active_messages().append({"role": "assistant", "content": answer})
-        self._after_turn(user_text, answer)
+        if should_cancel is None or not should_cancel():
+            self._after_turn(user_text, answer)
         self._save_history()
 
         return AgentAnswer(

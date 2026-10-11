@@ -16,6 +16,9 @@ load_dotenv()/logging.basicConfig() и переменной MAIN_CLIENT), поэ
 
 from __future__ import annotations
 
+import httpx
+from openai import AsyncOpenAI
+
 from config import MAIN_CLIENT
 
 from .deepseek_client import deepseek_client
@@ -28,3 +31,15 @@ main_client = {
     "kimi": kimi_client,
     "ollama": ollama_client,
 }[MAIN_CLIENT]
+
+# Асинхронный клиент ТОГО ЖЕ провайдера (ключ и адрес берутся у синхронного клиента, чтобы выбор
+# не расходился): им пользуется только основной поток (main.py: handle_message) — отмена
+# `await` закрывает соединение, и Ollama прекращает генерацию (design.md изменения
+# add-llm-request-queue, решение 6). Остальные потребители (SmartAgent, Agent, research)
+# остаются на синхронном клиенте в потоках. Для Ollama — `trust_env=False`, как у
+# синхронного клиента: прокси, настроенный для облака, не должен перехватывать локальный сервер.
+async_main_client = AsyncOpenAI(
+    api_key=main_client.api_key,
+    base_url=str(main_client.base_url),
+    http_client=httpx.AsyncClient(trust_env=False) if MAIN_CLIENT == "ollama" else None,
+)

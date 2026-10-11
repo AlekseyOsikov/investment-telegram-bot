@@ -50,6 +50,7 @@ build_agent_compare_report_handler() и build_agent_compare_reset_handler().
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 from openai import (
@@ -79,6 +80,9 @@ from config import (
     REQUEST_TIMEOUT_SECONDS,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from llm_queue.commands import cancel_chat_questions, enqueue_job, saved_notice
+from llm_queue.gate import JobContext
+from llm_queue.rules import KIND_COMPARE, AskCancelled
 from providers.main_client import main_client
 from research._shared import api_error_to_message
 
@@ -144,7 +148,9 @@ def _get_compare_agents(chat_id: int) -> dict[str, Agent]:
 
 
 def _ask_all_strategies(
-    agents: dict[str, Agent], user_text: str
+    agents: dict[str, Agent],
+    user_text: str,
+    should_cancel: Callable[[], bool] | None = None,
 ) -> dict[str, AgentAnswer | Exception]:
     """Параллельно вызывает ask() у всех трёх стратегий (см. докстринг модуля про
     ThreadPoolExecutor). Возвращает по каждой стратегии либо её AgentAnswer, либо
@@ -154,7 +160,7 @@ def _ask_all_strategies(
     results: dict[str, AgentAnswer | Exception] = {}
     with ThreadPoolExecutor(max_workers=len(COMPARE_STRATEGIES)) as executor:
         futures = {
-            strategy: executor.submit(agents[strategy].ask, user_text)
+            strategy: executor.submit(agents[strategy].ask, user_text, should_cancel)
             for strategy in COMPARE_STRATEGIES
         }
         # Порядок ниже — COMPARE_STRATEGIES (фиксированный порядок вывода), а не
@@ -168,8 +174,10 @@ def _ask_all_strategies(
     return results
 
 
-async def _exit_compare_mode(update: Update) -> int:
-    """Общий выход из режима сравнения — по кнопке и по /cancel."""
+async def _exit_compare_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Общий выход из режима сравнения — по кнопке и по /cancel. Ожидающий и выполняемый
+    вопросы чата снимаются, ответ на них не придёт (llm_queue)."""
+    cancel_chat_questions(context, update.effective_chat.id)
     clear_active_mode(update.effective_chat.id)
     await update.message.reply_text(
         "Режим сравнения стратегий завершён. Возвращаюсь в обычный режим.",
@@ -209,10 +217,9 @@ async def agent_compare_receive_question(update: Update, context: ContextTypes.D
     """Принимает вопрос пользователя, рассылает его всем трём стратегиям параллельно
     и отправляет три ответа по очереди (см. докстринг модуля)."""
     user_text = update.message.text
-    chat_id = update.effective_chat.id
 
     if user_text == EXIT_BUTTON_TEXT:
-        return await _exit_compare_mode(update)
+        return await _exit_compare_mode(update, context)
 
     if not user_text or not user_text.strip():
         await update.message.reply_text(
@@ -227,14 +234,41 @@ async def agent_compare_receive_question(update: Update, context: ContextTypes.D
         )
         return WAITING_QUESTION
 
+    async def run(ctx: JobContext) -> None:
+        await _answer_question(update, context, ctx, user_text)
+
+    # Вызов трёх стратегий выполняется задачей очереди (llm_queue/); состояние диалога то же.
+    await enqueue_job(update, context, KIND_COMPARE, user_text, run)
+    return WAITING_QUESTION
+
+
+async def _answer_question(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, ctx: JobContext, user_text: str
+) -> None:
+    """Задача очереди /agent_compare: три стратегии параллельно в потоке, вывод по порядку."""
+    chat_id = update.effective_chat.id
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     agents = _get_compare_agents(chat_id)
-    results = _ask_all_strategies(agents, user_text)
+    # Три потока сравнения — под ОДНИМ слотом очереди (одна задача пользователя).
+    results = await ctx.run_thread(
+        _ask_all_strategies,
+        agents,
+        user_text,
+        ctx.should_cancel,
+        late=saved_notice(
+            context,
+            chat_id,
+            was_saved=lambda res: any(not isinstance(r, Exception) for r in res.values()),
+        ),
+    )
 
     for strategy in COMPARE_STRATEGIES:
         label = COMPARE_STRATEGY_LABELS[strategy]
         result = results[strategy]
+
+        if isinstance(result, AskCancelled):
+            continue  # вопрос снят до записи: этой стратегии нечего показывать
 
         if isinstance(result, Exception):
             message = api_error_to_message(result, MAIN_CLIENT_LABEL, MAIN_API_KEY_ENV_VAR)
@@ -261,12 +295,10 @@ async def agent_compare_receive_question(update: Update, context: ContextTypes.D
             await update.message.reply_text(text, reply_markup=COMPARE_KEYBOARD)
         await update.message.reply_text(_format_token_stats(result), reply_markup=COMPARE_KEYBOARD)
 
-    return WAITING_QUESTION
-
 
 async def agent_compare_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Fallback /cancel — тот же выход из режима сравнения, что и по кнопке."""
-    return await _exit_compare_mode(update)
+    return await _exit_compare_mode(update, context)
 
 
 async def agent_compare_report_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -371,6 +403,7 @@ async def agent_compare_reset_command(update: Update, context: ContextTypes.DEFA
     """Команда /agent_compare_reset — очищает историю всех трёх теневых агентов сразу
     (аналог /agent_reset). Работает независимо от активного режима, как и /agent_reset."""
     chat_id = update.effective_chat.id
+    cancel_chat_questions(context, chat_id, "reset")  # вопрос не должен записаться после очистки
     agents = _get_compare_agents(chat_id)
     for agent in agents.values():
         agent.reset()

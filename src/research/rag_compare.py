@@ -40,6 +40,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Any
 
 from openai import OpenAI, RateLimitError
 from telegram import Message, Update
@@ -77,6 +78,8 @@ from config import (
     REWRITE_SEARCH_MODE,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from llm_queue.commands import get_gate
+from llm_queue.gate import LlmGate
 from main_client_settings import (
     disable_thinking_extra_body,
     judge_temperature_kwargs,
@@ -909,6 +912,18 @@ def _initial_progress(level: str, total: int) -> str:
     return ev.progress_text(0, total)
 
 
+async def run_under_slot(gate: LlmGate, fn, *args) -> tuple[Any, float]:
+    """Один вопрос набора под слотом очереди с низким приоритетом (llm_queue/): пользователи
+    получают слот между вопросами. Бюджет вопроса отсчитывается внутри `fn` и стартует после
+    получения слота — ожидание в него не входит. Возвращает (результат, секунд ожидания слота).
+    Остановка команды (отмена задачи) работает и в ожидании слота; слот поток держит до своего
+    конца, если отмена пришла посреди вопроса."""
+    async with gate.slot() as ctx:
+        waited = ctx.waited_seconds
+        result = await ctx.run_thread(fn, *args)
+    return result, waited
+
+
 async def _run_comparison(
     bot,
     chat_id: int,
@@ -919,6 +934,8 @@ async def _run_comparison(
     modes: list[str] | None = None,
     unavailable: dict[str, str] | None = None,
     skipped_numbers: list[int] | None = None,
+    *,
+    gate: LlmGate,
 ) -> None:
     """Фоновая задача прогона. Заканчивается одним из трёх способов: все вопросы обработаны,
     автоостановка (подряд проваленные вопросы) или остановка командой (отмена задачи) — в двух
@@ -927,7 +944,8 @@ async def _run_comparison(
     оценка; `modes` — дополнительные режимы поиска) либо search (только поиск по `modes`);
     `unavailable` — режимы, которые не удалось выполнить, с причиной (в отчёт);
     `skipped_numbers` — номера многоходовых вопросов, пропущенных на уровне answers (в отчёт,
-    чтобы команда чтения отчёта отвечала по ним понятно)."""
+    чтобы команда чтения отчёта отвечала по ним понятно); `gate` — очередь LLM-задач: каждый
+    вопрос набора идёт под её слотом (`run_under_slot`)."""
     modes = list(modes or [])
     unavailable = dict(unavailable or {})
     search_level = level == rm.LEVEL_SEARCH
@@ -942,6 +960,8 @@ async def _run_comparison(
     # Бюджет вопроса растёт с числом дополнительных режимов (каждый — ещё ответ и оценка):
     # 120 с рассчитаны на два режима, а предел нужен против «зависшего» провайдера.
     question_budget = RAG_COMPARE_QUESTION_TIMEOUT_SECONDS * (2 + len(modes)) / 2
+    slot_wait = 0.0
+    users_before = gate.user_jobs_done
     try:
         try:
             agents = (
@@ -964,28 +984,28 @@ async def _run_comparison(
                     reporter.post(ev.progress_text(done, total, stage, text, stage_label(stage)))
 
                 if search_level:
-                    results.append(
-                        await asyncio.to_thread(
-                            evaluate_retrieval,
-                            question,
-                            index_titles,
-                            agents,
-                            on_stage,
-                            cancel_event.is_set,
-                        )
+                    result, waited = await run_under_slot(
+                        gate,
+                        evaluate_retrieval,
+                        question,
+                        index_titles,
+                        agents,
+                        on_stage,
+                        cancel_event.is_set,
                     )
                 else:
-                    results.append(
-                        await asyncio.to_thread(
-                            evaluate_question,
-                            question,
-                            index_titles,
-                            on_stage,
-                            question_budget,
-                            cancel_event.is_set,
-                            modes,
-                        )
+                    result, waited = await run_under_slot(
+                        gate,
+                        evaluate_question,
+                        question,
+                        index_titles,
+                        on_stage,
+                        question_budget,
+                        cancel_event.is_set,
+                        modes,
                     )
+                results.append(result)
+                slot_wait += waited
                 set_progress_done(index)
                 limit = RAG_COMPARE_MAX_CONSECUTIVE_FAILURES
                 stop_now = (
@@ -1047,6 +1067,7 @@ async def _run_comparison(
                 }
                 or None,
             )
+        report["queue"] = ev.queue_report_fields(slot_wait, gate.user_jobs_done - users_before)
         await asyncio.to_thread(save_report, report)
         if stop_reason:
             final_note = f"⛔ Прогон остановлен: обработано {len(results)} из {total} вопросов."
@@ -1223,6 +1244,7 @@ async def rag_compare_command(update: Update, context: ContextTypes.DEFAULT_TYPE
                 modes,
                 unavailable,
                 skipped_numbers,
+                gate=get_gate(context.application),
             )
         )
     except BaseException:

@@ -104,11 +104,14 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from llm_queue.commands import build_queue_handlers, enqueue_job, start_gate, stop_gate
+from llm_queue.gate import JobContext
+from llm_queue.rules import KIND_MAIN
 from main_client_settings import connection_error_text
 from mcp_integration.tools_command import build_mcp_tools_handler
 from price_watch.commands import build_price_watch_handlers
 from price_watch.scheduler import start_scheduler, stop_scheduler
-from providers.main_client import main_client
+from providers.main_client import async_main_client
 from research.chunking_compare import build_chunking_compare_conversation_handler
 from research.chunking_stats import build_chunking_stats_handler
 from research.constraints import build_constraints_conversation_handler
@@ -242,6 +245,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "детали вопроса: ответы всех моделей и повторов рядом",
         ]
     command_lines += [
+        "/queue — показать свои вопросы в очереди к модели: позицию и примерное время ожидания",
+        "/queue_cancel [номер] — снять свои вопросы из очереди: без номера все, с номером "
+        "из /queue — один (например, /queue_cancel 2); /cancel по-прежнему выходит из режима",
         "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
         "контекст сохраняется даже после перезапуска бота, пока не отправишь /cancel",
         "/agent_history — показать сохранённую историю диалога с агентом",
@@ -346,7 +352,6 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Пересылает текст пользователя в основного провайдера (MAIN_CLIENT) и отправляет ответ обратно."""
     user_text = update.message.text
-    chat_id = update.effective_chat.id
     user_id = update.effective_user.id if update.effective_user else "unknown"
 
     if not user_text or not user_text.strip():
@@ -362,11 +367,30 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     logger.info("Запрос от пользователя %s (%d символов)", user_id, len(user_text))
 
+    async def run(ctx: JobContext) -> None:
+        await _answer_main_question(update, context, user_text)
+
+    # Вызов модели выполняется задачей очереди (llm_queue/): хендлер сразу возвращается,
+    # цикл событий не блокируется, при занятом слоте пользователь получает статус ожидания.
+    await enqueue_job(update, context, KIND_MAIN, user_text, run)
+
+
+async def _answer_main_question(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str
+) -> None:
+    """Задача очереди основного потока: вызов модели, перевод ошибок SDK, отправка ответа.
+
+    Выполняется под слотом очереди; тайм-аут отсчитывается от начала обращения, а не от
+    постановки. Отмена (`/queue_cancel`) прерывает `await` — соединение закрывается, и
+    провайдер прекращает генерацию.
+    """
+    chat_id = update.effective_chat.id
+
     # Показываем статус "печатает..." на время ожидания ответа от провайдера.
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
 
     try:
-        response = main_client.chat.completions.create(
+        response = await async_main_client.chat.completions.create(
             model=MAIN_MODEL,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -431,16 +455,32 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 # Точка входа
 # --------------------------------------------------------------------------- #
 
+async def _post_init(application: Application) -> None:
+    await start_gate(application)
+    if PRICE_WATCH_ACTIVE:
+        await start_scheduler(application)
+
+
+async def _post_stop(application: Application) -> None:
+    if PRICE_WATCH_ACTIVE:
+        await stop_scheduler(application)
+    await stop_gate(application)
+
+
 def main() -> None:
     builder = Application.builder().token(TELEGRAM_BOT_TOKEN)
-    if PRICE_WATCH_ACTIVE:
-        # Плановая выдача сводок опроса цен (price_watch/scheduler.py): стартует вместе
-        # с приложением и останавливается до его завершения.
-        builder = builder.post_init(start_scheduler).post_stop(stop_scheduler)
+    # Шлюз очереди LLM-задач (llm_queue/) и плановая выдача сводок опроса цен
+    # (price_watch/scheduler.py) стартуют вместе с приложением и останавливаются до его
+    # завершения.
+    builder = builder.post_init(_post_init).post_stop(_post_stop)
     application = builder.build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
+    # /queue и /queue_cancel — действия пользователя над своими вопросами; не под
+    # RESEARCH_ENABLED (llm_queue/commands.py).
+    for handler in build_queue_handlers():
+        application.add_handler(handler)
     # Исследовательские/технические команды регистрируются, только если включены
     # переменной окружения RESEARCH (config.py) — см. её докстринг и help_command
     # про то, какие команды это затрагивает и почему остальные /agent_* не входят.
