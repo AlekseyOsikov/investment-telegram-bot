@@ -33,7 +33,7 @@ MCP-инструменты, опрос цен, RAG-индексация). Про
 - `price_watch/` — `/watch*`, опрос цен и сводки по расписанию.
 - `rag/` — офлайн-индексация документов (`make index`); индекс читают research-команды и слой `rag`
   у `/smart_agent`.
-- `scripts/` — одноразовая оснастка (не часть бота): `rag_calibrate.py` — калибровка `RAG_MIN_SCORE` (запросы — в `data/rag_eval/`, не коммитятся); `dialog_eval.py` — прогон длинных диалогов `/smart_agent` с задачей и материалами (сценарии и отчёты — в `data/dialog_eval/`, не коммитятся; правила — `src/research/dialog_eval.py`).
+- `scripts/` — одноразовая оснастка (не часть бота): `rag_calibrate.py` — калибровка `RAG_MIN_SCORE` (запросы — в `data/rag_eval/`, не коммитятся); `dialog_eval.py` — прогон длинных диалогов `/smart_agent` с задачей и материалами (сценарии и отчёты — в `data/dialog_eval/`, не коммитятся; правила — `src/research/dialog_eval.py`); `ollama_tune.py` + `ollama_tune_lib.py` — подбор параметров локальной модели Ollama «до/после» (скорость, память, обрезка ответов, качество судьёй; варианты, вопросы и отчёты — в `data/ollama_tune/`, не коммитятся; чистые правила — `ollama_tune_lib.py`, тесты `tests/test_ollama_tune_lib.py`; `make tune`/`make tune-report`; Modelfile победителей — `scripts/ollama/`). Скрипт не часть бота и ничего не применяет сам: `.env`, `MAIN_MODEL` и рабочий `SYSTEM_PROMPT` остаются решением оператора. Ловушки (проверены на живом Ollama): удаление тега ЗАГРУЖЕННОЙ модели оставляет её в памяти — сначала выгрузка (`keep_alive: 0`), потом удаление; `num_predict` Modelfile перекрывается `max_tokens` бота (лимит ответа — `MAX_OUTPUT_TOKENS`); `reasoning_effort=none` рассуждение не выключает; `SYSTEM` Modelfile заменяется системным сообщением бота.
 
 ## Команды
 
@@ -55,7 +55,8 @@ python3 -m compileall -q src   # проверка синтаксиса без з
 src/main.py`) покрывают только чистые функции без сети, Telegram и LLM — без моков клиентов и
 `SmartAgent`. Новые правила покрывай тестами чистых функций. Всё остальное (`SmartAgent`, обработчики,
 живые MCP-серверы, Ollama, `pdftotext`) проверяется вручную. Перечень тестов по подсистемам — во
-вложенных `CLAUDE.md`.
+вложенных `CLAUDE.md`; чистые правила оснастки `scripts/` (`ollama_tune_lib.py`) тестируются так же
+(`tests/conftest.py` добавляет в `sys.path` и `scripts/`).
 
 ## Процесс: OpenSpec
 
