@@ -14,7 +14,8 @@
 ## Модули
 
 - `rules.py` — ЧИСТЫЕ правила (тесты `tests/test_llm_queue_rules.py`): порядок (приоритет, затем
-  FIFO), позиция, `DurationStats` (окно 20 длительностей по видам задач), `estimate_wait` (медиана –
+  FIFO), позиция, `DurationStats` (окно 20 длительностей по видам задач: `main`, `agent`, `compare`,
+  `smart_agent`, `dev_assistant` — режим `/dev`, `research`), `estimate_wait` (медиана –
   90-й процентиль, `ceil(n/K)` волн впереди; мало измерений — нет нижней границы, верхняя —
   `REQUEST_TIMEOUT_SECONDS`), лимиты, разбор аргумента `/queue_cancel`, `AskCancelled` /
   `raise_if_cancelled`, ВСЕ тексты очереди. Не импортирует `config`.

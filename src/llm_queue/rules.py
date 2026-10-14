@@ -24,8 +24,9 @@ KIND_MAIN = "main"
 KIND_AGENT = "agent"
 KIND_COMPARE = "compare"
 KIND_SMART_AGENT = "smart_agent"
+KIND_DEV_ASSISTANT = "dev_assistant"
 KIND_RESEARCH = "research"
-KINDS = (KIND_MAIN, KIND_AGENT, KIND_COMPARE, KIND_SMART_AGENT, KIND_RESEARCH)
+KINDS = (KIND_MAIN, KIND_AGENT, KIND_COMPARE, KIND_SMART_AGENT, KIND_DEV_ASSISTANT, KIND_RESEARCH)
 
 # Сколько последних длительностей хранится по виду и с какого числа им верят.
 DURATION_WINDOW = 20

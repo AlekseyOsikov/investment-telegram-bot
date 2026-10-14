@@ -1,0 +1,80 @@
+"""Чистые правила режима «ассистент разработчика»: разбор списка id, проверка доступа, тексты.
+
+Не знает ни про Telegram, ни про `config`: список id и отправитель передаются аргументами,
+поэтому правила проверяются тестами без сети (tests/test_dev_assistant_rules.py). Спека —
+openspec/changes/add-dev-assistant-mode/specs/dev-assistant/spec.md.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+from typing import Any
+
+# Команда входа и выход. Выход — общий `/cancel`, как у остальных режимов.
+ENTER_COMMAND = "dev"
+
+ENTER_TEXT = (
+    "🛠 Режим ассистента разработчика.\n"
+    "Задавай вопросы о проекте обычными сообщениями: отвечу по документации репозитория "
+    "(README, CLAUDE.md, спецификации) и, если настроен git-сервер, назову текущую ветку и "
+    "список файлов. Содержимое изменений (diff) и файлов мне недоступно.\n"
+    "Это не инвестиционный режим: вопросы об инвестициях задавай в обычном чате.\n"
+    "Выход — /cancel."
+)
+
+EXIT_TEXT = "Режим ассистента разработчика завершён. Возвращаюсь в обычный режим."
+
+EMPTY_QUESTION_TEXT = "👉 Пожалуйста, отправь текстовый вопрос о проекте."
+
+INDEX_MISSING_TEXT = (
+    "📭 Индекс документации проекта не собран. Его собирает оператор бота (`make dev-index`); "
+    "пока индекса нет, отвечать о проекте я не могу."
+)
+
+SEARCH_FAILED_TEXT = (
+    "⚠️ Не удалось выполнить поиск по документации (сервис эмбеддингов недоступен или не "
+    "ответил вовремя). Попробуй ещё раз чуть позже."
+)
+
+NOT_FOUND_TEXT = (
+    "В документации проекта ответа на этот вопрос не нашлось, и сведений из git для него "
+    "недостаточно. Переформулируй вопрос или загляни в документацию напрямую."
+)
+
+GIT_UNAVAILABLE_WARNING = (
+    "⚠️ Git-сервер недоступен — сведений о ветке и файлах нет, ответ дан только по документации."
+)
+
+
+def parse_user_ids(raw: str | None) -> tuple[int, ...]:
+    """Разбирает список id пользователей через запятую (`DEV_ASSISTANT_USER_IDS`).
+
+    Пустая строка/None → пустой кортеж (режим выключен). Пробелы вокруг элементов и пустые
+    элементы допускаются, дубли схлопываются с сохранением порядка. Нечисло, ноль и
+    отрицательные значения (идентификаторы пользователей Telegram положительны; отрицательные —
+    чаты и каналы) → ValueError с текстом о том, какой элемент некорректен."""
+    if raw is None:
+        return ()
+    result: list[int] = []
+    for part in raw.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        try:
+            value = int(item)
+        except ValueError:
+            raise ValueError(f"элемент {item!r} не является целым числом") from None
+        if value <= 0:
+            raise ValueError(f"элемент {item!r} не является идентификатором пользователя")
+        if value not in result:
+            result.append(value)
+    return tuple(result)
+
+
+def is_authorized(user: Any, allowed_ids: Iterable[int]) -> bool:
+    """Отправитель входит в список. Сравнение — по id ПОЛЬЗОВАТЕЛЯ, не чата; отправитель
+    без определяемого id (`None`, анонимный администратор, канал) недопустим."""
+    user_id = getattr(user, "id", None)
+    if not isinstance(user_id, int) or isinstance(user_id, bool):
+        return False
+    return user_id in set(allowed_ids)

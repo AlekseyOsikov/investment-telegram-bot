@@ -7,6 +7,7 @@ import pytest
 from llm_queue import rules
 from llm_queue.rules import (
     INTERACTIVE,
+    KIND_DEV_ASSISTANT,
     KIND_MAIN,
     KIND_RESEARCH,
     KIND_SMART_AGENT,
@@ -268,3 +269,13 @@ def test_raise_if_cancelled():
     rules.raise_if_cancelled(lambda: False)
     with pytest.raises(rules.AskCancelled):
         rules.raise_if_cancelled(lambda: True)
+
+
+def test_dev_assistant_is_a_known_kind_with_own_duration_window():
+    assert KIND_DEV_ASSISTANT in rules.KINDS
+    stats = DurationStats()
+    for value in (10.0, 20.0, 30.0):
+        stats.record(KIND_DEV_ASSISTANT, value)
+    assert stats.count(KIND_DEV_ASSISTANT) == 3
+    assert stats.count(KIND_MAIN) == 0
+    assert stats.median(KIND_DEV_ASSISTANT) == 20.0

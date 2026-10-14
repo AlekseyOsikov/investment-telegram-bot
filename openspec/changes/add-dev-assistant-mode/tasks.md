@@ -2,26 +2,26 @@
 
 ## 1. Конфигурация и чистые правила доступа
 
-- [ ] 1.1 В `src/config.py` добавить `DEV_ASSISTANT_USER_IDS` (разбор в чистую функцию пакета),
+- [x] 1.1 В `src/config.py` добавить `DEV_ASSISTANT_USER_IDS` (разбор в чистую функцию пакета),
   `DEV_ASSISTANT_INDEX_DIR`, `DEV_ASSISTANT_TOP_K`, `DEV_ASSISTANT_MIN_SCORE`,
   `DEV_ASSISTANT_HISTORY_TURNS`, `MCP_GIT_DIR` (с `expanduser`, предупреждение при отсутствии
   каталога/`pyproject.toml` по образцу `_warn_if_moex_dir_invalid`), валидацию чисел и id в
   `_validate_config()`; описать переменные в `.env.example`. Проверка: запуск с мусором в
   `DEV_ASSISTANT_USER_IDS` завершается сообщением, с пустым — стартует с выключенным режимом.
-- [ ] 1.2 Создать `src/dev_assistant/__init__.py` и `rules.py`: `parse_user_ids`, `is_authorized`
+- [x] 1.2 Создать `src/dev_assistant/__init__.py` и `rules.py`: `parse_user_ids`, `is_authorized`
   (в т.ч. `None`-отправитель), тексты режима. Проверка: `tests/test_dev_assistant_rules.py`
   (пусто, пробелы, дубли, нечисло, отрицательные/нулевые, отправитель `None`).
 
 ## 2. Индекс документации
 
-- [ ] 2.1 `chunking.py`: `chunk_markdown(text, rel_path)` — заголовки, ограждённые блоки кода,
+- [x] 2.1 `chunking.py`: `chunk_markdown(text, rel_path)` — заголовки, ограждённые блоки кода,
   хлебные крошки, разрезание длинных разделов по абзацам, склейка коротких. Проверка:
   `tests/test_dev_assistant_chunking.py` (вложенные заголовки, `#` внутри ``` , длинный раздел,
   файл без заголовков, пустой файл).
-- [ ] 2.2 `sources.py`: перечень документов (глобы, исключения `openspec/changes/**`, `data/`,
+- [x] 2.2 `sources.py`: перечень документов (глобы, исключения `openspec/changes/**`, `data/`,
   `.venv`), корень проекта из расположения файлов. Проверка: тест на временном дереве файлов — что
   входит и что исключено, порядок стабилен.
-- [ ] 2.3 `indexer.py` + `cli.py` + цель `dev-index` в `Makefile`: чтение файлов, чанки,
+- [x] 2.3 `indexer.py` + `cli.py` + цель `dev-index` в `Makefile`: чтение файлов, чанки,
   `embed_texts` пачками, `build_index("markdown", records, DEV_ASSISTANT_INDEX_DIR)`, итоговая
   сводка (файлов, фрагментов, пропущенных) и дата сборки в метаданных каталога. Проверка:
   `make dev-index` на живом Ollama создаёт `data/dev_index/markdown/`; при остановленном Ollama
@@ -29,11 +29,11 @@
 
 ## 3. Поиск и сообщения модели
 
-- [ ] 3.1 `search.py`: эмбеддинг вопроса с бюджетом, `index_store.search`, отбор по
+- [x] 3.1 `search.py`: эмбеддинг вопроса с бюджетом, `index_store.search`, отбор по
   `DEV_ASSISTANT_MIN_SCORE` и `TOP_K`; исходы: материалы / ничего не найдено / индекс отсутствует /
   сбой эмбеддинга (внешние вызовы параметрами). Проверка: `tests/test_dev_assistant_search.py` на
   фиктивных вызовах, по образцу `tests/test_rag_search.py`.
-- [ ] 3.2 `prompts.py`: системное сообщение ассистента, сообщение git-слоя (доступно / недоступно /
+- [x] 3.2 `prompts.py`: системное сообщение ассистента, сообщение git-слоя (доступно / недоступно /
   не настроено), пользовательское сообщение с фрагментами, фиксированные отказы, строка
   источников. Проверка: тесты на наличие запрета ослаблять `SYSTEM_PROMPT`, запрета
   инвестиционных рекомендаций, отсутствие слов `diff`-доступности, сборку источников из
@@ -41,25 +41,36 @@
 
 ## 4. Git через mcp-git
 
-- [ ] 4.1 `git_session.py`: `build_git_server_params(directory, root)`, allowlist
+- [x] 4.1 `git_session.py`: `build_git_server_params(directory, root)`, allowlist
   `{get_current_branch, list_files}`, очистка схемы от `repo_path`, подстановка `repo_path`
   (перезапись присланного значения). Проверка: `tests/test_dev_assistant_git.py` — схема без
   `repo_path`, перезапись чужого пути, невалидный JSON аргументов, имя вне перечня
   (`get_diff`, `list_roots`) отвергается.
-- [ ] 4.2 Ручная проверка с живым `mcp-git` (`MCP_GIT_DIR` задан): `get_current_branch` возвращает
+- [x] 4.2 Ручная проверка с живым `mcp-git` (`MCP_GIT_DIR` задан): `get_current_branch` возвращает
   текущую ветку, `list_files` — список с `truncated`, путь вне корня даёт `path_not_allowed`;
   результат записать в заметках выполнения.
+  *Заметки выполнения (2026-10-14, живой `mcp-git`):* `get_current_branch` →
+  `{"branch":"Day_31","detached":false,"commit":"5b872a3"}`; `list_files` возвращает `files` и
+  `truncated`; прямой вызов сервера с `repo_path=/etc` → `[path_not_allowed] path is not inside an
+  allowed root`; через `GitTools` присланный `repo_path` перезаписывается корнем проекта; `get_diff`
+  и `list_roots` отсеиваются по перечню (в логе: «Инструменты не отданы модели»).
 
 ## 5. Ядро, очередь, командный слой
 
-- [ ] 5.1 В `llm_queue/rules.py` добавить вид задачи `dev_assistant` (приоритет — интерактивный),
+- [x] 5.1 В `llm_queue/rules.py` добавить вид задачи `dev_assistant` (приоритет — интерактивный),
   обновить `tests/test_llm_queue_rules.py` и `src/llm_queue/CLAUDE.md`. Проверка: `make test`
   зелёный.
-- [ ] 5.2 `core.py`: `ask(chat_id, question)` — поиск, сообщения, цикл `run_tool_loop` при
+- [x] 5.2 `core.py`: `ask(chat_id, question)` — поиск, сообщения, цикл `run_tool_loop` при
   доступном git (иначе одиночный вызов), история в памяти, источники кодом; не импортирует
   Telegram. Проверка: ручной прогон трёх вопросов (структура проекта, ветка, вне темы) из
   интерпретатора.
-- [ ] 5.3 `command.py` + регистрация: `ConversationHandler` с `filters.User(ids)` на входе и в
+  *Заметки выполнения (2026-10-14, живая модель из `.env`, `mcp-git`, индекс 664 фрагмента):*
+  структура — ответ по фрагментам `llm_queue`, источники перечислены, вызовы `list_files` и
+  `get_current_branch` показаны; ветка — «Day_31» из результата инструмента; вне темы (акции) —
+  отказ с подсказкой `/cancel`, без рекомендаций. Наблюдение: при `DEV_ASSISTANT_MIN_SCORE=0.0`
+  блок источников показывается и у отказа, а вопрос про имена переменных очереди не нашёл
+  нужный раздел корневого `CLAUDE.md` — кандидат на калибровку порога/состава источников.
+- [x] 5.3 `command.py` + регистрация: `ConversationHandler` с `filters.User(ids)` на входе и в
   состоянии, явная `is_authorized` в колбэках, `/cancel` (очистка истории + 
   `cancel_chat_questions`), постановка через `enqueue_job`, нарезка ответа по
   `TELEGRAM_MESSAGE_LIMIT`, переводы ошибок SDK в русские сообщения по образцу `handle_message`;
@@ -71,11 +82,11 @@
 
 ## 6. Документация и приёмка
 
-- [ ] 6.1 Создать `src/dev_assistant/CLAUDE.md` (модули, инварианты: нет `get_diff`, `repo_path`
+- [x] 6.1 Создать `src/dev_assistant/CLAUDE.md` (модули, инварианты: нет `get_diff`, `repo_path`
   подставляет бот, индекс отдельный, список id), обновить корневой `CLAUDE.md` (карта `src/`,
   конфигурация, раздел безопасности — единственное исключение: режим ограничен списком id) и
   `README.md` (запуск, `make dev-index`, настройка `MCP_GIT_DIR`). Проверка: чтение документов —
   ни одной ссылки на несуществующее имя модуля.
-- [ ] 6.2 Приёмка по минимальному результату задачи: README и `docs/` (если есть) в индексе,
+- [x] 6.2 Приёмка по минимальному результату задачи: README и `docs/` (если есть) в индексе,
   MCP возвращает ветку, режим отвечает на вопросы о структуре проекта; `make test` зелёный,
   `python3 -m compileall -q src` без ошибок, `ruff check` не добавляет замечаний в новых файлах.

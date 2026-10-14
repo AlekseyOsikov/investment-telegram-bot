@@ -104,6 +104,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_MESSAGE_LIMIT,
 )
+from dev_assistant.command import build_dev_assistant_handlers
 from llm_queue.commands import build_queue_handlers, enqueue_job, start_gate, stop_gate
 from llm_queue.gate import JobContext
 from llm_queue.rules import KIND_MAIN
@@ -496,6 +497,13 @@ def main() -> None:
             application.add_handler(handler)
         for handler in build_rag_models_handlers():
             application.add_handler(handler)
+    # Режим ассистента разработчика (/dev): только для id из DEV_ASSISTANT_USER_IDS, пустой
+    # список — обработчиков нет. Регистрируется ДО /agent, /agent_compare, /smart_agent и
+    # обработчика обычного текста: внутри диалога он отклоняет вход в соседние режимы
+    # (dev_assistant/command.py). Не под RESEARCH_ENABLED (другая аудитория) и НЕ упоминается в
+    # /help (решение владельца проекта).
+    for handler in build_dev_assistant_handlers():
+        application.add_handler(handler)
     application.add_handler(build_agent_conversation_handler())
     application.add_handler(build_agent_reset_handler())
     application.add_handler(build_agent_history_handler())

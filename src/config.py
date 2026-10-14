@@ -25,6 +25,7 @@ import warnings
 from dotenv import load_dotenv
 from telegram.warnings import PTBUserWarning
 
+from dev_assistant.rules import parse_user_ids
 from main_client_settings import (
     default_main_model,
     main_api_key_env_var,
@@ -720,6 +721,32 @@ LLM_MAX_PENDING_PER_USER = _int_or_invalid(_LLM_MAX_PENDING_PER_USER_RAW)
 LLM_QUEUE_MAX = _int_or_invalid(_LLM_QUEUE_MAX_RAW)
 LLM_QUEUE_TTL_SECONDS = _int_or_invalid(_LLM_QUEUE_TTL_SECONDS_RAW)
 
+# Режим «ассистент разработчика» (/dev, dev_assistant/): отвечает о САМОМ проекте по его
+# документации
+# и (через mcp-git) по ветке и списку файлов. Всё — настройки ОПЕРАТОРА, пользователь чата их не
+# меняет. DEV_ASSISTANT_USER_IDS — числовые id пользователей Telegram через запятую; пусто —
+# режим выключен (обработчики не регистрируются, команда как неизвестная). Мусор в списке
+# останавливает запуск (_validate_config). DEV_ASSISTANT_INDEX_DIR — отдельный от RAG_INDEX_DIR
+# индекс документации (make dev-index). DEV_ASSISTANT_MIN_SCORE=0.0 — шаг порога отключён, пока
+# нет калибровки. MCP_GIT_DIR — каталог проекта mcp-git (по образцу MCP_MOEX_DIR); пусто —
+# git-слой выключен. Корень доступа сервера — каталог ЭТОГО репозитория (dev_assistant/git_session).
+DEV_ASSISTANT_INDEX_DIR = os.getenv("DEV_ASSISTANT_INDEX_DIR", "data/dev_index").strip()
+DEV_ASSISTANT_TOP_K = _int_or_invalid(os.getenv("DEV_ASSISTANT_TOP_K", "5").strip())
+DEV_ASSISTANT_HISTORY_TURNS = _int_or_invalid(os.getenv("DEV_ASSISTANT_HISTORY_TURNS", "6").strip())
+_DEV_ASSISTANT_MIN_SCORE_RAW = os.getenv("DEV_ASSISTANT_MIN_SCORE", "0.0").strip()
+try:
+    DEV_ASSISTANT_MIN_SCORE = float(_DEV_ASSISTANT_MIN_SCORE_RAW)
+except ValueError:
+    DEV_ASSISTANT_MIN_SCORE = -1.0
+_DEV_ASSISTANT_USER_IDS_RAW = os.getenv("DEV_ASSISTANT_USER_IDS", "")
+_DEV_ASSISTANT_USER_IDS_ERROR: str | None = None
+try:
+    DEV_ASSISTANT_USER_IDS = parse_user_ids(_DEV_ASSISTANT_USER_IDS_RAW)
+except ValueError as _exc:
+    DEV_ASSISTANT_USER_IDS = ()
+    _DEV_ASSISTANT_USER_IDS_ERROR = str(_exc)
+MCP_GIT_DIR = os.path.expanduser(os.getenv("MCP_GIT_DIR", "").strip())
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 
@@ -1049,6 +1076,38 @@ def _validate_config() -> None:
         )
         sys.exit(1)
 
+    if _DEV_ASSISTANT_USER_IDS_ERROR is not None:
+        logger.error(
+            "Недопустимое значение DEV_ASSISTANT_USER_IDS=%r: %s. Нужны положительные целые id "
+            "пользователей через запятую (или пустое значение — режим выключен).",
+            _DEV_ASSISTANT_USER_IDS_RAW,
+            _DEV_ASSISTANT_USER_IDS_ERROR,
+        )
+        sys.exit(1)
+
+    if DEV_ASSISTANT_TOP_K < 1:
+        logger.error(
+            "Недопустимое значение DEV_ASSISTANT_TOP_K: нужно целое число не меньше 1."
+        )
+        sys.exit(1)
+
+    if DEV_ASSISTANT_HISTORY_TURNS < 0:
+        logger.error(
+            "Недопустимое значение DEV_ASSISTANT_HISTORY_TURNS: нужно целое число не меньше 0."
+        )
+        sys.exit(1)
+
+    if not 0.0 <= DEV_ASSISTANT_MIN_SCORE <= 1.0:
+        logger.error(
+            "Недопустимое значение DEV_ASSISTANT_MIN_SCORE=%r: нужно число от 0 до 1 включительно.",
+            _DEV_ASSISTANT_MIN_SCORE_RAW,
+        )
+        sys.exit(1)
+
+    if not DEV_ASSISTANT_INDEX_DIR:
+        logger.error("DEV_ASSISTANT_INDEX_DIR не может быть пустым.")
+        sys.exit(1)
+
 
 def _warn_if_moex_dir_invalid() -> None:
     """Предупреждает в журнале, если MCP_MOEX_DIR задан, но не указывает на проект
@@ -1093,6 +1152,27 @@ def _warn_if_bybit_dir_invalid() -> None:
         )
 
 
+def _warn_if_git_dir_invalid() -> None:
+    """Предупреждает в журнале, если MCP_GIT_DIR задан, но не указывает на проект mcp-git —
+    по принципу _warn_if_moex_dir_invalid(): не завершает процесс, ассистент в этом случае
+    отвечает по документации с пометкой «git недоступен»."""
+    if not MCP_GIT_DIR:
+        return
+    if not os.path.isdir(MCP_GIT_DIR):
+        logger.warning(
+            "MCP_GIT_DIR=%r не существует или не каталог — ассистент разработчика будет "
+            "отвечать без сведений из git.",
+            MCP_GIT_DIR,
+        )
+    elif not os.path.isfile(os.path.join(MCP_GIT_DIR, "pyproject.toml")):
+        logger.warning(
+            "В MCP_GIT_DIR=%r нет pyproject.toml — это не похоже на проект сервера mcp-git, "
+            "ассистент разработчика может отвечать без сведений из git.",
+            MCP_GIT_DIR,
+        )
+
+
 _validate_config()
 _warn_if_moex_dir_invalid()
 _warn_if_bybit_dir_invalid()
+_warn_if_git_dir_invalid()

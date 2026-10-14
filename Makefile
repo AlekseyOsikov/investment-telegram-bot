@@ -1,4 +1,4 @@
-.PHONY: install run test clean index tune tune-report
+.PHONY: install run test clean index dev-index tune tune-report
 
 install:
 	pip install -r requirements.txt
@@ -8,6 +8,11 @@ run:
 
 index:
 	PYTHONPATH=src python -m rag.cli
+
+# Индекс документации проекта для режима /dev (README, CLAUDE.md, openspec/specs): отдельный
+# каталог DEV_ASSISTANT_INDEX_DIR, нужен локальный Ollama с EMBEDDINGS_MODEL.
+dev-index:
+	PYTHONPATH=src python -m dev_assistant.cli
 
 # Подбор параметров локальной модели Ollama (scripts/ollama_tune.py): нужен Ollama, индекс и файл
 # вариантов в data/ollama_tune/. Аргументы скрипта — через ARGS, например:
