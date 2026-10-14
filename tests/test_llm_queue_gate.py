@@ -134,6 +134,9 @@ def test_interactive_overtakes_research_slot_waiter():
         r = asyncio.create_task(research_step())
         await settle()
         u = gate.submit(2, KIND_MAIN, "u", user)
+        # Дать задаче пользователя встать в ожидание слота ДО освобождения: wait_for на 3.11
+        # запускает внутреннюю задачу (на 3.12+ — нет), и без этого порядок зависит от версии.
+        await settle()
         hold.set()
         await asyncio.gather(r, u.job.task)
         assert order == ["user", "research"]
