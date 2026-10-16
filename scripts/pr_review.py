@@ -1,4 +1,4 @@
-"""AI-ревью pull request: оснастка вне бота (спека `openspec/changes/add-pr-ai-review/`).
+"""AI-ревью pull request: оснастка вне бота (спека `openspec/specs/pr-ai-review/`).
 
     python scripts/pr_review.py index
     python scripts/pr_review.py review --pr 42 --base <sha|ветка> --head <sha> [--dry-run]

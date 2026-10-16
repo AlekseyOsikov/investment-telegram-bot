@@ -1,5 +1,5 @@
 """Сборка индекса AI-ревью PR (`scripts/pr_review.py index`, `make review-index`, спека
-`openspec/changes/add-pr-ai-review/`): документация проекта (Markdown-чанкер `/dev`) и исходники
+`openspec/specs/pr-ai-review/`): документация проекта (Markdown-чанкер `/dev`) и исходники
 `src/`, `scripts/` (чанкер по `ast`) → эмбеддинги → `rag.index_store.build_index()` в ОТДЕЛЬНЫЙ
 каталог `PR_REVIEW_INDEX_DIR`, стратегия `review`.
 

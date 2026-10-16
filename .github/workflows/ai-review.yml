@@ -1,4 +1,4 @@
-# AI-ревью pull request (спека и модель угроз — openspec/changes/add-pr-ai-review/).
+# AI-ревью pull request (спека и модель угроз — openspec/specs/pr-ai-review/).
 #
 # Ключевые решения:
 # - pull_request_target: workflow и скрипт берутся из ОСНОВНОЙ ветки, PR не может их подменить;
