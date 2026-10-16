@@ -22,6 +22,9 @@ from __future__ import annotations
 AGENT_MODE = "agent"
 COMPARE_MODE = "compare"
 SMART_AGENT_MODE = "smart_agent"
+# Режим поддержки (`/support`, support_assistant/command.py): отметка нужна, чтобы `/dev` не
+# открывался поверх него; `/agent*`/`/smart_agent` внутри `/support` отклоняет сам режим.
+SUPPORT_MODE = "support"
 
 _active_mode: dict[int, str] = {}
 

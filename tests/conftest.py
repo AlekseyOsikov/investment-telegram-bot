@@ -15,3 +15,9 @@ if str(SRC) not in sys.path:
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
+
+# Чистая выборка мок-CRM поддержки (mock_servers/support_crm/crm_store.py): сервер не пакет и
+# `src/` его не импортирует; тесты берут только чистый модуль.
+MOCK_CRM = Path(__file__).resolve().parent.parent / "mock_servers" / "support_crm"
+if str(MOCK_CRM) not in sys.path:
+    sys.path.insert(0, str(MOCK_CRM))

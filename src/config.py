@@ -747,6 +747,45 @@ except ValueError as _exc:
     _DEV_ASSISTANT_USER_IDS_ERROR = str(_exc)
 MCP_GIT_DIR = os.path.expanduser(os.getenv("MCP_GIT_DIR", "").strip())
 
+# Режим «ассистент поддержки» (/support, support_assistant/): отвечает о работе бота по FAQ и
+# документации (отдельный индекс, make support-index) и по обращениям (тикетам) ЭТОГО пользователя
+# из CRM через MCP. Всё — настройки ОПЕРАТОРА, пользователь чата их не меняет. Доступен всем в
+# личном чате (списка id нет). SUPPORT_MIN_SCORE=0.0 — шаг порога отключён, пока нет калибровки.
+# SUPPORT_TICKETS_LIMIT — сколько самых свежих открытых обращений подаётся модели на вопрос.
+# SUPPORT_DEMO_USER_ID — Telegram id, которому мок-CRM отдаёт демонстрационные обращения (пусто —
+# никому). SUPPORT_CRM_MOCK — запускать встроенный мок (mock_servers/support_crm); внешняя CRM
+# задаётся MCP_SUPPORT_COMMAND/MCP_SUPPORT_ARGS (аргументы через shlex.split, запуск без shell) и
+# приоритетнее мока. Ни команда, ни мок не заданы — режим работает только по FAQ.
+SUPPORT_INDEX_DIR = os.getenv("SUPPORT_INDEX_DIR", "data/support_index").strip()
+SUPPORT_TOP_K = _int_or_invalid(os.getenv("SUPPORT_TOP_K", "5").strip())
+SUPPORT_HISTORY_TURNS = _int_or_invalid(os.getenv("SUPPORT_HISTORY_TURNS", "6").strip())
+SUPPORT_TICKETS_LIMIT = _int_or_invalid(os.getenv("SUPPORT_TICKETS_LIMIT", "5").strip())
+_SUPPORT_MIN_SCORE_RAW = os.getenv("SUPPORT_MIN_SCORE", "0.0").strip()
+try:
+    SUPPORT_MIN_SCORE = float(_SUPPORT_MIN_SCORE_RAW)
+except ValueError:
+    SUPPORT_MIN_SCORE = -1.0
+_SUPPORT_DEMO_USER_ID_RAW = os.getenv("SUPPORT_DEMO_USER_ID", "").strip()
+SUPPORT_DEMO_USER_ID: int | None = None
+_SUPPORT_DEMO_USER_ID_ERROR = False
+if _SUPPORT_DEMO_USER_ID_RAW:
+    try:
+        SUPPORT_DEMO_USER_ID = int(_SUPPORT_DEMO_USER_ID_RAW)
+    except ValueError:
+        _SUPPORT_DEMO_USER_ID_ERROR = True
+    else:
+        _SUPPORT_DEMO_USER_ID_ERROR = SUPPORT_DEMO_USER_ID <= 0
+_SUPPORT_CRM_MOCK_RAW = os.getenv("SUPPORT_CRM_MOCK", "true").strip().lower()
+SUPPORT_CRM_MOCK = _SUPPORT_CRM_MOCK_RAW in _TRUE_VALUES
+MCP_SUPPORT_COMMAND = os.getenv("MCP_SUPPORT_COMMAND", "").strip()
+_MCP_SUPPORT_ARGS_RAW = os.getenv("MCP_SUPPORT_ARGS", "")
+try:
+    MCP_SUPPORT_ARGS = shlex.split(_MCP_SUPPORT_ARGS_RAW)
+    _MCP_SUPPORT_ARGS_ERROR = False
+except ValueError:
+    MCP_SUPPORT_ARGS = []
+    _MCP_SUPPORT_ARGS_ERROR = True
+
 # Telegram режет сообщения по 4096 символов — оставляем запас.
 TELEGRAM_MESSAGE_LIMIT = 4000
 
@@ -1106,6 +1145,55 @@ def _validate_config() -> None:
 
     if not DEV_ASSISTANT_INDEX_DIR:
         logger.error("DEV_ASSISTANT_INDEX_DIR не может быть пустым.")
+        sys.exit(1)
+
+    if _SUPPORT_CRM_MOCK_RAW not in _TRUE_VALUES | _FALSE_VALUES:
+        logger.error(
+            "Недопустимое значение SUPPORT_CRM_MOCK=%r. Допустимые значения: true/false "
+            "(также принимаются 1/0, yes/no, on/off).",
+            _SUPPORT_CRM_MOCK_RAW,
+        )
+        sys.exit(1)
+
+    if _SUPPORT_DEMO_USER_ID_ERROR:
+        logger.error(
+            "Недопустимое значение SUPPORT_DEMO_USER_ID=%r: нужен положительный целый Telegram id "
+            "(или пустое значение — демонстрационные данные никому не выдаются).",
+            _SUPPORT_DEMO_USER_ID_RAW,
+        )
+        sys.exit(1)
+
+    if _MCP_SUPPORT_ARGS_ERROR:
+        logger.error(
+            "Недопустимое значение MCP_SUPPORT_ARGS=%r: строка не разбирается как аргументы "
+            "командной строки (проверьте кавычки).",
+            _MCP_SUPPORT_ARGS_RAW,
+        )
+        sys.exit(1)
+
+    if SUPPORT_TOP_K < 1:
+        logger.error("Недопустимое значение SUPPORT_TOP_K: нужно целое число не меньше 1.")
+        sys.exit(1)
+
+    if SUPPORT_TICKETS_LIMIT < 1:
+        logger.error("Недопустимое значение SUPPORT_TICKETS_LIMIT: нужно целое число не меньше 1.")
+        sys.exit(1)
+
+    if SUPPORT_HISTORY_TURNS < 0:
+        logger.error(
+            "Недопустимое значение SUPPORT_HISTORY_TURNS: нужно целое число не меньше 0."
+        )
+        sys.exit(1)
+
+    if not 0.0 <= SUPPORT_MIN_SCORE <= 1.0:
+        logger.error(
+            "Недопустимое значение SUPPORT_MIN_SCORE=%r: нужно число от 0 до 1 включительно.",
+            _SUPPORT_MIN_SCORE_RAW,
+        )
+        sys.exit(1)
+
+    if not SUPPORT_INDEX_DIR:
+        logger.error("SUPPORT_INDEX_DIR не может быть пустым.")
         sys.exit(1)
 
 

@@ -121,6 +121,7 @@ from research.rag_compare import build_rag_compare_handlers
 from research.rag_models import build_rag_models_handlers
 from research.reasoning import build_reasoning_conversation_handler
 from research.temperature import build_temperature_conversation_handler
+from support_assistant.command import build_support_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +250,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/queue — показать свои вопросы в очереди к модели: позицию и примерное время ожидания",
         "/queue_cancel [номер] — снять свои вопросы из очереди: без номера все, с номером "
         "из /queue — один (например, /queue_cancel 2); /cancel по-прежнему выходит из режима",
+        "/support — режим поддержки: вопросы о работе бота (отвечу по справке и с учётом "
+        "твоих открытых обращений, если они есть); выход — /cancel",
         "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
         "контекст сохраняется даже после перезапуска бота, пока не отправишь /cancel",
         "/agent_history — показать сохранённую историю диалога с агентом",
@@ -503,6 +506,12 @@ def main() -> None:
     # (dev_assistant/command.py). Не под RESEARCH_ENABLED (другая аудитория) и НЕ упоминается в
     # /help (решение владельца проекта).
     for handler in build_dev_assistant_handlers():
+        application.add_handler(handler)
+    # Режим поддержки (/support): доступен всем в личном чате, показан в /help. Регистрируется
+    # ПОСЛЕ /dev (тот отклоняет /support внутри своего диалога) и ДО /agent, /agent_compare,
+    # /smart_agent и обработчика обычного текста: внутри диалога он отклоняет вход в соседние
+    # режимы (support_assistant/command.py). Не под RESEARCH_ENABLED.
+    for handler in build_support_handlers():
         application.add_handler(handler)
     application.add_handler(build_agent_conversation_handler())
     application.add_handler(build_agent_reset_handler())

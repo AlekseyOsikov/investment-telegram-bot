@@ -11,6 +11,7 @@ from llm_queue.rules import (
     KIND_MAIN,
     KIND_RESEARCH,
     KIND_SMART_AGENT,
+    KIND_SUPPORT,
     RESEARCH,
     DurationStats,
     Estimate,
@@ -279,3 +280,13 @@ def test_dev_assistant_is_a_known_kind_with_own_duration_window():
     assert stats.count(KIND_DEV_ASSISTANT) == 3
     assert stats.count(KIND_MAIN) == 0
     assert stats.median(KIND_DEV_ASSISTANT) == 20.0
+
+
+def test_support_is_a_known_kind_with_own_duration_window():
+    assert KIND_SUPPORT in rules.KINDS
+    stats = DurationStats()
+    for value in (5.0, 15.0, 25.0):
+        stats.record(KIND_SUPPORT, value)
+    assert stats.count(KIND_SUPPORT) == 3
+    assert stats.count(KIND_DEV_ASSISTANT) == 0
+    assert stats.median(KIND_SUPPORT) == 15.0

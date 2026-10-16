@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 WAITING_QUESTION = 0
 
 # Команды других диалоговых режимов: внутри /dev они отклоняются (см. докстринг модуля).
-_OTHER_MODE_COMMANDS = ("agent", "agent_compare", "smart_agent")
+_OTHER_MODE_COMMANDS = ("agent", "agent_compare", "smart_agent", "support")
 
 OTHER_MODE_ACTIVE_TEXT = (
     "⚠️ Сейчас активен другой режим диалога. Сначала выйди из него (/cancel), потом заходи в /dev."

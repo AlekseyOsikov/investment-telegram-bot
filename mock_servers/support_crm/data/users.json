@@ -1,0 +1,22 @@
+{
+  "users": [
+    {
+      "user_key": "demo",
+      "display_name": "Демо-пользователь",
+      "plan": "free",
+      "registered": "2026-08-01"
+    },
+    {
+      "user_key": "other-1",
+      "display_name": "Вымышленный пользователь А",
+      "plan": "free",
+      "registered": "2026-08-12"
+    },
+    {
+      "user_key": "other-2",
+      "display_name": "Вымышленный пользователь Б",
+      "plan": "free",
+      "registered": "2026-09-03"
+    }
+  ]
+}

@@ -1,4 +1,4 @@
-.PHONY: install run test clean index dev-index review-index tune tune-report
+.PHONY: install run test clean index dev-index support-index review-index tune tune-report
 
 install:
 	pip install -r requirements.txt
@@ -13,6 +13,11 @@ index:
 # каталог DEV_ASSISTANT_INDEX_DIR, нужен локальный Ollama с EMBEDDINGS_MODEL.
 dev-index:
 	PYTHONPATH=src python -m dev_assistant.cli
+
+# Индекс справки поддержки для режима /support (docs/support, README.md): отдельный каталог
+# SUPPORT_INDEX_DIR, нужен локальный Ollama с EMBEDDINGS_MODEL.
+support-index:
+	PYTHONPATH=src python -m support_assistant.cli
 
 # Индекс AI-ревью PR (документация + исходники src/ и scripts/) в PR_REVIEW_INDEX_DIR
 # (по умолчанию data/pr_review_index): нужен локальный Ollama с EMBEDDINGS_MODEL.
