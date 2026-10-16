@@ -2,7 +2,7 @@
 
 Корневые правила — в `/CLAUDE.md`. Спеки — `openspec/specs/support-assistant/spec.md` и
 `openspec/specs/support-crm-mock/spec.md` (после архивации изменения `add-support-assistant`),
-обоснования — `openspec/changes/*add-support-assistant/design.md`.
+обоснования — `openspec/changes/archive/2026-10-17-add-support-assistant/design.md`.
 
 Режим отвечает о работе САМОГО бота: по фрагментам FAQ и документации (отдельный индекс) и по
 открытым обращениям (тикетам) ЭТОГО пользователя из CRM через MCP. Это не инвестиционный режим:
