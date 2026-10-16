@@ -39,3 +39,7 @@ htmlcov/
 # Прочее
 .DS_Store
 *.swp
+
+# Настройки runner AI-ревью (задаёт оператор; содержат ключ) и мусор FUSE
+docker/ai-review-runner/runner.env
+.fuse_hidden*

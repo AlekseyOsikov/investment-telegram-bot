@@ -58,6 +58,9 @@ MAX_DIFF_READ_CHARS = 4_000_000
 GIT_TIMEOUT_SECONDS = 120.0
 GH_TIMEOUT_SECONDS = 60.0
 BOT_LOGIN = "github-actions[bot]"
+# Облачные провайдеры, у которых рассуждение отключается (как в бота: main_client_settings): оно
+# съедает лимит токенов и время, а для ревью по diff не нужно (замер: 9071 → 1417 токенов).
+THINKING_OFF_PROVIDERS = frozenset({"deepseek", "kimi"})
 
 
 class ConfigError(Exception):
@@ -213,6 +216,10 @@ def make_chat(settings: Settings):
         **kwargs,
     )
 
+    extra_body = (
+        {"thinking": {"type": "disabled"}} if settings.provider in THINKING_OFF_PROVIDERS else None
+    )
+
     def ask(messages: list[dict[str, str]]) -> tuple[str, str | None]:
         """Текст ответа и причина остановки (`length` — упёрся в лимит токенов)."""
         response = client.chat.completions.create(
@@ -220,6 +227,7 @@ def make_chat(settings: Settings):
             messages=messages,
             temperature=0.2,
             max_tokens=settings.max_tokens,
+            extra_body=extra_body,
         )
         choice = response.choices[0]
         return choice.message.content or "", choice.finish_reason
