@@ -1,0 +1,87 @@
+# AI-ревью pull request (спека и модель угроз — openspec/changes/add-pr-ai-review/).
+#
+# Ключевые решения:
+# - pull_request_target: workflow и скрипт берутся из ОСНОВНОЙ ветки, PR не может их подменить;
+# - код PR никогда не выкладывается в рабочее дерево и не исполняется: скрипт читает его только
+#   командами `git diff` / `git show` по SHA (текст как данные);
+# - ревью только для PR из ЭТОГО репозитория (head-репозиторий сверяется через API);
+# - у job минимальные права: чтение содержимого и запись комментариев в PR, секретов нет.
+name: AI review
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: Номер PR (для ручного запуска и отладки)
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Одно ревью на PR: новый коммит отменяет устаревший незавершённый прогон.
+concurrency:
+  group: ai-review-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # Быстрый отсев форков на уровне условия; точная проверка head-репозитория повторяется в шаге
+    # «Resolve PR» по данным API (она же покрывает ручной запуск).
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, ai-review]
+    timeout-minutes: 30
+    steps:
+      # Для pull_request_target и workflow_dispatch по умолчанию — основная ветка (НЕ код PR).
+      - name: Checkout base branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          INPUT_PR: ${{ inputs.pr }}
+        run: |
+          number="${EVENT_PR:-$INPUT_PR}"
+          case "$number" in
+            ''|*[!0-9]*) echo "Некорректный номер PR"; exit 1 ;;
+          esac
+          info=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$number" \
+            --jq '[.head.repo.full_name, .head.sha, .base.sha] | @tsv')
+          head_repo=$(printf '%s' "$info" | cut -f1)
+          head_sha=$(printf '%s' "$info" | cut -f2)
+          base_sha=$(printf '%s' "$info" | cut -f3)
+          if [ "$head_repo" != "$GITHUB_REPOSITORY" ]; then
+            echo "PR из другого репозитория ($head_repo): ревью не выполняется"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$base_sha" >> "$GITHUB_OUTPUT"
+
+      # Только получение объектов git (без checkout): содержимое PR остаётся данными.
+      - name: Fetch PR objects
+        if: steps.pr.outputs.skip == 'false'
+        env:
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+        run: git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pull/${PR_NUMBER}"
+
+      - name: Review PR
+        if: steps.pr.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: >-
+          python3 scripts/pr_review.py review
+          --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA"
