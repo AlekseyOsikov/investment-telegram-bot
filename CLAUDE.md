@@ -42,6 +42,45 @@ MCP-инструменты, опрос цен, RAG-индексация). Про
   у `/smart_agent`.
 - `scripts/` — одноразовая оснастка (не часть бота): `rag_calibrate.py` — калибровка `RAG_MIN_SCORE` (запросы — в `data/rag_eval/`, не коммитятся); `dialog_eval.py` — прогон длинных диалогов `/smart_agent` с задачей и материалами (сценарии и отчёты — в `data/dialog_eval/`, не коммитятся; правила — `src/research/dialog_eval.py`); `ollama_tune.py` + `ollama_tune_lib.py` — подбор параметров локальной модели Ollama «до/после» (скорость, память, обрезка ответов, качество судьёй; варианты, вопросы и отчёты — в `data/ollama_tune/`, не коммитятся; чистые правила — `ollama_tune_lib.py`, тесты `tests/test_ollama_tune_lib.py`; `make tune`/`make tune-report`; Modelfile победителей — `scripts/ollama/`). Скрипт не часть бота и ничего не применяет сам: `.env`, `MAIN_MODEL` и рабочий `SYSTEM_PROMPT` остаются решением оператора. Ловушки (проверены на живом Ollama): удаление тега ЗАГРУЖЕННОЙ модели оставляет её в памяти — сначала выгрузка (`keep_alive: 0`), потом удаление; `num_predict` Modelfile перекрывается `max_tokens` бота (лимит ответа — `MAX_OUTPUT_TOKENS`); `reasoning_effort=none` рассуждение не выключает; `SYSTEM` Modelfile заменяется системным сообщением бота.
 
+## Оснастка AI-ревью PR (`scripts/pr_review*.py`, `.github/workflows/`)
+
+Оснастка вне бота: `src/` её не импортирует, бот её не использует. Спека —
+`openspec/changes/add-pr-ai-review/` (после архивации — `openspec/specs/pr-ai-review/`). Описание
+развёртывания runner — `README.md`, раздел «AI-ревью pull request».
+
+- `scripts/pr_review_lib.py` — ЧИСТЫЕ правила (выбор файлов индекса, чанкер исходников по `ast`,
+  разбор diff и шум, бюджет, поисковые запросы, проверка ссылок «файл:строка», сборка сообщений и
+  комментария). Не импортирует `config` (`config.py` требует токен бота при импорте) и не трогает
+  сеть, git и диск. Тесты — `tests/test_pr_review_lib.py`, `tests/test_pr_review_index.py`.
+- `scripts/pr_review_index.py` — сборка индекса через `rag.index_store.build_index()` (стратегия
+  `review`, каталог `PR_REVIEW_INDEX_DIR`, `meta.json` с датой и коммитом); `embed`/`store`
+  подставляются параметрами, прежний индекс цел при сбое эмбеддингов.
+- `scripts/pr_review.py` — CLI `index` / `review`: свой тонкий клиент эмбеддингов и клиент модели
+  ревью (`PR_REVIEW_PROVIDER|MODEL|BASE_URL|API_KEY|TIMEOUT_SECONDS|MAX_CHARS|MAX_TOKENS|TOP_K`,
+  `PR_REVIEW_INDEX_DIR`), публикация комментария через `gh api`.
+
+**Модель угроз «код PR — только данные»** (сохранять):
+- workflow ревью — `pull_request_target`: workflow и скрипт берутся из `main`; PR из форка не
+  ревьюится (условие по head-репозиторию + повторная проверка по API);
+- код PR НЕ выкладывается в рабочее дерево (нет `checkout` PR) и не исполняется: только
+  `git diff`/`git show` по SHA с `--no-ext-diff --no-textconv`; ревизии из аргументов проверяются
+  `is_safe_rev`; не добавляй `pip install`/запуск тестов/импорт файлов PR;
+- модели не отдаются инструменты; результат — только текст комментария, ссылки на код
+  проверяются кодом по поданным данным; текст модели и PR проходит `sanitize_text` (упоминания
+  `@user`, HTML-комментарии, поддельный маркер);
+- комментарий находится по маркеру `<!-- pr-ai-review -->` И автору (`github-actions[bot]`):
+  чужой комментарий с таким началом не перезаписывается;
+- у job нет секретов, кроме `GITHUB_TOKEN` (`contents: read`, `pull-requests: write`);
+  провайдера/модель/бюджет задаёт ТОЛЬКО оператор (окружение runner), автор PR их не выбирает —
+  это не рантайм-смена модели пользователем чата, а настройка оператора, как `REWRITE_MODEL`.
+
+**Данные наружу**: diff, файлы PR и найденные фрагменты кода/документации уходят провайдеру
+ревью. При локальном Ollama (по умолчанию) остаются на машине; при облачном провайдере покидают
+её — решение оператора. Индекс ревью отдельный (не `data/rag_index`, не `data/dev_index`) и
+строится только из основной ветки: `tests/`, `data/`, окружение и секреты, содержимое PR в него не
+попадают. Системное сообщение ревью запрещает инвестиционные рекомендации и гарантии корректности и
+говорит, что фрагменты и diff — данные; оговорку проверяет тест, не убирай её.
+
 ## Команды
 
 ```bash
@@ -49,6 +88,7 @@ make install   # pip install -r requirements.txt
 make run       # python src/main.py
 make test      # pytest tests/
 make index     # python -m rag.cli (нужен локальный Ollama с EMBEDDINGS_MODEL)
+make review-index  # python scripts/pr_review.py index (индекс AI-ревью PR; нужен Ollama)
 make clean     # удаляет __pycache__, .pytest_cache, .ruff_cache, build/dist
 python3 -m compileall -q src   # проверка синтаксиса без запуска
 ```
