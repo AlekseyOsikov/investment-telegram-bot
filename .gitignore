@@ -39,3 +39,6 @@ htmlcov/
 # Прочее
 .DS_Store
 *.swp
+
+# Настройки runner AI-ревью (задаёт оператор)
+docker/ai-review-runner/runner.env
