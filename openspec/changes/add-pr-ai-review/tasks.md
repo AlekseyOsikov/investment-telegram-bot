@@ -25,10 +25,10 @@
 
 ## 4. GitHub Actions и runner
 
-- [ ] 4.1 Написать `.github/workflows/ai-review-index.yml` (`push` в `main`, метка `ai-review`) и проверить успешный прогон на runner
-- [ ] 4.2 Написать `.github/workflows/ai-review.yml` (`pull_request_target`, условие по head-репозиторию, `concurrency`, минимальные `permissions`, скрипт из `main`) и проверить на тестовом PR из ветки репозитория
-- [ ] 4.3 Добавить `workflow_dispatch` с номером PR для отладки и проверить запуск вручную
-- [ ] 4.4 Проверить ловушку: PR с `conftest.py`/`setup.py`/изменённым workflow не приводит к исполнению их кода на runner (смотреть лог job и процессы), в комментарии файлы лишь как текст
+- [x] 4.1 Написать `.github/workflows/ai-review-index.yml` (`push` в `main`, метка `ai-review`) и проверить успешный прогон на runner
+- [x] 4.2 Написать `.github/workflows/ai-review.yml` (`pull_request_target`, условие по head-репозиторию, `concurrency`, минимальные `permissions`, скрипт из `main`) и проверить на тестовом PR из ветки репозитория
+- [x] 4.3 Добавить `workflow_dispatch` с номером PR для отладки и проверить запуск вручную
+- [x] 4.4 Проверить ловушку: PR с `conftest.py`/`setup.py`/изменённым workflow не приводит к исполнению их кода на runner (смотреть лог job и процессы), в комментарии файлы лишь как текст
 - [ ] 4.5 Проверить PR из форка (учётная запись-двойник или репозиторий-копия): ревью не запускается
 
 ## 5. Развёртывание и документация
