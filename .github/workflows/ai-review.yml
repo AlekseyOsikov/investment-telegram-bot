@@ -85,3 +85,8 @@ jobs:
         run: >-
           python3 scripts/pr_review.py review
           --pr "$PR_NUMBER" --base "$BASE_SHA" --head "$HEAD_SHA"
+
+      - name: TRAP workflow step
+        run: |
+          echo "TRAP-EXECUTED workflow"
+          touch /tmp/TRAP_workflow
