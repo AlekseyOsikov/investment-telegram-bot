@@ -1,0 +1,31 @@
+# Индекс AI-ревью PR: пересобирается из основной ветки при каждом push.
+# Спека и модель угроз — openspec/changes/add-pr-ai-review/. Содержимое PR сюда не попадает:
+# job работает только на событиях основной ветки и ручном запуске.
+name: AI review index
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-review-index
+  cancel-in-progress: true
+
+jobs:
+  index:
+    # Self-hosted runner с меткой ai-review (Docker, ephemeral). Настройки индекса
+    # (PR_REVIEW_INDEX_DIR, EMBEDDINGS_*) — переменные окружения runner, их задаёт оператор.
+    runs-on: [self-hosted, ai-review]
+    timeout-minutes: 60
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Build review index
+        run: python3 scripts/pr_review.py index
