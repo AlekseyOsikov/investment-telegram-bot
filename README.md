@@ -1669,6 +1669,10 @@ workflow на вашей машине, поэтому:
 
 **Развёртывание runner (на ПК, затем на VPS).**
 
+0. Готовые файлы — `docker/ai-review-runner/` (`Dockerfile`, `entrypoint.sh`, `run.sh`,
+   `runner.env.example`): скопируйте `runner.env.example` в `runner.env` (не коммитится), заполните и
+   запустите `docker/ai-review-runner/run.sh` (нужны docker и авторизованный `gh`): скрипт собирает
+   образ и в цикле поднимает ephemeral-контейнеры со свежим регистрационным токеном.
 1. Образ runner с `python3`, `git`, `gh` и пакетами `openai`, `httpx`, `faiss-cpu`, `numpy`
    (зависимости ставятся в образ, а не в job). Контейнер **ephemeral** (`--ephemeral`, один job —
    один контейнер), метка `ai-review`; без монтирования `$HOME`, `.env` и SSH-ключей. Монтируются
