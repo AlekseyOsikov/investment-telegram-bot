@@ -21,7 +21,7 @@
     PR_REVIEW_API_KEY          ключ облачного провайдера (для ollama не нужен)
     PR_REVIEW_TIMEOUT_SECONDS  таймаут ответа модели (по умолчанию 300)
     PR_REVIEW_MAX_CHARS        бюджет diff и файлов, символов (по умолчанию 24000)
-    PR_REVIEW_MAX_TOKENS       предел ответа модели (по умолчанию 4096)
+    PR_REVIEW_MAX_TOKENS       предел ответа модели, включая рассуждение (по умолчанию 8192)
     PR_REVIEW_TOP_K            сколько фрагментов индекса подаётся модели (по умолчанию 8)
     EMBEDDINGS_BASE_URL / EMBEDDINGS_MODEL  эмбеддинги (по умолчанию localhost Ollama, bge-m3)
     GITHUB_REPOSITORY          owner/repo (задаёт GitHub Actions); GH_TOKEN — токен для `gh`
@@ -51,13 +51,16 @@ EXIT_OK, EXIT_FAILED, EXIT_CONFIG = 0, 1, 2
 DEFAULT_OLLAMA_URL = "http://localhost:11434/v1"
 DEFAULT_TIMEOUT_SECONDS = 300.0
 DEFAULT_MAX_CHARS = 24000
-DEFAULT_MAX_TOKENS = 4096
+DEFAULT_MAX_TOKENS = 8192
 # Сверх этого размера файл PR не читается целиком (ревью по diff), вывод `git diff` обрезается.
 MAX_FILE_READ_CHARS = 400_000
 MAX_DIFF_READ_CHARS = 4_000_000
 GIT_TIMEOUT_SECONDS = 120.0
 GH_TIMEOUT_SECONDS = 60.0
 BOT_LOGIN = "github-actions[bot]"
+# Облачные провайдеры, у которых рассуждение отключается (как в бота: main_client_settings): оно
+# съедает лимит токенов и время, а для ревью по diff не нужно (замер: 9071 → 1417 токенов).
+THINKING_OFF_PROVIDERS = frozenset({"deepseek", "kimi"})
 
 
 class ConfigError(Exception):
@@ -213,21 +216,45 @@ def make_chat(settings: Settings):
         **kwargs,
     )
 
-    def ask(messages: list[dict[str, str]]) -> str:
+    extra_body = (
+        {"thinking": {"type": "disabled"}} if settings.provider in THINKING_OFF_PROVIDERS else None
+    )
+
+    def ask(messages: list[dict[str, str]]) -> tuple[str, str | None]:
+        """Текст ответа и причина остановки (`length` — упёрся в лимит токенов)."""
         response = client.chat.completions.create(
             model=settings.model,
             messages=messages,
             temperature=0.2,
             max_tokens=settings.max_tokens,
+            extra_body=extra_body,
         )
-        return response.choices[0].message.content or ""
+        choice = response.choices[0]
+        return choice.message.content or "", choice.finish_reason
 
     return ask
+
+
+class EmptyAnswerError(Exception):
+    """Модель вернула пустой ответ (причина остановки — `finish`)."""
+
+    def __init__(self, finish: str | None, max_tokens: int) -> None:
+        super().__init__("пустой ответ модели")
+        self.finish = finish
+        self.max_tokens = max_tokens
 
 
 def failure_reason(exc: Exception, settings: Settings) -> str:
     """Причина сбоя модели для комментария: без адресов, ключей и внутренних деталей."""
     import openai
+
+    if isinstance(exc, EmptyAnswerError):
+        if exc.finish == "length":
+            return (
+                f"ответ модели пуст: лимит {exc.max_tokens} токенов (PR_REVIEW_MAX_TOKENS) ушёл на "
+                "рассуждение; оператору нужно увеличить лимит"
+            )
+        return "модель вернула пустой ответ"
 
     if isinstance(exc, openai.APITimeoutError):
         return f"сервер модели не ответил за {settings.timeout:g} с"
@@ -409,16 +436,20 @@ def cmd_review(args: argparse.Namespace) -> int:
         "index_commit": (meta or {}).get("commit"),
     }
     try:
-        raw = ask(messages)
+        raw, finish = ask(messages)
         parsed = lib.parse_model_response(raw)
-        if parsed is None:
+        if parsed is None and raw.strip():
             retry = [
                 *messages,
                 {"role": "assistant", "content": raw},
                 {"role": "user", "content": lib.RETRY_REMINDER},
             ]
-            raw = ask(retry)
+            raw, finish = ask(retry)
             parsed = lib.parse_model_response(raw)
+        if parsed is None and not raw.strip():
+            # Пустой ответ повторять бессмысленно: у моделей с рассуждением весь лимит уходит
+            # на размышления (`finish_reason=length`), повтор даст то же самое.
+            raise EmptyAnswerError(finish, settings.max_tokens)
     except Exception as exc:  # noqa: BLE001 — сбой модели → комментарий «ревью не выполнено»
         comment = lib.build_comment(
             lib.CommentInput(
