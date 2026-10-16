@@ -45,7 +45,8 @@ MCP-инструменты, опрос цен, RAG-индексация). Про
 ## Оснастка AI-ревью PR (`scripts/pr_review*.py`, `.github/workflows/`)
 
 Оснастка вне бота: `src/` её не импортирует, бот её не использует. Спека —
-`openspec/changes/add-pr-ai-review/` (после архивации — `openspec/specs/pr-ai-review/`). Описание
+`openspec/specs/pr-ai-review/spec.md`, обоснования — `openspec/changes/archive/2026-10-16-add-pr-ai-review/design.md`.
+Описание
 развёртывания runner — `README.md`, раздел «AI-ревью pull request».
 
 - `scripts/pr_review_lib.py` — ЧИСТЫЕ правила (выбор файлов индекса, чанкер исходников по `ast`,
