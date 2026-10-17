@@ -3,8 +3,10 @@
 Корневые правила — в `/CLAUDE.md`. Спека — `openspec/specs/dev-assistant/spec.md` (после архивации
 изменения `add-dev-assistant-mode`), обоснования — `openspec/changes/*add-dev-assistant-mode/design.md`.
 
-Режим отвечает о САМОМ проекте: по фрагментам его документации (отдельный индекс) и по git-сведениям
-(текущая ветка, список файлов) через MCP-сервер `mcp-git`. Это не инвестиционный режим: вопросы об
+Режим отвечает о САМОМ проекте: по фрагментам его документации (отдельный индекс), по git-сведениям
+(текущая ветка, список файлов) через MCP-сервер `mcp-git` и — при `MCP_FILES_ENABLED` — по файлам
+проекта через собственный MCP-сервер `mcp_servers/project_files/` (спека `project-files-server`,
+обоснования — `openspec/changes/*add-dev-project-files/design.md`). Это не инвестиционный режим: вопросы об
 инвестициях в нём отклоняются, дисклеймер и осторожные формулировки основного `SYSTEM_PROMPT` не
 ослабляются.
 
@@ -23,12 +25,22 @@
 - `search.py` — эмбеддинг вопроса с бюджетом `RAG_SEARCH_TIMEOUT_SECONDS` → поиск → порог
   `DEV_ASSISTANT_MIN_SCORE` (≤ 0 — шаг отключён) и `DEV_ASSISTANT_TOP_K`. Исходы `FOUND` /
   `NOT_FOUND` / `NO_INDEX` / `FAILED`. Без переписывания вопроса и второго этапа отбора.
-- `prompts.py` — системное сообщение ассистента, сообщения git-слоя (доступен / недоступен / не
-  настроен), сборка сообщений (`build_messages`), источники (`format_sources`).
+- `prompts.py` — системное сообщение ассистента, сообщения git-слоя и файлового слоя (доступен /
+  недоступен / не настроен; файловое сообщение — только если слой включён), сборка сообщений (`build_messages`), источники (`format_sources`).
 - `git_session.py` — `build_git_server_params`, allowlist, `strip_repo_path`, `force_repo_path`,
   `GitTools`, `open_git_tools` (механику сессии даёт `mcp_integration/market_session.py`).
-- `core.py` — `DevAssistant.ask(chat_id, question, should_cancel)`; Telegram не импортирует.
-- `command.py` — `/dev`, вопросы, `/cancel`, `build_dev_assistant_handlers()`.
+- `files_session.py` — `FilesSettings`, `build_files_server_params`, allowlist модели
+  (`FILES_TOOL_ALLOWLIST`) и кнопок (`BUTTON_TOOL_ALLOWLIST`), `FilesTools` (фасад: отбрасывает
+  аргументы вне схемы, регистрирует предложение, модели отдаёт краткий результат без diff),
+  `run_button_action` (применение/отклонение, недоступно фасаду модели), `CombinedTools`
+  (git + файлы в один цикл).
+- `proposals.py` — ЧИСТОЕ: реестр предложений в памяти (id ↔ чат ↔ пользователь, TTL),
+  `callback_data` `dev:apply|discard:<id>`, вывод diff (HTML `<pre>` или файл `.patch`), имя патча.
+- `core.py` — `DevAssistant.ask(chat_id, question, should_cancel, user_id)` (git и файловые сессии
+  открываются на вопрос в общем `AsyncExitStack`, недоступность слоя деградирует независимо),
+  `decide_proposal` (кнопки); Telegram не импортирует.
+- `command.py` — `/dev`, вопросы, `/cancel`, кнопки под предложениями (`CallbackQueryHandler` есть
+  только при файловом слое), `build_dev_assistant_handlers()`.
 
 ## Что сохранять
 
@@ -46,8 +58,30 @@
   ни в схеме, ни в обработке (`GIT_TOOL_ALLOWLIST` + `require_read_only=True`). `repo_path` модель не
   выбирает: параметр удалён из схем, а в каждом вызове перезаписывается `PROJECT_ROOT`; корень доступа
   сервера (`--root`) — каталог этого репозитория (вторая граница, на стороне сервера:
-  `path_not_allowed`). Содержимое изменений и файлов в модель не уходит. Новый инструмент —
-  отдельное решение (через `get_diff` код ушёл бы облачному провайдеру).
+  `path_not_allowed`). Git-изменения (diff) в модель не уходят. Новый инструмент — отдельное решение
+  (через `get_diff` код ушёл бы облачному провайдеру).
+- **Файловый слой (`MCP_FILES_ENABLED`, по умолчанию выкл.).** Модель: `list_dir`, `read_file`,
+  `search_text`, `propose_change`. `apply_change`/`discard_change` — ТОЛЬКО у кода бота (кнопки,
+  отдельный allowlist, отдельная сессия), у модели их нет ни в схеме, ни в `call()`. Корень и
+  каталог предложений модель не выбирает (аргументы запуска сервера; из аргументов вызова
+  отбрасывается всё вне схемы инструмента). Границы доступа — на сервере (`files_rules.py`):
+  канонизация пути, denylist чтения (`.env*` кроме `.env.example`, `data/`, `.git/`, `.venv*`,
+  кэши, ключи), allowlist записи (документация и `.env.example`), хэш исходника при применении,
+  атомарная запись, предложение вынимается из хранилища ДО записи. Содержимое файлов уходит основной
+  модели (облачный `MAIN_CLIENT` — наружу); в историю режима оно не пишется. Результаты файлов —
+  данные, не инструкции (системное сообщение слоя с оговоркой о неослаблении `SYSTEM_PROMPT` —
+  тест проверяет). Проверка нажатия: `rules.is_authorized` по id пользователя, личный чат, владелец
+  предложения; посторонний — `query.answer()` без текста. После перезапуска бота кнопки «устарели»
+  (реестр в памяти). Применённый diff сохраняется как `.patch`; индекс `/dev` не пересобирается сам.
+  Смена allowlist записи (в т.ч. на исходный код) — решение владельца проекта.
+  Известные ограничения (проверены на живом Ollama): `propose_change` принимает ПОЛНОЕ новое
+  содержимое файла, поэтому большие файлы (README ≈ 190 тыс. символов, `.env.example` ≈ 54 тыс.,
+  корневой `CLAUDE.md` ≈ 50 тыс.) выше `DEV_FILES_MAX_PROPOSAL_CHARS`/`DEV_FILES_MAX_READ_CHARS` целиком
+  не правятся — для них нужна точечная правка (замена фрагмента), это отдельное изменение; модель
+  копировала формат `N: ` из `read_file` в новое содержимое (сервер такие правки отклоняет,
+  `looks_line_numbered`) и теряла завершающий перевод строки (сервер сохраняет его как у исходного
+  файла); при исчерпании `MCP_MAX_TOOL_STEPS` после `propose_change` ответ может быть пустым, а
+  предложение всё равно показывается.
 - **Недоступный или не настроенный git не блокирует ответ по документации**: модель получает сообщение
   «НЕДОСТУПНЫ» / «не настроен» и не называет ветку по памяти; пользователю — предупреждение. Если
   и документация ничего не нашла, а инструментов нет — фиксированный отказ БЕЗ вызова модели.
@@ -66,7 +100,8 @@
   одном из них (`active_mode`); внутри диалога эти команды отклоняются подсказкой выйти. Обработчик
   регистрируется в `main.py` ДО них; код существующих режимов не меняется. Вне флага `RESEARCH`.
 - **Данные наружу**: текст вопроса — серверу эмбеддингов и основной модели; вместе с вопросом модели —
-  фрагменты документации, имена файлов и название ветки. При облачном `MAIN_CLIENT` это покидает
+  фрагменты документации, имена файлов, название ветки и (файловый слой) содержимое прочитанных и
+  найденных файлов. При облачном `MAIN_CLIENT` это покидает
   машину оператора (для локальной обработки — `MAIN_CLIENT=ollama`).
 
 ## Конфигурация (`config.py`, `.env.example`)
@@ -74,11 +109,17 @@
 `DEV_ASSISTANT_USER_IDS` (пусто — выкл.; мусор — запуск останавливается), `DEV_ASSISTANT_INDEX_DIR`
 (`data/dev_index`), `DEV_ASSISTANT_TOP_K` (5), `DEV_ASSISTANT_MIN_SCORE` (0.0 — не откалибровано),
 `DEV_ASSISTANT_HISTORY_TURNS` (6), `MCP_GIT_DIR` (каталог проекта `mcp-git`; пусто — git-слой выкл.;
-неверный путь — предупреждение в журнале). Общие: `MCP_TIMEOUT_SECONDS`, `MCP_MAX_TOOL_STEPS`,
+неверный путь — предупреждение в журнале). Файловый слой: `MCP_FILES_ENABLED` (`false`),
+`DEV_FILES_STAGING_DIR` (`data/dev_proposals`), `DEV_PATCHES_DIR` (`data/dev_patches`),
+`DEV_FILES_PROPOSAL_TTL_SECONDS` (3600), `DEV_FILES_MAX_READ_CHARS` (30000),
+`DEV_FILES_MAX_SEARCH_RESULTS` (50), `DEV_FILES_MAX_PROPOSAL_CHARS` (40000). Общие: `MCP_TIMEOUT_SECONDS`, `MCP_MAX_TOOL_STEPS`,
 `MCP_TOOL_RESULT_MAX_CHARS`, `RAG_SEARCH_TIMEOUT_SECONDS`.
 
 ## Тесты
 
-`tests/test_dev_assistant_{rules,chunking,sources,indexer,search,prompts,git}.py` — чистые функции без
-сети, Telegram и LLM (эмбеддинг, поиск, хранилище, сессия `mcp-git` подставляются функциями/фейками).
-`DevAssistant.ask()`, обработчики, живой `mcp-git`, Ollama и сборка индекса — вручную.
+`tests/test_dev_assistant_{rules,chunking,sources,indexer,search,prompts,git,files,proposals}.py` —
+чистые функции без сети, Telegram и LLM (эмбеддинг, поиск, хранилище, сессии `mcp-git` и файлового
+сервера подставляются функциями/фейками). Сервер файлов: `tests/test_project_files_rules.py`
+(пути, симлинки, denylist/allowlist, лимиты, diff, хранилище предложений на временном каталоге) и
+`tests/test_project_files_server.py` (обработчики без процесса). `DevAssistant.ask()`, обработчики,
+живые серверы, Ollama и сборка индекса — вручную.

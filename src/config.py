@@ -747,6 +747,29 @@ except ValueError as _exc:
     _DEV_ASSISTANT_USER_IDS_ERROR = str(_exc)
 MCP_GIT_DIR = os.path.expanduser(os.getenv("MCP_GIT_DIR", "").strip())
 
+# Файловый слой режима /dev (mcp_servers/project_files): модель читает и ищет по файлам проекта и
+# готовит правки документации, которые применяются только кнопкой. MCP_FILES_ENABLED=false (по
+# умолчанию) — поведение /dev не меняется. Содержимое прочитанных файлов уходит основной модели.
+# Каталоги приводятся к АБСОЛЮТНЫМ путям (сервер — отдельный процесс).
+_MCP_FILES_ENABLED_RAW = os.getenv("MCP_FILES_ENABLED", "false").strip().lower()
+MCP_FILES_ENABLED = _MCP_FILES_ENABLED_RAW in _TRUE_VALUES
+DEV_FILES_STAGING_DIR = os.path.abspath(
+    os.path.expanduser(os.getenv("DEV_FILES_STAGING_DIR", "data/dev_proposals").strip())
+)
+DEV_PATCHES_DIR = os.path.abspath(
+    os.path.expanduser(os.getenv("DEV_PATCHES_DIR", "data/dev_patches").strip())
+)
+DEV_FILES_PROPOSAL_TTL_SECONDS = _int_or_invalid(
+    os.getenv("DEV_FILES_PROPOSAL_TTL_SECONDS", "3600").strip()
+)
+DEV_FILES_MAX_READ_CHARS = _int_or_invalid(os.getenv("DEV_FILES_MAX_READ_CHARS", "30000").strip())
+DEV_FILES_MAX_SEARCH_RESULTS = _int_or_invalid(
+    os.getenv("DEV_FILES_MAX_SEARCH_RESULTS", "50").strip()
+)
+DEV_FILES_MAX_PROPOSAL_CHARS = _int_or_invalid(
+    os.getenv("DEV_FILES_MAX_PROPOSAL_CHARS", "40000").strip()
+)
+
 # Режим «ассистент поддержки» (/support, support_assistant/): отвечает о работе бота по FAQ и
 # документации (отдельный индекс, make support-index) и по обращениям (тикетам) ЭТОГО пользователя
 # из CRM через MCP. Всё — настройки ОПЕРАТОРА, пользователь чата их не меняет. Доступен всем в
@@ -1146,6 +1169,24 @@ def _validate_config() -> None:
     if not DEV_ASSISTANT_INDEX_DIR:
         logger.error("DEV_ASSISTANT_INDEX_DIR не может быть пустым.")
         sys.exit(1)
+
+    if _MCP_FILES_ENABLED_RAW not in _TRUE_VALUES | _FALSE_VALUES:
+        logger.error(
+            "Недопустимое значение MCP_FILES_ENABLED=%r. Допустимые значения: true/false "
+            "(также принимаются 1/0, yes/no, on/off).",
+            _MCP_FILES_ENABLED_RAW,
+        )
+        sys.exit(1)
+
+    for _name, _value in (
+        ("DEV_FILES_PROPOSAL_TTL_SECONDS", DEV_FILES_PROPOSAL_TTL_SECONDS),
+        ("DEV_FILES_MAX_READ_CHARS", DEV_FILES_MAX_READ_CHARS),
+        ("DEV_FILES_MAX_SEARCH_RESULTS", DEV_FILES_MAX_SEARCH_RESULTS),
+        ("DEV_FILES_MAX_PROPOSAL_CHARS", DEV_FILES_MAX_PROPOSAL_CHARS),
+    ):
+        if _value < 1:
+            logger.error("Недопустимое значение %s: нужно целое число не меньше 1.", _name)
+            sys.exit(1)
 
     if _SUPPORT_CRM_MOCK_RAW not in _TRUE_VALUES | _FALSE_VALUES:
         logger.error(

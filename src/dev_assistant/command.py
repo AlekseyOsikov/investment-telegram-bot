@@ -11,6 +11,12 @@
   МОЛЧА, как для неизвестной команды: режим не раскрывается; проверка — по id пользователя, не чата;
 - режим НЕ упоминается в `/help` и не меняет `main.py: help_command`.
 
+Файловый слой (`MCP_FILES_ENABLED`): после ответа каждое предложение правки показывается отдельным
+сообщением с diff и кнопками «Применить»/«Отклонить»; `CallbackQueryHandler` не имеет фильтра
+пользователей, поэтому проверка внутри: `rules.is_authorized` по id пользователя, личный чат и
+сверка владельца предложения (`DevAssistant.decide_proposal`); посторонний — `query.answer()` без
+текста. Файл пишет сервер по нажатию, а не модель.
+
 Взаимоисключение с `/agent`, `/agent_compare`, `/smart_agent`: входящие команды этих режимов внутри
 диалога отклоняются подсказкой выйти (`/cancel`), а `/dev` не открывается, пока чат в одном из них
 (`active_mode`). Тот же ConversationHandler регистрируется в `main.py` ДО них и до обработчика
@@ -19,12 +25,16 @@
 from __future__ import annotations
 
 import functools
+import io
 import logging
 from collections.abc import Sequence
+from typing import Any
 
-from telegram import Update
-from telegram.constants import ChatAction
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ChatAction, ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
+    CallbackQueryHandler,
     CommandHandler,
     ContextTypes,
     ConversationHandler,
@@ -39,11 +49,18 @@ from config import (
     DEV_ASSISTANT_MIN_SCORE,
     DEV_ASSISTANT_TOP_K,
     DEV_ASSISTANT_USER_IDS,
+    DEV_FILES_MAX_PROPOSAL_CHARS,
+    DEV_FILES_MAX_READ_CHARS,
+    DEV_FILES_MAX_SEARCH_RESULTS,
+    DEV_FILES_PROPOSAL_TTL_SECONDS,
+    DEV_FILES_STAGING_DIR,
+    DEV_PATCHES_DIR,
     MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
     MAIN_MODEL,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_TOKENS,
+    MCP_FILES_ENABLED,
     MCP_GIT_DIR,
     MCP_MAX_TOOL_STEPS,
     MCP_TIMEOUT_SECONDS,
@@ -59,8 +76,9 @@ from llm_queue.rules import KIND_DEV_ASSISTANT, AskCancelled
 from providers.main_client import main_client
 from research._shared import api_error_to_message
 
-from . import rules, search
-from .core import DevAnswer, DevAssistant
+from . import proposals, rules, search
+from .core import OUTCOME_FOREIGN, DevAnswer, DevAssistant
+from .files_session import FilesSettings
 from .sources import PROJECT_ROOT
 
 logger = logging.getLogger(__name__)
@@ -77,6 +95,21 @@ LEAVE_FIRST_TEXT = "⚠️ Сначала выйди из режима асси�
 TOO_LONG_TEXT = "⚠️ Вопрос слишком длинный ({length} символов). Максимум — {limit}."
 UNEXPECTED_ERROR_TEXT = "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже."
 PROFILE_CHANGED_TEXT = "⚠️ Вопрос снят, обмен не записан."
+
+
+def build_files_settings() -> FilesSettings | None:
+    """Настройки файлового слоя из `config`; `None` — слой выключен (`MCP_FILES_ENABLED=false`).
+    Корень доступа сервера — каталог этого репозитория (`PROJECT_ROOT`), не из ввода."""
+    if not MCP_FILES_ENABLED:
+        return None
+    return FilesSettings(
+        root=PROJECT_ROOT,
+        staging_dir=DEV_FILES_STAGING_DIR,
+        ttl_seconds=DEV_FILES_PROPOSAL_TTL_SECONDS,
+        max_read_chars=DEV_FILES_MAX_READ_CHARS,
+        max_search_results=DEV_FILES_MAX_SEARCH_RESULTS,
+        max_proposal_chars=DEV_FILES_MAX_PROPOSAL_CHARS,
+    )
 
 
 def build_assistant() -> DevAssistant:
@@ -99,6 +132,8 @@ def build_assistant() -> DevAssistant:
         mcp_timeout=MCP_TIMEOUT_SECONDS,
         max_tool_steps=MCP_MAX_TOOL_STEPS,
         tool_result_max_chars=MCP_TOOL_RESULT_MAX_CHARS,
+        files=build_files_settings(),
+        patches_dir=DEV_PATCHES_DIR,
     )
 
 
@@ -125,6 +160,39 @@ def format_service_message(answer: DevAnswer) -> str:
     return "\n\n".join(parts)
 
 
+def proposal_keyboard(proposal: proposals.Proposal) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    proposals.APPLY_LABEL,
+                    callback_data=proposals.build_callback_data(
+                        proposals.ACTION_APPLY, proposal.id
+                    ),
+                ),
+                InlineKeyboardButton(
+                    proposals.DISCARD_LABEL,
+                    callback_data=proposals.build_callback_data(
+                        proposals.ACTION_DISCARD, proposal.id
+                    ),
+                ),
+            ]
+        ]
+    )
+
+
+async def _send_proposal(update: Update, proposal: proposals.Proposal) -> None:
+    """Предложение правки: diff в сообщении (или файлом, если не помещается) и кнопки."""
+    rendered = proposals.render_proposal(proposal, TELEGRAM_MESSAGE_LIMIT)
+    if rendered.document_name:
+        await update.message.reply_document(
+            document=io.BytesIO(proposal.diff.encode("utf-8")), filename=rendered.document_name
+        )
+    await update.message.reply_text(
+        rendered.text, parse_mode=ParseMode.HTML, reply_markup=proposal_keyboard(proposal)
+    )
+
+
 async def _answer_question(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -138,7 +206,13 @@ async def _answer_question(
     await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
     try:
         answer = await ctx.run_thread(
-            functools.partial(assistant.ask, chat_id, question, should_cancel=ctx.should_cancel),
+            functools.partial(
+                assistant.ask,
+                chat_id,
+                question,
+                should_cancel=ctx.should_cancel,
+                user_id=update.effective_user.id if update.effective_user else None,
+            ),
             late=saved_notice(context, chat_id),
         )
     except AskCancelled:
@@ -158,11 +232,13 @@ async def _answer_question(
     service = format_service_message(answer)
     if service:
         await update.message.reply_text(service)
+    for proposal in answer.proposals:
+        await _send_proposal(update, proposal)
 
 
 def build_dev_assistant_handlers(
     user_ids: Sequence[int] | None = None, assistant: DevAssistant | None = None
-) -> list[ConversationHandler]:
+) -> list[Any]:
     """Обработчики режима. Пустой список id — `[]` (режим выключен, команда неизвестна).
     `user_ids`/`assistant` по умолчанию берутся из `config`; параметры — для проверки сборки."""
     ids = tuple(DEV_ASSISTANT_USER_IDS if user_ids is None else user_ids)
@@ -183,7 +259,9 @@ def build_dev_assistant_handlers(
         if get_active_mode(update.effective_chat.id) is not None:
             await update.message.reply_text(OTHER_MODE_ACTIVE_TEXT)
             return ConversationHandler.END
-        await update.message.reply_text(rules.ENTER_TEXT)
+        await update.message.reply_text(
+            rules.ENTER_TEXT_FILES if assistant.files_configured else rules.ENTER_TEXT
+        )
         return WAITING_QUESTION
 
     async def receive_question(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -219,7 +297,35 @@ def build_dev_assistant_handlers(
         await update.message.reply_text(rules.EXIT_TEXT)
         return ConversationHandler.END
 
-    return [
+    async def on_proposal_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        query = update.callback_query
+        if query is None:
+            return
+        chat = update.effective_chat
+        parsed = proposals.parse_callback_data(query.data)
+        if not authorized(update) or chat is None or chat.type != "private" or parsed is None:
+            await query.answer()  # молча: режим не раскрывается
+            return
+        action, proposal_id = parsed
+        outcome = await assistant.decide_proposal(
+            action, proposal_id, chat.id, update.effective_user.id
+        )
+        await query.answer()
+        if outcome.status == OUTCOME_FOREIGN:
+            return
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except TelegramError:
+            logger.debug("Не удалось убрать кнопки под предложением.", exc_info=True)
+        if outcome.text:
+            await context.bot.send_message(chat_id=chat.id, text=outcome.text)
+
+    handlers: list[Any] = []
+    if assistant.files_configured:
+        handlers.append(
+            CallbackQueryHandler(on_proposal_button, pattern=proposals.CALLBACK_PATTERN)
+        )
+    return handlers + [
         ConversationHandler(
             entry_points=[CommandHandler(rules.ENTER_COMMAND, enter, filters=private & allowed)],
             states={

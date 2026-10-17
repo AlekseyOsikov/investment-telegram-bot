@@ -21,3 +21,9 @@ if str(SCRIPTS) not in sys.path:
 MOCK_CRM = Path(__file__).resolve().parent.parent / "mock_servers" / "support_crm"
 if str(MOCK_CRM) not in sys.path:
     sys.path.insert(0, str(MOCK_CRM))
+
+# Чистые правила MCP-сервера файлов проекта (mcp_servers/project_files/files_rules.py): сервер не
+# пакет и `src/` его не импортирует; тесты берут модули сервера напрямую.
+MCP_PROJECT_FILES = Path(__file__).resolve().parent.parent / "mcp_servers" / "project_files"
+if str(MCP_PROJECT_FILES) not in sys.path:
+    sys.path.insert(0, str(MCP_PROJECT_FILES))
