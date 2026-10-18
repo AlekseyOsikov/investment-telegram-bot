@@ -97,6 +97,7 @@ from config import (
     MAIN_MODEL,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_TOKENS,
+    NEWS_ACTIVE,
     PRICE_WATCH_ACTIVE,
     REQUEST_TIMEOUT_SECONDS,
     RESEARCH_ENABLED,
@@ -110,6 +111,9 @@ from llm_queue.gate import JobContext
 from llm_queue.rules import KIND_MAIN
 from main_client_settings import connection_error_text
 from mcp_integration.tools_command import build_mcp_tools_handler
+from news_digest.commands import build_news_digest_handlers
+from news_digest.scheduler import start_scheduler as start_news_scheduler
+from news_digest.scheduler import stop_scheduler as stop_news_scheduler
 from price_watch.commands import build_price_watch_handlers
 from price_watch.scheduler import start_scheduler, stop_scheduler
 from providers.main_client import async_main_client
@@ -156,6 +160,15 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             "тикеров этого чата и публичные цены. Всё это удаляется командой /watch_stop; "
             "обычные сообщения я по-прежнему не запоминаю.\n\n"
             if PRICE_WATCH_ACTIVE
+            else ""
+        )
+        + (
+            "📰 И ещё одно — дайджест новостей: после команды /news я сам, без твоего "
+            "вопроса, присылаю публичные новости по бумагам из твоего /watch с коротким "
+            "автоматическим разбором (тип события и общий механизм, без прогнозов и "
+            "советов). Подборка неполная. Я храню на диске только номер чата и отметки о "
+            "доставленных новостях; всё это удаляется командой /news_stop.\n\n"
+            if NEWS_ACTIVE
             else ""
         )
         + "Используй /help, чтобы посмотреть список команд."
@@ -325,6 +338,14 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             "/watch_report — сводка по накопленным замерам прямо сейчас",
             "/watch_stop — остановить опрос цен и удалить его замеры",
         ]
+    if NEWS_ACTIVE:
+        command_lines += [
+            "/news — включить дайджест новостей по бумагам из твоего /watch: я сам пришлю "
+            "публичные новости с коротким автоматическим разбором (тип события и общий "
+            "механизм, без прогнозов и советов; подборка неполная)",
+            "/news_status — состояние дайджеста: бумаги, ближайший дайджест, лимит сообщений",
+            "/news_stop — выключить дайджест новостей и удалить его отметки",
+        ]
 
     help_text = (
         "ℹ️ <b>Как пользоваться ботом</b>\n\n"
@@ -463,9 +484,13 @@ async def _post_init(application: Application) -> None:
     await start_gate(application)
     if PRICE_WATCH_ACTIVE:
         await start_scheduler(application)
+    if NEWS_ACTIVE:
+        await start_news_scheduler(application)
 
 
 async def _post_stop(application: Application) -> None:
+    if NEWS_ACTIVE:
+        await stop_news_scheduler(application)
     if PRICE_WATCH_ACTIVE:
         await stop_scheduler(application)
     await stop_gate(application)
@@ -563,6 +588,11 @@ def main() -> None:
     # MCP_MOEX_DIR и не выключил PRICE_WATCH (config.PRICE_WATCH_ACTIVE).
     if PRICE_WATCH_ACTIVE:
         for handler in build_price_watch_handlers():
+            application.add_handler(handler)
+    # Дайджест новостей (/news*) — тоже не исследовательский режим: активен, только если
+    # оператор включил NEWS_ENABLED, задал ленты и опросы цен активны (config.NEWS_ACTIVE).
+    if NEWS_ACTIVE:
+        for handler in build_news_digest_handlers():
             application.add_handler(handler)
     # Только личные чаты и только текст — никаких групп, файлов, команд извне списка выше.
     application.add_handler(

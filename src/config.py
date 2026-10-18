@@ -721,6 +721,47 @@ LLM_MAX_PENDING_PER_USER = _int_or_invalid(_LLM_MAX_PENDING_PER_USER_RAW)
 LLM_QUEUE_MAX = _int_or_invalid(_LLM_QUEUE_MAX_RAW)
 LLM_QUEUE_TTL_SECONDS = _int_or_invalid(_LLM_QUEUE_TTL_SECONDS_RAW)
 
+# Дайджест новостей по бумагам из /watch (news_digest/, mcp_servers/news/; design.md изменения
+# add-news-digest). Настройки ОПЕРАТОРА: пользователь чата их не меняет. NEWS_ENABLED (по
+# умолчанию false) — бот сам пишет в чат фоновые сообщения, поэтому включается осознанно.
+# NEWS_DB — файл SQLite сервера новостей (путь абсолютный: каталог процесса может меняться).
+# NEWS_FEEDS — адреса публичных лент через пробел или запятую (RSS/Atom, MOEX ISS sitenews).
+# NEWS_PROVIDER/NEWS_MODEL — провайдер и модель разбора новостей (по образцу REWRITE_*; ключ
+# невыбранного провайдера не нужен, без модели/ключа дайджест работает без разбора).
+# Числа: целые ≥ 1 (нецелые превращаются в -1, и _validate_config() их отвергает).
+_NEWS_ENABLED_RAW = os.getenv("NEWS_ENABLED", "false").strip().lower()
+NEWS_ENABLED = _NEWS_ENABLED_RAW in _TRUE_VALUES
+NEWS_DB = os.path.abspath(
+    os.path.expanduser(os.getenv("NEWS_DB", "data/news/news.sqlite3").strip())
+)
+NEWS_FEEDS = [
+    url for url in os.getenv("NEWS_FEEDS", "").replace(",", " ").split() if url.strip()
+]
+_SUPPORTED_NEWS_PROVIDERS = ("ollama", "deepseek", "kimi")
+NEWS_PROVIDER = os.getenv("NEWS_PROVIDER", "ollama").strip().lower()
+NEWS_MODEL = os.getenv("NEWS_MODEL", "").strip()
+NEWS_TIMEOUT_SECONDS = float(os.getenv("NEWS_TIMEOUT_SECONDS", "120"))
+_NEWS_INT_SETTINGS = {
+    "NEWS_COLLECT_INTERVAL_MINUTES": "15",
+    "NEWS_DIGEST_INTERVAL_HOURS": "6",
+    "NEWS_DIGEST_MAX_ITEMS": "10",
+    "NEWS_MAX_MESSAGES_PER_DAY": "6",
+    "NEWS_MAX_ANALYZE_PER_TICK": "5",
+    "NEWS_RETENTION_DAYS": "7",
+}
+_NEWS_INT_RAW = {
+    name: os.getenv(name, default).strip() for name, default in _NEWS_INT_SETTINGS.items()
+}
+NEWS_COLLECT_INTERVAL_MINUTES = _int_or_invalid(_NEWS_INT_RAW["NEWS_COLLECT_INTERVAL_MINUTES"])
+NEWS_DIGEST_INTERVAL_HOURS = _int_or_invalid(_NEWS_INT_RAW["NEWS_DIGEST_INTERVAL_HOURS"])
+NEWS_DIGEST_MAX_ITEMS = _int_or_invalid(_NEWS_INT_RAW["NEWS_DIGEST_MAX_ITEMS"])
+NEWS_MAX_MESSAGES_PER_DAY = _int_or_invalid(_NEWS_INT_RAW["NEWS_MAX_MESSAGES_PER_DAY"])
+NEWS_MAX_ANALYZE_PER_TICK = _int_or_invalid(_NEWS_INT_RAW["NEWS_MAX_ANALYZE_PER_TICK"])
+NEWS_RETENTION_DAYS = _int_or_invalid(_NEWS_INT_RAW["NEWS_RETENTION_DAYS"])
+# Активен только при включённом флаге, активных опросах цен (тикеры берутся из /watch) и
+# заданных лентах; причину бездействия при включённом флаге пишет _warn_if_news_inactive().
+NEWS_ACTIVE = NEWS_ENABLED and PRICE_WATCH_ACTIVE and bool(NEWS_FEEDS)
+
 # Режим «ассистент разработчика» (/dev, dev_assistant/): отвечает о САМОМ проекте по его
 # документации
 # и (через mcp-git) по ветке и списку файлов. Всё — настройки ОПЕРАТОРА, пользователь чата их не
@@ -955,6 +996,36 @@ def _validate_config() -> None:
             PRICE_WATCH_TIMEOUT_SECONDS,
         )
         sys.exit(1)
+
+    if _NEWS_ENABLED_RAW not in _TRUE_VALUES | _FALSE_VALUES:
+        logger.error(
+            "Недопустимое значение NEWS_ENABLED=%r. Допустимые значения: true/false "
+            "(также принимаются 1/0, yes/no, on/off).",
+            _NEWS_ENABLED_RAW,
+        )
+        sys.exit(1)
+
+    if NEWS_PROVIDER not in _SUPPORTED_NEWS_PROVIDERS:
+        logger.error(
+            "Недопустимое значение NEWS_PROVIDER=%r. Допустимо: %s.",
+            NEWS_PROVIDER,
+            ", ".join(_SUPPORTED_NEWS_PROVIDERS),
+        )
+        sys.exit(1)
+
+    if NEWS_TIMEOUT_SECONDS <= 0:
+        logger.error(
+            "Недопустимое значение NEWS_TIMEOUT_SECONDS=%r: нужно число больше 0.",
+            NEWS_TIMEOUT_SECONDS,
+        )
+        sys.exit(1)
+
+    for _name, _raw in _NEWS_INT_RAW.items():
+        if _int_or_invalid(_raw) < 1:
+            logger.error(
+                "Недопустимое значение %s=%r: нужно целое число не меньше 1.", _name, _raw
+            )
+            sys.exit(1)
 
     if RAG_FIXED_CHUNK_CHARS < 1:
         logger.error(
@@ -1301,7 +1372,29 @@ def _warn_if_git_dir_invalid() -> None:
         )
 
 
+def _warn_if_news_inactive() -> None:
+    """Предупреждает в журнале, почему включённый дайджест новостей не запустится или будет
+    работать без разбора. Не завершает процесс: возможность необязательная."""
+    if not NEWS_ENABLED:
+        return
+    if not PRICE_WATCH_ACTIVE:
+        logger.warning(
+            "NEWS_ENABLED=true, но опросы цен не активны (нужны MCP_MOEX_DIR и PRICE_WATCH) — "
+            "дайджест новостей не запущен."
+        )
+    if not NEWS_FEEDS:
+        logger.warning(
+            "NEWS_ENABLED=true, но NEWS_FEEDS пуст — дайджест новостей не запущен."
+        )
+    if NEWS_PROVIDER == "ollama" and not NEWS_MODEL:
+        logger.warning(
+            "NEWS_MODEL не задан — новости будут приходить без разбора "
+            "(заголовок, источник, ссылка)."
+        )
+
+
 _validate_config()
+_warn_if_news_inactive()
 _warn_if_moex_dir_invalid()
 _warn_if_bybit_dir_invalid()
 _warn_if_git_dir_invalid()

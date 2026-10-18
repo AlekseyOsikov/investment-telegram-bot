@@ -27,3 +27,9 @@ if str(MOCK_CRM) not in sys.path:
 MCP_PROJECT_FILES = Path(__file__).resolve().parent.parent / "mcp_servers" / "project_files"
 if str(MCP_PROJECT_FILES) not in sys.path:
     sys.path.insert(0, str(MCP_PROJECT_FILES))
+
+# Сервер новостей (mcp_servers/news/news_*.py): как и project_files, не пакет и `src/` его не
+# импортирует; модули названы с префиксом `news_`, чтобы не столкнуться с `server`/`rules` других.
+MCP_NEWS = Path(__file__).resolve().parent.parent / "mcp_servers" / "news"
+if str(MCP_NEWS) not in sys.path:
+    sys.path.insert(0, str(MCP_NEWS))

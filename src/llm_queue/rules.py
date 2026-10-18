@@ -27,6 +27,7 @@ KIND_SMART_AGENT = "smart_agent"
 KIND_DEV_ASSISTANT = "dev_assistant"
 KIND_SUPPORT = "support"
 KIND_RESEARCH = "research"
+KIND_NEWS = "news"  # фоновый разбор новостей: один слот на новость, без показа пользователю
 KINDS = (
     KIND_MAIN,
     KIND_AGENT,
@@ -35,6 +36,7 @@ KINDS = (
     KIND_DEV_ASSISTANT,
     KIND_SUPPORT,
     KIND_RESEARCH,
+    KIND_NEWS,
 )
 
 # Сколько последних длительностей хранится по виду и с какого числа им верят.

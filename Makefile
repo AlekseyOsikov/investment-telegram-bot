@@ -1,4 +1,4 @@
-.PHONY: install run test clean index dev-index support-index review-index tune tune-report
+.PHONY: install run test clean index dev-index support-index review-index tune tune-report news-eval
 
 install:
 	pip install -r requirements.txt
@@ -32,6 +32,11 @@ tune:
 
 tune-report:
 	python scripts/ollama_tune.py report $(ARGS)
+
+# Оценка качества разбора новостей для дайджеста (/news): набор в data/news_eval/*.json, нужна
+# модель разбора NEWS_PROVIDER/NEWS_MODEL. Запускать ДО включения NEWS_ENABLED. Аргументы — через ARGS.
+news-eval:
+	python scripts/news_eval.py $(ARGS)
 
 test:
 	@command -v pytest >/dev/null 2>&1 || { \
