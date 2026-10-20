@@ -1,0 +1,249 @@
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 46bf76b..35396e5 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -28,6 +28,7 @@ MCP-инструменты, опрос цен, RAG-индексация). Про
+ - `main.py` — `/start`, `/help`, `handle_message`, точка входа, регистрация всех обработчиков.
+ - `llm_queue/` — очередь обращений к основной модели: шлюз слотов (`gate.py`), чистые правила
+   (`rules.py`), `/queue` и `/queue_cancel` (`commands.py`). Подробности — `src/llm_queue/CLAUDE.md`.
++- `terms/` — `/terms`: статический глоссарий из 8 терминов в коде (`rules.py`, чистые правила; `command.py`), без сети, LLM и хранения; личные чаты, вне флага `RESEARCH`; определения — справка, не рекомендация (оговорка в каждом ответе). Тесты — `tests/test_terms_rules.py`.
+ - `research/` — технические режимы исследования API (`RESEARCH`), в т.ч. сравнение ответов с RAG и
+   без (`/research_rag_compare`) и сравнение моделей с RAG (`/research_rag_models`).
+ - `agents/` — `Agent` (`/agent`), `/agent_compare`, `SmartAgent` (`/smart_agent`, в т.ч. слой `rag` —
+diff --git a/README.md b/README.md
+index 2529916..46572c2 100644
+--- a/README.md
++++ b/README.md
+@@ -571,6 +571,7 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
+ │   │   ├── search.py / prompts.py       # Поиск по индексу, сообщения модели, источники
+ │   │   ├── crm_session.py               # MCP «CRM»: три read-only инструмента, подстановка user id
+ │   │   └── core.py / command.py         # Ядро (без Telegram) и командный слой /support
++│   ├── terms/                           # /terms: глоссарий (rules.py — словарь и поиск, command.py)
+ │   ├── llm_queue/                       # Очередь LLM-задач: слоты, приоритеты, лимиты, отмена
+ │   │   ├── rules.py                     # Чистые правила: порядок, оценка ожидания, лимиты, тексты
+ │   │   ├── gate.py                      # Шлюз слотов (asyncio): реестр задач по чатам, отмена
+@@ -1892,6 +1893,7 @@ diff и файлам, и комментарий об этом сообщает.
+ | `/help`                  | Справка по использованию и ограничениям бота                                   |
+ | `/queue`                 | Показать свои вопросы в очереди к модели: номер, позицию, оценку ожидания      |
+ | `/queue_cancel [номер]`  | Снять все свои вопросы из очереди или один по номеру из `/queue`               |
++| `/terms [термин]`        | Глоссарий из 8 инвестиционных терминов: без аргумента список, с термином — определение (регистр не важен, при опечатке предлагает похожие); словарь в коде, без сети и LLM; личные чаты |
+ | `/dev`                   | Ассистент разработчика (только для id из `DEV_ASSISTANT_USER_IDS`; в `/help` не показывается; выход — `/cancel`) |
+ | `/support`               | Режим поддержки: вопросы о работе бота по справке и с учётом своих открытых обращений (выход — `/cancel`) |
+ | `/agent`                 | LLM-агент с памятью диалога: вопросы один за другим, контекст сохраняется даже после перезапуска бота |
+diff --git a/src/main.py b/src/main.py
+index a5472e8..43c18b6 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -109,6 +109,7 @@ from dev_assistant.command import build_dev_assistant_handlers
+ from llm_queue.commands import build_queue_handlers, enqueue_job, start_gate, stop_gate
+ from llm_queue.gate import JobContext
+ from llm_queue.rules import KIND_MAIN
++from terms.command import build_terms_handler
+ from main_client_settings import connection_error_text
+ from mcp_integration.tools_command import build_mcp_tools_handler
+ from news_digest.commands import build_news_digest_handlers
+@@ -263,6 +264,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
+         "/queue — показать свои вопросы в очереди к модели: позицию и примерное время ожидания",
+         "/queue_cancel [номер] — снять свои вопросы из очереди: без номера все, с номером "
+         "из /queue — один (например, /queue_cancel 2); /cancel по-прежнему выходит из режима",
++        "/terms [термин] — глоссарий инвестиционных терминов: без аргумента список, "
++        "с термином — его определение (справка, не рекомендация)",
+         "/support — режим поддержки: вопросы о работе бота (отвечу по справке и с учётом "
+         "твоих открытых обращений, если они есть); выход — /cancel",
+         "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
+@@ -510,6 +513,8 @@ def main() -> None:
+     # RESEARCH_ENABLED (llm_queue/commands.py).
+     for handler in build_queue_handlers():
+         application.add_handler(handler)
++    # /terms — статический глоссарий (terms/), не под RESEARCH_ENABLED.
++    application.add_handler(build_terms_handler())
+     # Исследовательские/технические команды регистрируются, только если включены
+     # переменной окружения RESEARCH (config.py) — см. её докстринг и help_command
+     # про то, какие команды это затрагивает и почему остальные /agent_* не входят.
+diff --git a/src/terms/__init__.py b/src/terms/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/src/terms/command.py b/src/terms/command.py
+new file mode 100644
+index 0000000..553cdce
+--- /dev/null
++++ b/src/terms/command.py
+@@ -0,0 +1,15 @@
++"""Командный слой /terms: глоссарий терминов (без сети и LLM, только личные чаты)."""
++
++from telegram import Update
++from telegram.ext import CommandHandler, ContextTypes, filters
++
++from terms.rules import answer
++
++
++async def terms_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
++    """/terms [термин] — список терминов или определение одного."""
++    await update.message.reply_text(answer(" ".join(context.args or [])))
++
++
++def build_terms_handler() -> CommandHandler:
++    return CommandHandler("terms", terms_command, filters=filters.ChatType.PRIVATE)
+diff --git a/src/terms/rules.py b/src/terms/rules.py
+new file mode 100644
+index 0000000..8b2e938
+--- /dev/null
++++ b/src/terms/rules.py
+@@ -0,0 +1,115 @@
++"""Чистые правила глоссария /terms: словарь терминов, поиск, тексты.
++
++Не импортирует `config`, не трогает сеть и диск. Определения — общеобразовательные,
++без оценок и рекомендаций.
++"""
++
++import difflib
++
++# Ключ — нормализованное название (нижний регистр), значение — определение.
++TERMS: dict[str, str] = {
++    "акция": (
++        "Ценная бумага, которая подтверждает долю владельца в капитале компании. "
++        "Держатель может получать часть прибыли в виде дивидендов; цена акции "
++        "меняется на бирже и может как расти, так и падать."
++    ),
++    "облигация": (
++        "Долговая ценная бумага: эмитент занимает деньги у инвестора и обязуется "
++        "вернуть номинал в установленный срок и, как правило, платить купонный доход. "
++        "Облигации тоже несут риски, например кредитный риск эмитента."
++    ),
++    "дивиденд": (
++        "Часть прибыли компании, которую она может выплатить акционерам. Решение о "
++        "выплате и её размере принимает компания; выплата не обязательна и не "
++        "гарантирована."
++    ),
++    "купон": (
++        "Периодический процентный платёж по облигации. Размер и даты выплат "
++        "определены условиями выпуска; при дефолте эмитента выплата может не состояться."
++    ),
++    "ликвидность": (
++        "Насколько быстро актив можно продать по цене, близкой к рыночной. "
++        "У ликвидных бумаг много покупателей и продавцов, у малоликвидных сделка "
++        "может занять время или потребовать уступки в цене."
++    ),
++    "волатильность": (
++        "Мера размаха колебаний цены актива за период. Высокая волатильность "
++        "означает резкие изменения цены в обе стороны; это характеристика "
++        "прошлых колебаний, а не прогноз."
++    ),
++    "диверсификация": (
++        "Распределение вложений между разными активами, отраслями или странами, "
++        "чтобы падение одного из них меньше влияло на весь портфель. Снижает "
++        "зависимость от отдельного актива, но не исключает убытков."
++    ),
++    "индекс": (
++        "Показатель, который отражает движение цен выбранной группы бумаг, "
++        "например индекс Московской биржи. Служит ориентиром состояния рынка "
++        "или его сегмента."
++    ),
++}
++
++DISCLAIMER = "Справочная информация, не индивидуальная инвестиционная рекомендация."
++
++
++def normalize(raw: str) -> str:
++    """Регистр и пробелы по краям (и повторные внутри) не важны; «ё» равна «е»."""
++    return " ".join(raw.lower().replace("ё", "е").split())
++
++
++_INDEX: dict[str, str] = {normalize(k): k for k in TERMS}
++
++
++def list_terms() -> list[str]:
++    return sorted(TERMS)
++
++
++def find_term(raw: str) -> str | None:
++    """Ключ словаря по пользовательскому вводу или None."""
++    return _INDEX.get(normalize(raw))
++
++
++def suggest(raw: str, limit: int = 3) -> list[str]:
++    """Похожие термины: по префиксу/вхождению, затем по близости написания."""
++    q = normalize(raw)
++    if not q:
++        return []
++    found: list[str] = []
++    for norm, key in _INDEX.items():
++        if norm.startswith(q) or q in norm or norm in q:
++            found.append(key)
++    for norm in difflib.get_close_matches(q, list(_INDEX), n=limit, cutoff=0.5):
++        if _INDEX[norm] not in found:
++            found.append(_INDEX[norm])
++    return found[:limit]
++
++
++def text_list() -> str:
++    items = "\n".join(f"• {t}" for t in list_terms())
++    return (
++        f"Доступные термины:\n{items}\n\n"
++        "Определение: /terms <термин>, например /terms дивиденд.\n" + DISCLAIMER
++    )
++
++
++def text_definition(key: str) -> str:
++    return f"{key.capitalize()} — {TERMS[key]}\n\n{DISCLAIMER}"
++
++
++def text_not_found(raw: str) -> str:
++    similar = suggest(raw)
++    if similar:
++        return (
++            "Такого термина нет в глоссарии. Возможно, вы имели в виду: "
++            + ", ".join(similar)
++            + ".\nВесь список — /terms."
++        )
++    return "Такого термина нет в глоссарии. Весь список — /terms."
++
++
++def answer(raw_args: str) -> str:
++    """Текст ответа на /terms с аргументами (пустая строка — список)."""
++    if not normalize(raw_args):
++        return text_list()
++    key = find_term(raw_args)
++    return text_definition(key) if key else text_not_found(raw_args)
+diff --git a/tests/test_terms_rules.py b/tests/test_terms_rules.py
+new file mode 100644
+index 0000000..85a35f0
+--- /dev/null
++++ b/tests/test_terms_rules.py
+@@ -0,0 +1,36 @@
++from terms import rules
++
++
++def test_eight_terms():
++    assert len(rules.TERMS) == 8
++    assert all(rules.TERMS.values())
++
++
++def test_list_without_args():
++    text = rules.answer("   ")
++    for term in rules.TERMS:
++        assert term in text
++
++
++def test_case_and_spaces_ignored():
++    assert rules.answer("  ДИВИДЕНД ") == rules.answer("дивиденд")
++    assert "Дивиденд —" in rules.answer("дивиденд")
++
++
++def test_yo_equals_ye():
++    assert rules.find_term("Индекс") == "индекс"
++
++
++def test_suggest_typo_and_prefix():
++    assert "волатильность" in rules.suggest("волатильнось")
++    assert "облигация" in rules.suggest("облиг")
++
++
++def test_not_found_with_and_without_similar():
++    assert "ликвидность" in rules.answer("ликвидносить")
++    text = rules.answer("zzzz")
++    assert "нет в глоссарии" in text and "Возможно" not in text
++
++
++def test_disclaimer_in_definition():
++    assert rules.DISCLAIMER in rules.answer("купон")

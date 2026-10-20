@@ -1,0 +1,440 @@
+diff --git a/README.md b/README.md
+index e3a1c50..3705e1a 100644
+--- a/README.md
++++ b/README.md
+@@ -575,8 +575,8 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
+ │   │   ├── rules.py                     # Чистые правила: порядок, оценка ожидания, лимиты, тексты
+ │   │   ├── gate.py                      # Шлюз слотов (asyncio): реестр задач по чатам, отмена
+ │   │   └── commands.py                  # /queue, /queue_cancel, постановка задач, хуки запуска
+-│   ├── terms/                           # Глоссарий /terms (словарь в коде, без сети и LLM)
+-│   │   ├── rules.py                     # Словарь, нормализация, поиск, похожие термины
++│   ├── terms/                           # Глоссарий /terms: словарь в коде, поиск, тексты
++│   │   ├── rules.py                     # Чистые правила: словарь, нормализация, похожие термины
+ │   │   ├── texts.py                     # Тексты и оговорка
+ │   │   └── commands.py                  # /terms
+ │   ├── mcp_integration/                 # Подключение к MCP-серверу (/mcp_tools)
+@@ -1896,7 +1896,7 @@ diff и файлам, и комментарий об этом сообщает.
+ | `/help`                  | Справка по использованию и ограничениям бота                                   |
+ | `/queue`                 | Показать свои вопросы в очереди к модели: номер, позицию, оценку ожидания      |
+ | `/queue_cancel [номер]`  | Снять все свои вопросы из очереди или один по номеру из `/queue`               |
+-| `/terms [термин]`        | Глоссарий: без аргумента список из 8 терминов, с термином — определение (регистр не важен; нет термина — похожие) |
++| `/terms [термин]`        | Глоссарий терминов (8 штук): без аргумента список, с термином — определение или похожие термины |
+ | `/dev`                   | Ассистент разработчика (только для id из `DEV_ASSISTANT_USER_IDS`; в `/help` не показывается; выход — `/cancel`) |
+ | `/support`               | Режим поддержки: вопросы о работе бота по справке и с учётом своих открытых обращений (выход — `/cancel`) |
+ | `/agent`                 | LLM-агент с памятью диалога: вопросы один за другим, контекст сохраняется даже после перезапуска бота |
+diff --git a/src/main.py b/src/main.py
+index d755934..ffddeef 100644
+--- a/src/main.py
++++ b/src/main.py
+@@ -264,8 +264,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
+         "/queue — показать свои вопросы в очереди к модели: позицию и примерное время ожидания",
+         "/queue_cancel [номер] — снять свои вопросы из очереди: без номера все, с номером "
+         "из /queue — один (например, /queue_cancel 2); /cancel по-прежнему выходит из режима",
+-        "/terms [термин] — глоссарий: без аргумента список терминов, с термином — его "
+-        "определение (например, /terms дивиденд); справка, не рекомендация",
++        "/terms [термин] — глоссарий инвестиционных терминов: без аргумента список, с "
++        "термином (например, /terms дивиденд) — определение; справочно, не рекомендация",
+         "/support — режим поддержки: вопросы о работе бота (отвечу по справке и с учётом "
+         "твоих открытых обращений, если они есть); выход — /cancel",
+         "/agent — LLM-агент с памятью диалога: задавай вопросы один за другим, "
+@@ -513,7 +513,7 @@ def main() -> None:
+     # RESEARCH_ENABLED (llm_queue/commands.py).
+     for handler in build_queue_handlers():
+         application.add_handler(handler)
+-    # /terms — справочный глоссарий без сети и LLM; не под RESEARCH_ENABLED (terms/commands.py).
++    # /terms — справочный глоссарий в коде, без сети и LLM (terms/commands.py).
+     for handler in build_terms_handlers():
+         application.add_handler(handler)
+     # Исследовательские/технические команды регистрируются, только если включены
+diff --git a/src/terms/CLAUDE.md b/src/terms/CLAUDE.md
+index fda8f7c..c16bcae 100644
+--- a/src/terms/CLAUDE.md
++++ b/src/terms/CLAUDE.md
+@@ -1,12 +1,17 @@
+-# terms/ — глоссарий `/terms`
++# terms/ — глоссарий инвестиционных терминов (`/terms`)
+ 
+-Корневые правила — в `/CLAUDE.md`. Мелкая справочная команда, без OpenSpec.
++Корневые правила — в `/CLAUDE.md`. Небольшая справочная команда: без LLM, сети, очереди и
++хранения данных.
++
++## Модули
+ 
+ - `rules.py` — ЧИСТЫЕ правила (тесты `tests/test_terms_rules.py`): словарь `GLOSSARY` (8 терминов,
+-  хранится в коде), нормализация запроса (регистр, пробелы), поиск, похожие термины. Не импортирует `config`.
+-- `texts.py` — тексты и оговорка (тесты `tests/test_terms_texts.py`); оговорка «не советник, не
+-  рекомендация и не прогноз» — в КАЖДОМ ответе, не убирать.
+-- `commands.py` — `/terms` в личных чатах, регистрация — `build_terms_handlers()` в `main.py`.
++  в коде), нормализация ввода (регистр, пробелы), поиск определения, подсказки похожих терминов.
++- `texts.py` — тексты пользователю и оговорка `DISCLAIMER` (тесты `tests/test_terms_texts.py`).
++- `commands.py` — `/terms`, `build_terms_handlers` (только личные чаты; не под флагом `RESEARCH`).
++
++## Что сохранять
+ 
+-Сеть, LLM, диск и память не используются; данные пользователя не сохраняются. Определения общие,
+-без оценок, гарантий и советов. Новый термин — запись в `GLOSSARY` (ключ в нижнем регистре).
++- Оговорка («не рекомендация и не прогноз», «не лицензированный финансовый советник») — в каждом
++  ответе с определением и списком; в определениях нет гарантий, оценок и советов.
++- Ввод пользователя не сохраняется. Новый термин — запись в `GLOSSARY` (ключ в нижнем регистре).
+diff --git a/src/terms/commands.py b/src/terms/commands.py
+index 84b29b1..0107708 100644
+--- a/src/terms/commands.py
++++ b/src/terms/commands.py
+@@ -1,4 +1,7 @@
+-"""Команда `/terms` — глоссарий инвестиционных терминов (личные чаты, без сети и LLM)."""
++"""Команда `/terms` — глоссарий инвестиционных терминов (личные чаты).
++
++Тонкий хендлер: без сети, LLM, памяти и хранения данных; ввод пользователя не сохраняется.
++"""
+ 
+ from __future__ import annotations
+ 
+@@ -9,21 +12,18 @@ from . import rules, texts
+ 
+ 
+ async def terms_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+-    """`/terms` — список; `/terms <термин>` — определение или похожие термины."""
+-    if update.message is None:
+-        return
++    """/terms — список терминов; /terms <термин> — определение или похожие термины."""
+     query = " ".join(context.args or [])
+     if not rules.normalize(query):
+-        reply = texts.terms_list_text(rules.list_terms())
+-    else:
+-        found = rules.find_definition(query)
+-        if found is not None:
+-            reply = texts.definition_text(*found)
+-        else:
+-            reply = texts.not_found_text(query.strip(), rules.suggest(query))
+-    await update.message.reply_text(reply)
++        await update.message.reply_text(texts.text_list(rules.list_terms()))
++        return
++    definition = rules.find_definition(query)
++    if definition is None:
++        await update.message.reply_text(texts.text_not_found(query, rules.suggest(query)))
++        return
++    await update.message.reply_text(texts.text_definition(rules.normalize(query), definition))
+ 
+ 
+ def build_terms_handlers() -> list[CommandHandler]:
+-    """Команда глоссария, только для личных чатов."""
++    """Обработчики глоссария, только для личных чатов."""
+     return [CommandHandler("terms", terms_command, filters=filters.ChatType.PRIVATE)]
+diff --git a/src/terms/rules.py b/src/terms/rules.py
+index 14a48c8..d2df952 100644
+--- a/src/terms/rules.py
++++ b/src/terms/rules.py
+@@ -1,63 +1,60 @@
+-"""Чистые правила глоссария `/terms`: словарь терминов, нормализация, поиск, похожие термины.
++"""Чистые правила глоссария `/terms`: словарь терминов и поиск по нему.
+ 
+-Словарь хранится в коде; сеть, LLM и диск не используются. Определения — общие, образовательные,
+-без оценок, прогнозов и советов. Модуль не импортирует `config`.
++Словарь хранится в коде; модуль не знает про Telegram, сеть, диск, модель и `config`.
++Определения — образовательные пояснения, не рекомендации и не прогнозы.
++Тесты — `tests/test_terms_rules.py`.
+ """
+ 
+ from __future__ import annotations
+ 
+ import difflib
+ 
+-MAX_SUGGESTIONS = 3
+-SIMILARITY_CUTOFF = 0.6
++# --- Словарь: термин (нижний регистр) -> определение ---------------------------------------
+ 
+ GLOSSARY: dict[str, str] = {
+     "акция": (
+-        "Ценная бумага, которая подтверждает долю владельца в капитале компании. "
+-        "Владелец акции может получать часть прибыли в виде дивидендов, а цена акции "
+-        "на бирже меняется."
++        "Ценная бумага, подтверждающая долю владельца в капитале компании. Её цена меняется "
++        "вслед за рынком, а выплата дивидендов не обещана заранее."
+     ),
+-    "волатильность": (
+-        "Показатель того, насколько сильно и часто меняется цена актива за период. "
+-        "Чем выше волатильность, тем шире разброс цен; сама по себе она не указывает "
+-        "направление движения."
++    "облигация": (
++        "Долговая ценная бумага: эмитент берёт деньги в долг, обязуется вернуть номинал в "
++        "срок погашения и, как правило, выплачивать купоны. Эмитент может не исполнить "
++        "обязательства."
+     ),
+     "дивиденд": (
+-        "Часть прибыли компании, которую она может направить на выплату акционерам. "
+-        "Решение о выплате и её размере принимает компания; выплата не обязательна, "
+-        "и компания может её отменить."
+-    ),
+-    "диверсификация": (
+-        "Распределение средств между разными активами, отраслями или странами, чтобы "
+-        "итог меньше зависел от одного из них. Она снижает зависимость от отдельного "
+-        "актива, но не исключает риск потерь."
+-    ),
+-    "индекс": (
+-        "Расчётный показатель, который отражает изменение цен набора бумаг, например "
+-        "акций крупных компаний рынка. Индекс используют как ориентир состояния рынка "
+-        "или его части."
++        "Часть прибыли компании, которую она может направить на выплату акционерам. Решение о "
++        "выплате и её размере принимает компания, заранее они неизвестны."
+     ),
+     "купон": (
+-        "Периодический процентный платёж по облигации, который эмитент выплачивает "
+-        "держателю на условиях выпуска. Размер и даты выплат указаны в параметрах "
+-        "облигации."
++        "Периодический процентный платёж по облигации. Размер и даты выплат задаются условиями "
++        "выпуска облигации."
+     ),
+     "ликвидность": (
+-        "Насколько быстро актив можно купить или продать по цене, близкой к рыночной. "
+-        "У высоколиквидных бумаг много сделок и небольшой разрыв между ценами покупки "
+-        "и продажи."
++        "Насколько быстро актив можно продать по цене, близкой к рыночной. У малоторгуемых "
++        "бумаг продажа может занять больше времени или пройти с заметной уступкой в цене."
+     ),
+-    "облигация": (
+-        "Долговая ценная бумага: эмитент занимает деньги у держателя и обязуется "
+-        "вернуть номинал в срок погашения, обычно с выплатой купонов. Остаётся риск, "
+-        "что эмитент не исполнит обязательства."
++    "волатильность": (
++        "Мера того, насколько сильно и часто меняется цена актива. Высокая волатильность "
++        "означает более резкие колебания в обе стороны."
++    ),
++    "диверсификация": (
++        "Распределение средств между разными активами, отраслями или странами, чтобы "
++        "результат не зависел от одного источника риска. Она снижает риск, но не исключает "
++        "убытков."
++    ),
++    "индекс": (
++        "Расчётный показатель, отражающий изменение цен набора ценных бумаг, например "
++        "рынка или отрасли. Сам индекс не купить, но существуют фонды, которые его повторяют."
+     ),
+ }
+ 
++SUGGEST_LIMIT = 3
++SUGGEST_CUTOFF = 0.6
++
+ 
+ def normalize(query: str) -> str:
+-    """Приводит запрос к ключу словаря: без пробелов по краям, в нижнем регистре, ё как ё."""
+-    return " ".join(query.casefold().split())
++    """Приводит ввод к ключу словаря: без лишних пробелов, в нижнем регистре."""
++    return " ".join(query.split()).lower()
+ 
+ 
+ def list_terms() -> list[str]:
+@@ -65,24 +62,24 @@ def list_terms() -> list[str]:
+     return sorted(GLOSSARY)
+ 
+ 
+-def find_definition(query: str) -> tuple[str, str] | None:
+-    """(термин, определение) или None, если точного совпадения нет."""
+-    key = normalize(query)
+-    if key in GLOSSARY:
+-        return key, GLOSSARY[key]
+-    return None
++def find_definition(query: str) -> str | None:
++    """Определение термина или None, если его нет."""
++    return GLOSSARY.get(normalize(query))
+ 
+ 
+-def suggest(query: str, limit: int = MAX_SUGGESTIONS) -> list[str]:
+-    """Похожие термины: по общему началу/вхождению и по близости написания."""
++def suggest(query: str) -> list[str]:
++    """Похожие термины: общее начало, вхождение подстроки и близкое написание."""
+     key = normalize(query)
+     if not key:
+         return []
+     found: list[str] = []
+     for term in list_terms():
+-        if term.startswith(key[:3]) and len(key) >= 3 or key in term or term in key:
++        if term.startswith(key[:4]) or key in term or term in key:
+             found.append(term)
+-    for term in difflib.get_close_matches(key, list_terms(), n=limit, cutoff=SIMILARITY_CUTOFF):
++    close = difflib.get_close_matches(
++        key, list_terms(), n=SUGGEST_LIMIT, cutoff=SUGGEST_CUTOFF
++    )
++    for term in close:
+         if term not in found:
+             found.append(term)
+-    return found[:limit]
++    return found[:SUGGEST_LIMIT]
+diff --git a/src/terms/texts.py b/src/terms/texts.py
+index cf4a55b..13d9d66 100644
+--- a/src/terms/texts.py
++++ b/src/terms/texts.py
+@@ -1,33 +1,35 @@
+-"""Тексты `/terms`: список терминов, определение, «не найдено». Оговорка — в каждом ответе."""
++"""Тексты `/terms` пользователю (обычный текст, без parse_mode).
++
++Оговорка — константа кода и входит в каждое определение; тесты — `tests/test_terms_texts.py`.
++"""
+ 
+ from __future__ import annotations
+ 
+-DISCLAIMER_ADVISOR = "Бот не является лицензированным финансовым советником."
+-DISCLAIMER_NOT_ADVICE = "Это справочное определение, а не инвестиционная рекомендация и не прогноз."
+-DISCLAIMER = f"{DISCLAIMER_ADVISOR} {DISCLAIMER_NOT_ADVICE}"
++DISCLAIMER = (
++    "Справочное пояснение, не инвестиционная рекомендация и не прогноз. "
++    "Бот не является лицензированным финансовым советником."
++)
+ 
+ 
+-def terms_list_text(terms: list[str]) -> str:
++def text_list(terms: list[str]) -> str:
+     """Список терминов и подсказка по использованию."""
+-    lines = "\n".join(f"- {term}" for term in terms)
++    lines = "\n".join(f"• {term}" for term in terms)
+     return (
+         f"Доступные термины:\n{lines}\n\n"
+-        "Определение термина: /terms <термин>, например /terms дивиденд.\n\n"
++        "Определение: /terms <термин>, например /terms дивиденд.\n"
+         f"{DISCLAIMER}"
+     )
+ 
+ 
+-def definition_text(term: str, definition: str) -> str:
+-    """Определение термина."""
+-    return f"{term.capitalize()}: {definition}\n\n{DISCLAIMER}"
++def text_definition(term: str, definition: str) -> str:
++    """Определение термина с оговоркой."""
++    return f"{term.capitalize()} — {definition}\n\n{DISCLAIMER}"
+ 
+ 
+-def not_found_text(query: str, suggestions: list[str]) -> str:
+-    """Термина нет в словаре; при наличии — похожие."""
+-    shown = query if len(query) <= 60 else query[:57] + "..."
+-    head = f"Термина «{shown}» нет в глоссарии."
+-    if suggestions:
+-        head += " Возможно, вы имели в виду: " + ", ".join(suggestions) + "."
+-    else:
+-        head += " Список терминов — /terms."
+-    return f"{head}\n\n{DISCLAIMER}"
++def text_not_found(query: str, similar: list[str]) -> str:
++    """Термина нет: похожие варианты или отсылка к списку."""
++    shown = query.strip()[:50]
++    if similar:
++        options = ", ".join(similar)
++        return f"Термина «{shown}» нет в глоссарии. Возможно, вы искали: {options}."
++    return f"Термина «{shown}» нет в глоссарии. Список терминов: /terms."
+diff --git a/tests/test_terms_rules.py b/tests/test_terms_rules.py
+index fc6ef60..af09a90 100644
+--- a/tests/test_terms_rules.py
++++ b/tests/test_terms_rules.py
+@@ -3,31 +3,32 @@
+ from terms import rules
+ 
+ 
+-def test_glossary_has_eight_terms():
++def test_glossary_has_eight_terms_with_lowercase_keys():
+     assert len(rules.GLOSSARY) == 8
++    assert all(k == k.lower() and v for k, v in rules.GLOSSARY.items())
++
++
++def test_list_terms_sorted():
+     assert rules.list_terms() == sorted(rules.GLOSSARY)
+ 
+ 
+-def test_find_ignores_case_and_spaces():
+-    assert rules.find_definition("  ДИВИДЕНД ")[0] == "дивиденд"
+-    assert rules.find_definition("Купон")[1] == rules.GLOSSARY["купон"]
++def test_find_definition_ignores_case_and_spaces():
++    assert rules.find_definition("  ДиВиДенд ") == rules.GLOSSARY["дивиденд"]
+ 
+ 
+-def test_find_unknown_and_empty():
+-    assert rules.find_definition("опцион") is None
+-    assert rules.find_definition("   ") is None
++def test_find_definition_unknown_is_none():
++    assert rules.find_definition("фьючерс") is None
+ 
+ 
+-def test_suggest_typo_and_prefix():
+-    assert "волатильность" in rules.suggest("волатильнось")
+-    assert "диверсификация" in rules.suggest("диверс")
+-    assert "облигация" in rules.suggest("облигации")
++def test_suggest_by_prefix_and_typo():
++    assert "дивиденд" in rules.suggest("дивидент")
++    assert "акция" in rules.suggest("акци")
+ 
+ 
+-def test_suggest_nothing():
+-    assert rules.suggest("") == []
+-    assert rules.suggest("qqqq") == []
++def test_suggest_empty_and_unrelated():
++    assert rules.suggest("   ") == []
++    assert rules.suggest("xyz") == []
+ 
+ 
+ def test_suggest_limit():
+-    assert len(rules.suggest("и", limit=2)) <= 2
++    assert len(rules.suggest("и")) <= rules.SUGGEST_LIMIT
+diff --git a/tests/test_terms_texts.py b/tests/test_terms_texts.py
+index a7cdf8a..172ec54 100644
+--- a/tests/test_terms_texts.py
++++ b/tests/test_terms_texts.py
+@@ -1,44 +1,38 @@
+-"""Тесты текстов глоссария (terms/texts.py): оговорка в каждом ответе, без гарантий."""
++"""Тесты текстов глоссария (terms/texts.py): оговорка и отсутствие гарантий."""
+ 
+ import re
+ 
+ from terms import rules, texts
+ 
+ GUARANTEE = re.compile(
+-    r"гарантир\w+|точно\s+(?:вырастет|упадёт)|наверняка|доходность\s+составит|"
+-    r"рекомендуем\s+купить|стоит\s+купить",
++    r"гарантир\w+|точно\s+(?:вырастет|упадёт)|наверняка|обязательно\s+(?:вырастет|принесёт)|"
++    r"доходность\s+составит|покупайте|продавайте",
+     re.IGNORECASE,
+ )
+ 
+ 
+-def all_replies():
+-    replies = [texts.terms_list_text(rules.list_terms())]
+-    replies += [texts.definition_text(t, d) for t, d in rules.GLOSSARY.items()]
+-    replies.append(texts.not_found_text("опцион", []))
+-    replies.append(texts.not_found_text("диверс", ["диверсификация"]))
+-    return replies
++def assert_has_disclaimer(text):
++    assert "не инвестиционная рекомендация и не прогноз" in text
++    assert "не является лицензированным финансовым советником" in text
+ 
+ 
+-def test_disclaimer_in_every_reply():
+-    for reply in all_replies():
+-        assert texts.DISCLAIMER_ADVISOR in reply
+-        assert texts.DISCLAIMER_NOT_ADVICE in reply
+-
+-
+-def test_no_guarantees():
++def test_list_and_definitions_have_disclaimer():
++    assert_has_disclaimer(texts.text_list(rules.list_terms()))
+     for term, definition in rules.GLOSSARY.items():
+-        assert GUARANTEE.search(definition) is None, term
+-    for reply in all_replies():
+-        assert GUARANTEE.search(texts.DISCLAIMER) is None
+-        assert reply
++        assert_has_disclaimer(texts.text_definition(term, definition))
+ 
+ 
+ def test_list_contains_all_terms():
+-    reply = texts.terms_list_text(rules.list_terms())
+-    for term in rules.GLOSSARY:
+-        assert term in reply
++    text = texts.text_list(rules.list_terms())
++    assert all(term in text for term in rules.GLOSSARY)
++
+ 
++def test_not_found_variants():
++    assert "дивиденд" in texts.text_not_found("дивидент", ["дивиденд"])
++    assert "/terms" in texts.text_not_found("xyz", [])
+ 
+-def test_not_found_suggestions_and_truncation():
+-    assert "диверсификация" in texts.not_found_text("диверс", ["диверсификация"])
+-    assert len(texts.not_found_text("я" * 500, [])) < 400
++
++def test_no_guarantees_in_texts():
++    for term, definition in rules.GLOSSARY.items():
++        assert GUARANTEE.search(texts.text_definition(term, definition)) is None, term
++    assert GUARANTEE.search(texts.DISCLAIMER) is None
