@@ -126,3 +126,20 @@ def test_malformed_ticker_is_a_form_error_naming_the_ticker(ticker):
 @pytest.mark.parametrize("ticker", ["SBER", "SU26238RMFS4", "TMOS", "IMOEX", "RU000A0JX0J2", "BRK.B", "A_B-C", "x" * 40])
 def test_wellformed_tickers_pass(ticker):
     assert parse_watch_args([ticker, "15m", "1h"]).secids == [ticker]
+
+
+# --- не-ASCII цифры в периодах ---
+
+
+@pytest.mark.parametrize("digits", ["١٥", "１５", "१५", "²"])
+def test_non_ascii_digits_in_interval_are_rejected(digits):
+    assert normalize_interval(f"{digits}m") is None
+    result = parse_watch_args(_words(f"SBER {digits}m 1h"))
+    assert isinstance(result, ParseError)
+    result = parse_watch_args(_words(f"SBER 15m {digits}h"))
+    assert isinstance(result, ParseError)
+
+
+def test_ascii_intervals_still_pass_next_to_unicode_check():
+    result = parse_watch_args(_words("SBER 15m 1h"))
+    assert result == WatchRequest(secids=["SBER"], poll_interval="15m", report_interval="1h")

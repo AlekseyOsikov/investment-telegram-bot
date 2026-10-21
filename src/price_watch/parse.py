@@ -16,7 +16,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_INTERVAL_RE = re.compile(r"^(\d+)([mhdмчд])$", re.IGNORECASE)
+# Только ASCII-цифры: `\d` в `str`-шаблоне принимает и арабо-индийские, и полноширинные.
+_INTERVAL_RE = re.compile(r"^([0-9]+)([mhdмчд])$", re.IGNORECASE)
 _UNITS = {"m": "m", "h": "h", "d": "d", "м": "m", "ч": "h", "д": "d"}
 # Форма тикера — как у входной схемы сервера (латиница, цифры, `.`, `_`, `-`, до 40
 # символов). Проверяется здесь, потому что иначе отказ схемы приходит пользователю
