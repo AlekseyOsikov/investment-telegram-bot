@@ -39,6 +39,9 @@
   `rag_models_eval.py` (тесты `tests/test_rag_models_eval.py`), обращения к LLM, прогон, диск и
   Telegram — `rag_models.py`. См. раздел ниже.
 
+- `news_eval.py` — НЕ команда бота (флаг `RESEARCH` не нужен, в `/help` не попадает): чистые
+  правила скрипта `scripts/news_eval.py` — оценка качества разбора новостей `/news` (набор —
+  `data/news_eval/`, не коммитится; запуск — `make news-eval`; тесты `tests/test_news_eval.py`).
 - `dialog_eval.py` — НЕ команда бота (флаг `RESEARCH` не нужен, в `/help` не попадает): чистые
   правила скрипта `scripts/dialog_eval.py` — длинные диалоги `/smart_agent` с рабочей задачей и
   материалами (спека `openspec/specs/smart-agent-dialog-eval/`; тесты `tests/test_dialog_eval.py`).

@@ -508,12 +508,14 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 ```
 ├── src/
 │   ├── config.py                        # Переменные окружения, константы, SYSTEM_PROMPT, логирование
+│   ├── main_client_settings.py          # Чистые правила выбора MAIN_CLIENT/MAIN_MODEL: значения, дефолты, подписи
 │   ├── providers/                       # Подключения к LLM-провайдерам
 │   │   ├── deepseek_client.py           # Клиент DeepSeek
 │   │   ├── kimi_client.py               # Клиент Kimi (Moonshot AI)
 │   │   ├── main_client.py               # Выбор основного клиента по MAIN_CLIENT
 │   │   ├── embeddings_client.py         # Клиент эмбеддингов Ollama (rag/, research/chunking_*)
-│   │   ├── ollama_client.py             # Чат-клиент Ollama (переписывание вопроса)
+│   │   ├── ollama_client.py             # Чат-клиент Ollama (основной клиент при MAIN_CLIENT=ollama)
+│   │   ├── news_client.py               # Клиент и модель разбора новостей по NEWS_PROVIDER
 │   │   └── rewrite_client.py            # Клиент и модель переписывания по REWRITE_PROVIDER
 │   ├── rag/                             # Офлайн-пайплайн индексации документов (python -m rag.cli)
 │   │   ├── filenames.py                 # Разбор title/author/date из имени файла
@@ -535,6 +537,7 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 │   │   ├── rag_models_eval.py           # Правила и тексты сравнения моделей (чистые функции)
 │   │   ├── rag_modes_eval.py            # Режимы поиска в сравнении: метрики, отчёт (чистые функции)
 │   │   ├── dialog_eval.py               # Правила прогона длинных диалогов (для scripts/dialog_eval.py; не команда бота)
+│   │   ├── news_eval.py                 # Правила оценки разбора новостей (для scripts/news_eval.py; не команда бота)
 │   ├── agents/                          # Агенты — LLM-цикл отдельно от Telegram-обработчиков
 │   │   ├── agent.py                     # Класс Agent — история по веткам + facts/summary на ветку
 │   │   ├── context_strategies.py        # 4 стратегии управления контекстом (классы)
@@ -552,6 +555,7 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 │   │   ├── rag_context.py               # Слой rag: порог и второй этап отбора, правила и тексты материалов
 │   │   ├── rag_rewrite.py               # Слой rag: переписывание вопроса в поисковый запрос (правила)
 │   │   ├── rag_search.py                # Слой rag: конвейер поиска (переписывание → эмбеддинг → кандидаты → отбор)
+│   │   ├── invariants.py                # Инварианты /smart_agent: правила и тексты (чистые функции)
 │   │   ├── task_state.py                # Конечный автомат рабочей задачи: сценарии, этапы,
 │   │   │                                # условия перехода и гейты, история переходов,
 │   │   │                                # разбор служебного ответа LLM
@@ -623,6 +627,10 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 │                              # ollama_tune.py (подбор параметров локальной модели Ollama «до/после»),
 │                              # pr_review.py + pr_review_lib.py + pr_review_index.py (AI-ревью PR),
 │                              # news_eval.py (оценка качества разбора новостей, make news-eval)
+├── mcp_servers/project_files/ # Локальный MCP-сервер файлов проекта для /dev (MCP_FILES_ENABLED): поиск, чтение,
+│                              # предложения правок документации; вне src/
+├── mock_servers/support_crm/ # Мок CRM для /support (вымышленные обращения); вне src/
+├── docs/                     # code-style.md, agent-profiles.md; support/ — FAQ для /support
 ├── mcp_servers/news/         # Локальный MCP-сервер новостей для /news: ленты, дедупликация, привязка
 │                              # к тикерам (data/aliases.json), SQLite; вне src/, бот общается с ним по MCP
 ├── scripts/ollama/           # Modelfile победивших конфигураций локальных моделей (`ollama create`)
@@ -651,7 +659,7 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 ├── .github/workflows/        # ai-review.yml, ai-review-index.yml (AI-ревью PR на self-hosted runner)
 ├── openspec/                 # Spec-driven процесс разработки (на рантайм бота не влияет)
 │   ├── config.yaml           # Конфигурация процесса (schema: spec-driven)
-│   ├── specs/                # Главные спецификации возможностей (пока пусто)
+│   ├── specs/                # Главные спецификации возможностей (openspec/specs/<capability>/spec.md)
 │   └── changes/              # Изменения в работе + archive/ завершённых
 ├── .claude/                  # Скиллы и слэш-команды OpenSpec (/opsx:*), генерируются CLI
 ├── .env.example              # Пример переменных окружения
@@ -1942,6 +1950,9 @@ diff и файлам, и комментарий об этом сообщает. 
 | `/research_rag_compare` | В фоне сравнить ответы `/smart_agent` на контрольные вопросы с выключенным и включённым RAG; оператор может добавить режимы поиска или прогонять только поиск (нужен `make index`, ответы тратят токены) |
 | `/research_rag_compare_stop` | Остановить идущий прогон сравнения (частичный итог придёт в чат запуска) |
 | `/research_rag_compare_report [номер]` | Показать последний отчёт сравнения или детали вопроса с этим номером |
+| `/research_rag_models` | В фоне сравнить модели, заданные оператором (например, локальную и облачную), на контрольных вопросах с RAG: качество (оценка судьёй), скорость и стабильность (нужен `make index`; идёт минуты и тратит токены; вопросы, ответы и фрагменты корпуса уходят модели-судье) |
+| `/research_rag_models_stop` | Остановить идущий прогон сравнения моделей (частичный итог придёт в чат запуска) |
+| `/research_rag_models_report [номер]` | Показать сводку последнего сравнения моделей или детали вопроса с этим номером (ответы всех моделей и повторов рядом) |
 | `/mcp_tools`              | Подключиться к MCP-серверу и показать список его инструментов                 |
 | `/cancel`                | Досрочный выход из режима `/agent`, `/agent_compare`, `/smart_agent` или любого research-режима |
 
