@@ -108,3 +108,31 @@ def test_structural_empty_page_after_trailing_form_feed_skipped():
     raw = "Заголовок\n\nТекст.\x0c"
     chunks = chunk_structural(raw)
     assert len(chunks) == 1
+
+
+# --- Дополнение: эвристика заголовка ------------------------------------------
+
+from rag.chunking import _is_heading_paragraph  # noqa: E402
+
+
+def test_heading_paragraph_is_short_single_line_without_terminal_punctuation():
+    assert _is_heading_paragraph("Введение") is True
+    assert _is_heading_paragraph("  Глава 2. Риски  ") is True
+
+
+def test_multiline_paragraph_is_not_a_heading():
+    assert _is_heading_paragraph("Первая строка\nвторая строка") is False
+
+
+def test_empty_or_blank_paragraph_is_not_a_heading():
+    assert _is_heading_paragraph("") is False
+    assert _is_heading_paragraph("    ") is False
+
+
+def test_sentence_ending_with_terminal_punctuation_is_not_a_heading():
+    for text in ("Это обычное предложение.", "Вопрос?", "Восклицание!"):
+        assert _is_heading_paragraph(text) is False, text
+
+
+def test_overlong_line_is_not_a_heading():
+    assert _is_heading_paragraph("слово " * 100) is False

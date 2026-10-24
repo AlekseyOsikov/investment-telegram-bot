@@ -235,3 +235,20 @@ def test_preload_without_list_tool_is_unavailable():
     facade = CrmTools(FakeInner(names=("get_my_profile",)), USER)
     snapshot = run(crm_session.preload_tickets(facade, 5))
     assert snapshot.status == crm_session.TICKETS_UNAVAILABLE
+
+
+def test_display_arguments_without_arguments_is_empty_string():
+    assert crm_session.display_arguments(None) == ""
+    assert crm_session.display_arguments("") == ""
+    assert crm_session.display_arguments("   ") == ""
+
+
+def test_display_arguments_keep_other_arguments_as_compact_json_with_cyrillic():
+    shown = crm_session.display_arguments(json.dumps({"telegram_user_id": 5, "тема": "доступ"}))
+    assert json.loads(shown) == {"тема": "доступ"}
+    assert "доступ" in shown
+
+
+def test_display_arguments_of_broken_json_or_non_object_are_shown_as_is():
+    assert crm_session.display_arguments("{не json") == "{не json"
+    assert crm_session.display_arguments("[1, 2]") == "[1, 2]"

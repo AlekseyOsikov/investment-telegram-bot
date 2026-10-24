@@ -1624,3 +1624,42 @@ def test_multi_tools_dispatches_to_cbr_despite_missing_annotation():
 def test_multi_tools_cbr_has_no_analytics_available():
     multi = MultiMarketTools({SOURCE_CBR: _cbr_market()})
     assert multi.analytics_available_for(SOURCE_CBR) is False
+
+
+# --- Дополнение: предупреждения для чата ---------------------------------------------------------
+
+import re as _re  # noqa: E402
+
+from agents import market_tools as _mt  # noqa: E402
+
+_GUARANTEE = _re.compile(r"гарантир|точно вырастет|рекомендуем|без риска", _re.IGNORECASE)
+
+
+def test_unavailable_warning_names_exactly_the_given_sources():
+    text = _mt.unavailable_warning(["MOEX", "Bybit"])
+    assert "Данные MOEX, Bybit сейчас недоступны" in text
+    assert "ответ дан без них" in text
+    assert "Банк России" not in text
+
+
+def test_unavailable_warning_with_one_source_has_no_separator():
+    text = _mt.unavailable_warning(["MOEX"])
+    assert "Данные MOEX сейчас недоступны" in text
+    assert "," not in text.split("недоступны")[0]
+
+
+def test_step_limit_warning_names_the_limit():
+    text = _mt.step_limit_warning(7)
+    assert "(7)" in text
+    assert "по уже полученным данным" in text
+    assert "(8)" not in _mt.step_limit_warning(7)
+
+
+def test_chat_warnings_have_no_guarantees_or_recommendations():
+    for text in (
+        _mt.unavailable_warning(["MOEX"]),
+        _mt.step_limit_warning(5),
+        _mt.PARTIAL_DATA_WARNING,
+    ):
+        assert text.startswith("⚠️")
+        assert _GUARANTEE.search(text) is None, text

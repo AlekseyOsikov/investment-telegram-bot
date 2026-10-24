@@ -85,3 +85,34 @@ def test_negative_and_zero_change_formatting():
     assert "−1,23%" in pc.coincidence_line(down)
     flat = pc.PriceChange(0.0, 100, 100, NOW - timedelta(hours=3), NOW)
     assert "на 0%" in pc.coincidence_line(flat)
+
+
+# --- Дополнение: разбор момента и наивное время публикации ----------------------
+
+
+def test_moment_parsing_cases():
+    assert pc._moment(None) is None
+    assert pc._moment(5) is None
+    assert pc._moment("") is None
+    assert pc._moment("не дата") is None
+    aware = pc._moment("2026-10-16T10:00:00+03:00")
+    assert aware.utcoffset() == timedelta(hours=3)
+    naive = pc._moment("2026-10-16T10:00:00")
+    assert naive.tzinfo is not None and naive.utcoffset() == timedelta(hours=3)  # без пояса — МСК
+
+
+def test_prices_skip_candles_with_missing_or_bad_values():
+    assert pc._prices({"begin": "2026-10-16T10:00:00+03:00", "open": 1}) is None
+    assert pc._prices({"begin": "2026-10-16T10:00:00+03:00", "open": "x", "close": 1}) is None
+    assert pc._prices({"begin": "мусор", "open": 1, "close": 1}) is None
+    assert pc._prices({"begin": "2026-10-16T10:00:00+03:00", "open": 1, "close": "2"})[2] == 2.0
+
+
+def test_naive_publication_time_is_treated_as_utc():
+    candles = [candle(h, 100.0 + h) for h in range(8, 17)]
+    published_naive = datetime(2026, 10, 16, 8, 30)  # 08:30 UTC = 11:30 МСК
+    published_utc = published_naive.replace(tzinfo=timezone.utc)
+    assert pc.price_change_since(candles, published_naive, NOW) == pc.price_change_since(
+        candles, published_utc, NOW
+    )
+    assert pc.price_change_since(candles, published_naive, NOW) is not None

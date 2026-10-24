@@ -878,3 +878,322 @@ def test_format_summary_mentions_queue_only_when_present():
     assert "Очередь:" not in ev.format_summary(base)
     base["queue"] = ev.queue_report_fields(30, 1)
     assert "Очередь:" in ev.format_summary(base)
+
+
+# --- Дополнение: очередь, настройки, подписи, таблица и детали вопроса ---------------------
+
+
+def _full_report(results, **overrides) -> dict:
+    report = ev.build_report(
+        started_at="2026-10-01 12:00:00",
+        finished_at="2026-10-01 12:05:00",
+        settings={"strategy": "structural", "top_k": 3, "min_score": 0.6},
+        results=results,
+        planned=len(results),
+    )
+    report.update(overrides)
+    return report
+
+
+def _abstain_trio():
+    return (
+        QuestionResult(question=_abstain_question(1), off=ModeResult(), on=_cited(abstained=True)),
+        QuestionResult(question=_abstain_question(2), off=ModeResult(), on=_mode(None, answer="а")),
+        QuestionResult(question=_abstain_question(3), off=ModeResult(), on=_mode(error="сбой")),
+    )
+
+
+def test_queue_summary_line_is_none_without_field_or_with_wrong_type_or_nothing_to_say():
+    assert ev.queue_summary_line({}) is None
+    assert ev.queue_summary_line({"queue": "x"}) is None
+    assert ev.queue_summary_line({"queue": {}}) is None
+    assert ev.queue_summary_line({"queue": {"slot_wait_seconds": 0.4, "user_questions": 0}}) is None
+
+
+def test_queue_summary_line_with_garbage_numbers_is_none():
+    assert ev.queue_summary_line({"queue": {"slot_wait_seconds": "много"}}) is None
+    assert ev.queue_summary_line({"queue": {"user_questions": "x"}}) is None
+    assert ev.queue_summary_line({"queue": {"user_questions": [1]}}) is None
+
+
+def test_queue_summary_line_names_users_and_wait():
+    line = ev.queue_summary_line({"queue": {"slot_wait_seconds": 42.4, "user_questions": 3}})
+    assert "вопросов пользователей — 3" in line
+    assert "ожидание слота прогоном — 42 с" in line
+    waited_only = ev.queue_summary_line({"queue": {"slot_wait_seconds": 5, "user_questions": 0}})
+    assert "вопросов пользователей — 0" in waited_only
+    users_only = ev.queue_summary_line({"queue": {"slot_wait_seconds": 0, "user_questions": 1}})
+    assert "вопросов пользователей — 1" in users_only
+
+
+def test_queue_report_fields_rounds_and_clamps_negative_values():
+    assert ev.queue_report_fields(12.345, 4) == {"slot_wait_seconds": 12.3, "user_questions": 4}
+    assert ev.queue_report_fields(-5, -2) == {"slot_wait_seconds": 0.0, "user_questions": 0}
+
+
+def test_summary_mentions_queue_line_only_when_there_was_a_queue():
+    results = [_result(_mode(0.5), _mode(0.75))]
+    quiet = ev.format_summary(_full_report(results))
+    assert "Очередь:" not in quiet
+    busy = ev.format_summary(
+        _full_report(results, queue={"slot_wait_seconds": 30, "user_questions": 2})
+    )
+    assert "Очередь:" in busy
+
+
+def test_signed_pct_formats_percentage_points_with_sign():
+    assert ev._signed_pct(None) == "—"
+    assert ev._signed_pct(0.1) == "+10 п.п."
+    assert ev._signed_pct(-0.25) == "-25 п.п."
+    assert ev._signed_pct(0.0) == "+0 п.п."
+
+
+def test_settings_line_cases():
+    assert ev._settings_line({}) == ""
+    assert ev._settings_line({"strategy": "structural", "top_k": 3, "min_score": 0.6}) == (
+        "Настройки прогона: стратегия structural, top-k 3, порог 0.6."
+    )
+    assert ev._settings_line({}) == ""
+    unknown = ev._settings_line({"model": ""})
+    assert "стратегия ?, top-k ?, порог ?" in unknown
+    assert "модель" not in unknown
+
+
+def test_settings_line_with_candidates_model_and_rewrite():
+    line = ev._settings_line(
+        {
+            "strategy": "s",
+            "top_k": 3,
+            "min_score": 0.5,
+            "candidates": 8,
+            "model": "demo-model",
+            "rewrite_provider": "ollama",
+            "rewrite_model": "rw",
+        }
+    )
+    assert "кандидатов 8" in line
+    assert "модель demo-model" in line
+    assert "переписывание ollama/rw" in line
+    no_model = ev._settings_line({"rewrite_provider": "deepseek"})
+    assert "переписывание deepseek," in no_model or no_model.endswith("переписывание deepseek.")
+    assert "deepseek/" not in no_model
+
+
+def test_summary_shows_settings_line_from_report():
+    text = ev.format_summary(_full_report([_result(_mode(0.5), _mode(0.75))]))
+    assert "Настройки прогона: стратегия structural" in text
+
+
+def test_summary_lists_search_failures_missing_index_and_not_fired():
+    failed = _result(_mode(0.5), _mode(0.5, search_failed=True), number=2)
+    quiet = _result(_mode(0.5), _mode(0.5, rag_titles=()), number=3)
+    report = _full_report([_result(_mode(0.5), _mode(0.5, rag_titles=("Doc1",))), failed, quiet])
+    report["index_missing"] = ["Doc9", "Doc8"]
+    text = ev.format_summary(report)
+    assert "Поиск не удался на вопросах: 2." in text
+    assert "Поиск не сработал (материалы не использованы) на вопросах: 3." in text
+    assert "Не найдены в индексе: Doc9; Doc8." in text
+
+
+def test_summary_of_only_out_of_corpus_questions_has_no_fact_comparison():
+    right, wrong, broken = _abstain_trio()
+    text = ev.format_summary(_full_report([right, wrong, broken]))
+    assert "Сравнение невозможно" not in text
+    assert "Покрытие ожидаемых фактов" not in text
+    assert "верных отказов 1 из 3 вопросов вне корпуса" in text
+    assert "Вместо отказа дан ответ на вопросах: 2." in text
+    assert "Сбой ответа на вопросах вне корпуса: 3." in text
+
+
+def test_summary_marks_false_abstain_on_corpus_questions():
+    result = _result(_mode(0.5), _cited(abstained=True))
+    text = ev.format_summary(_full_report([result]))
+    assert "Ложный отказ" in text
+    assert "на вопросах по корпусу: 1." in text
+
+
+def test_summary_without_scored_questions_says_comparison_impossible():
+    result = _result(_mode(0.5), _mode(None, answer="ответ", judge_error="нет JSON"))
+    text = ev.format_summary(_full_report([result]))
+    assert "Сравнение невозможно" in text
+
+
+def test_summary_citation_block_has_missing_judge_and_questions_without_quotes():
+    with_quote = _cited(citations=1, written=2, verdict=ev.CITATION_PARTIAL)
+    judge_missing = _cited(citations=1, written=1)
+    no_quotes = _cited(citations=0, written=0)
+    report = _full_report(
+        [
+            _result(_mode(0.5), with_quote, number=1),
+            _result(_mode(0.5), judge_missing, number=2),
+            _result(_mode(0.5), no_quotes, number=3),
+        ]
+    )
+    text = ev.format_summary(report)
+    assert "по 3 вопросам по корпусу" in text
+    assert "с проверенными цитатами: 2 из 3" in text
+    assert "подтверждается частично — 1" in text
+    assert "без оценки — 1" in text
+    assert "Без проверенных цитат ответы на вопросы: 3." in text
+
+
+def test_citation_summary_lines_of_run_without_anything_to_judge_are_empty():
+    agg = ev.aggregate([])
+    assert ev._citation_summary_lines(agg) == []
+
+
+def test_mode_cell_shows_failure_missing_estimate_or_percentage():
+    assert ev._mode_cell(_mode(error="сбой")) == "сбой"
+    assert ev._mode_cell(_mode(None, answer="а", judge_error="x")) == "н/о"
+    assert ev._mode_cell(_mode(0.75)) == "75%"
+    assert ev._mode_cell(_mode(0.0)) == "0%"
+
+
+def test_table_rows_for_every_search_outcome_and_missing_source_note():
+    results = [
+        _result(_mode(0.5), _mode(0.75, rag_titles=("Doc1 глава",)), number=1),
+        _result(_mode(0.5), _mode(0.5, rag_titles=("Другой",)), number=2),
+        _result(_mode(0.5), _mode(0.5, rag_titles=()), number=3),
+        _result(_mode(0.5), _mode(0.5, search_failed=True), number=4),
+        _result(_mode(0.5), _mode(error="сбой"), number=5),
+        _result(_mode(0.5), _mode(0.5, rag_titles=("Doc1",)), number=6, missing=["Doc1"]),
+    ]
+    text = ev.format_table(_full_report(results))
+    assert "50% → 75% ▲ · поиск: попал" in text
+    assert "поиск: мимо" in text
+    assert "поиск: не сработал" in text
+    assert "поиск: сбой" in text
+    assert "50% → сбой — · поиск: —" in text
+    assert "⚠️ источника нет в индексе" in text
+
+
+def test_table_rows_for_out_of_corpus_questions():
+    right, wrong, broken = _abstain_trio()
+    text = ev.format_table(_full_report([right, wrong, broken]))
+    assert "вне корпуса: отказ ✓" in text
+    assert "вне корпуса: ответ вместо отказа ✗" in text
+    assert "вне корпуса: сбой ответа" in text
+
+
+def test_table_row_has_citation_cell_and_false_abstain_mark():
+    cited = _cited(citations=1, written=2, verdict=ev.CITATION_SUPPORTED)
+    false_abstain = _cited(abstained=True)
+    text = ev.format_table(
+        _full_report([_result(_mode(0.5), cited, 1), _result(_mode(0.5), false_abstain, 2)])
+    )
+    assert "ист: ✓ цит: ✓ (1/2) · смысл: подтверждается" in text
+    assert "⚠️ ложный отказ" in text
+
+
+def test_table_marks_trend_down_equal_and_excluded():
+    results = [
+        _result(_mode(0.75), _mode(0.25), number=1),
+        _result(_mode(0.5), _mode(0.5), number=2),
+        _result(_mode(0.5), _mode(None, answer="а", judge_error="x"), number=3),
+    ]
+    text = ev.format_table(_full_report(results))
+    assert "75% → 25% ▼" in text
+    assert "50% → 50% =" in text
+    assert "50% → н/о —" in text
+
+
+def test_table_title_of_long_question_is_cut_with_ellipsis():
+    long_question = Question(1, "в" * 80, "concept", ("a",), ("Doc1",))
+    result = QuestionResult(question=long_question, off=_mode(0.5), on=_mode(0.5))
+    text = ev.format_table(_full_report([result]))
+    assert "в" * 37 + "…" in text
+    assert "в" * 39 not in text
+
+
+def test_question_detail_shows_history_and_missing_sources():
+    question = Question(
+        2, "Продолжение?", "concept", ("a", "b"), ("Doc1",), history=("Раз?", "Два?")
+    )
+    result = QuestionResult(
+        question=question, off=_mode(0.5), on=_mode(0.5), missing_sources=["Doc1", "Doc7"]
+    )
+    text = ev.format_question_detail(_full_report([result]), 2)
+    assert "История диалога (предыдущие вопросы): Раз? → Два?" in text
+    assert "⚠️ Нет в индексе: Doc1; Doc7" in text
+
+
+def test_question_detail_of_out_of_corpus_question_has_only_rag_answer():
+    result = QuestionResult(
+        question=_abstain_question(1), off=ModeResult(), on=_cited(abstained=True)
+    )
+    text = ev.format_question_detail(_full_report([result]), 1)
+    assert "Ожидание: ответ «не знаю» (вопрос вне корпуса)." in text
+    assert "— Без rag —" not in text
+    assert "— С rag —" in text
+    assert "🛑 Бот ответил режимом «не знаю»" in text
+    assert "Ожидаемые факты" not in text
+    assert "Оценка:" not in text
+    assert "Оценка не получена" not in text
+
+
+def test_question_detail_error_search_failure_and_unused_materials():
+    results = [
+        _result(_mode(error="таймаут"), _mode(0.5, search_failed=True), number=1),
+        _result(_mode(0.5), _mode(0.5, rag_titles=()), number=2),
+    ]
+    first = ev.format_question_detail(_full_report(results), 1)
+    assert "Сбой ответа: таймаут" in first
+    assert "⚠️ Поиск материалов не удался — ответ получен без них." in first
+    second = ev.format_question_detail(_full_report(results), 2)
+    assert "Материалы не использованы (ни один фрагмент не прошёл порог)." in second
+
+
+def test_question_detail_lists_used_fragments_with_scores():
+    result = _result(_mode(0.5), _mode(0.5, rag_titles=("Doc1",)))
+    text = ev.format_question_detail(_full_report([result]), 1)
+    assert "Использованные фрагменты:" in text
+    assert "• Doc1 — фрагмент 0, близость 0.70" in text
+
+
+def test_question_detail_judge_marks_contradiction_note_and_missing_estimate():
+    judged = _mode(0.5, contradicts=True)
+    judged.verdict = Verdict(present=(True, False), contradicts=True, note="Спорная формулировка")
+    unjudged = _mode(None, answer="ответ", judge_error="нет JSON")
+    unknown_reason = _mode(None, answer="ответ")
+    text = ev.format_question_detail(_full_report([_result(judged, unjudged)]), 1)
+    assert "Оценка: 50% фактов." in text
+    assert "✅ 1. a" in text and "❌ 2. b" in text
+    assert "⚠️ Есть утверждение, противоречащее ожиданию." in text
+    assert "Замечание оценщика: Спорная формулировка" in text
+    assert "Оценка не получена: нет JSON" in text
+    text = ev.format_question_detail(_full_report([_result(unknown_reason, unknown_reason)]), 1)
+    assert "Оценка не получена: нет данных" in text
+
+
+def test_question_detail_includes_variant_modes_with_titles():
+    result = _result(_mode(0.5), _mode(0.5))
+    result.variants = {"filter": _mode(0.75, rag_titles=("Doc1",))}
+    report = _full_report([result])
+    titled = ev.format_question_detail(report, 1, {"filter": "с отбором"})
+    assert "— С RAG, режим поиска «с отбором» —" in titled
+    untitled = ev.format_question_detail(report, 1)
+    assert "режим поиска «filter»" in untitled
+
+
+def test_citation_detail_lines_for_each_state():
+    assert ev._citation_detail_lines(_cited(abstained=True)) == [
+        "🛑 Бот ответил режимом «не знаю» (без обращения к модели)."
+    ]
+    verified = ev._citation_detail_lines(
+        _cited(citations=2, written=3, verdict=ev.CITATION_PARTIAL)
+    )
+    assert verified[0] == "Проверенные цитаты: 2 (написано моделью: 3):"
+    assert "• Doc1 — фрагмент 0: «цитата 0»" in verified
+    assert "Опора ответа на материалы: подтверждается частично." in verified
+    assert "— без опоры в цитатах: лишнее утверждение" in verified
+    unverified = ev._citation_detail_lines(_cited(citations=0, written=2, unverified=True))
+    assert unverified == ["⚠️ Цитаты не подтверждены (написано моделью: 2)."]
+    failed = _cited(citations=1, written=1)
+    failed.citation_judge_error = "оценщик цитат недоступен"
+    assert ev._citation_detail_lines(failed)[-1] == (
+        "Оценка цитат не получена: оценщик цитат недоступен"
+    )
+    assert ev._citation_detail_lines(_cited(citations=0, written=0)) == []
+    odd = _cited(citations=1, written=1)
+    odd.citation_verdict = ev.CitationVerdict("странный")
+    assert "Опора ответа на материалы: ?." in ev._citation_detail_lines(odd)

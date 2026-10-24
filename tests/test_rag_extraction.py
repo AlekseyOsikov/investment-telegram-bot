@@ -38,3 +38,62 @@ def test_single_blank_line_between_paragraphs_preserved():
 def test_trims_trailing_whitespace_on_each_line():
     text = "Строка с пробелом в конце.   \nВторая строка.\t"
     assert clean_text(text) == "Строка с пробелом в конце.\nВторая строка."
+
+
+# --- Дополнение: чтение txt и выбор способа извлечения ------------------------------------------
+# extract_pdf_text запускает системную `pdftotext` (процесс) и проверяется вручную; здесь
+# проверяется только чтение txt и то, какой способ выбирает extract_text.
+
+from rag import extraction  # noqa: E402
+
+
+def test_extract_txt_text_returns_file_content_unchanged(tmp_path):
+    path = tmp_path / "документ.txt"
+    path.write_text("  Строка один.\n\n\nСтрока два.  \n", encoding="utf-8")
+    assert extraction.extract_txt_text(str(path)) == "  Строка один.\n\n\nСтрока два.  \n"
+
+
+def test_extract_txt_text_keeps_form_feed_between_pages(tmp_path):
+    path = tmp_path / "страницы.txt"
+    path.write_text("Страница 1.\fСтраница 2.", encoding="utf-8")
+    assert extraction.extract_txt_text(str(path)).split("\f") == ["Страница 1.", "Страница 2."]
+
+
+def test_extract_txt_text_of_empty_file_is_empty_string(tmp_path):
+    path = tmp_path / "пусто.txt"
+    path.write_text("", encoding="utf-8")
+    assert extraction.extract_txt_text(str(path)) == ""
+
+
+def test_extract_txt_text_of_missing_file_raises(tmp_path):
+    import pytest
+
+    with pytest.raises(FileNotFoundError):
+        extraction.extract_txt_text(str(tmp_path / "нет.txt"))
+
+
+def test_extract_text_reads_txt_directly(tmp_path):
+    path = tmp_path / "заметка.txt"
+    path.write_text("Текст заметки.", encoding="utf-8")
+    assert extraction.extract_text(str(path)) == "Текст заметки."
+
+
+def test_extract_text_of_unknown_extension_is_read_as_text(tmp_path):
+    path = tmp_path / "заметка.md"
+    path.write_text("Текст.", encoding="utf-8")
+    assert extraction.extract_text(str(path)) == "Текст."
+
+
+def test_extract_text_sends_pdf_of_any_case_to_pdf_extractor(monkeypatch):
+    seen = []
+    monkeypatch.setattr(extraction, "extract_pdf_text", lambda path: seen.append(path) or "PDF")
+    assert extraction.extract_text("книга.pdf") == "PDF"
+    assert extraction.extract_text("КНИГА.PDF") == "PDF"
+    assert seen == ["книга.pdf", "КНИГА.PDF"]
+
+
+def test_extract_text_does_not_treat_pdf_in_the_middle_of_name_as_pdf(tmp_path, monkeypatch):
+    monkeypatch.setattr(extraction, "extract_pdf_text", lambda path: "PDF")
+    path = tmp_path / "pdf-заметки.txt"
+    path.write_text("Обычный текст.", encoding="utf-8")
+    assert extraction.extract_text(str(path)) == "Обычный текст."

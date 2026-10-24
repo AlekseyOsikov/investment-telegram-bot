@@ -62,3 +62,12 @@ def test_typical_txt_filenames():
         author="Broker_Name",
         date="18.08.2026",
     )
+
+
+def test_empty_parentheses_give_title_without_author_and_date():
+    assert parse_filename("Название документа().txt") == FileMetadata(
+        title="Название документа", author=None, date=None
+    )
+    assert parse_filename("Название документа(   ).pdf") == FileMetadata(
+        title="Название документа", author=None, date=None
+    )
