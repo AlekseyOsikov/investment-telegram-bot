@@ -626,11 +626,13 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 │                              # dialog_eval.py (прогон длинных диалогов /smart_agent с задачей и материалами),
 │                              # ollama_tune.py (подбор параметров локальной модели Ollama «до/после»),
 │                              # pr_review.py + pr_review_lib.py + pr_review_index.py (AI-ревью PR),
-│                              # news_eval.py (оценка качества разбора новостей, make news-eval)
+│                              # news_eval.py (оценка качества разбора новостей, make news-eval),
+│                              # smoke.py + smoke_lib.py (smoke-сценарии без Telegram, make smoke),
+│                              # qa_ci.sh + qa_report.py + qa_report_lib.py (QA после PR, make qa)
 ├── mcp_servers/project_files/ # Локальный MCP-сервер файлов проекта для /dev (MCP_FILES_ENABLED): поиск, чтение,
 │                              # предложения правок документации; вне src/
 ├── mock_servers/support_crm/ # Мок CRM для /support (вымышленные обращения); вне src/
-├── docs/                     # code-style.md, agent-profiles.md; support/ — FAQ для /support
+├── docs/                     # code-style.md, agent-profiles.md; support/ — FAQ для /support; smoke/ — сценарии make smoke
 ├── mcp_servers/news/         # Локальный MCP-сервер новостей для /news: ленты, дедупликация, привязка
 │                              # к тикерам (data/aliases.json), SQLite; вне src/, бот общается с ним по MCP
 ├── scripts/ollama/           # Modelfile победивших конфигураций локальных моделей (`ollama create`)
@@ -1043,6 +1045,56 @@ Markdown, перечень документов на временном дере
 Правила прогона длинных диалогов (`src/research/dialog_eval.py`, `tests/test_dialog_eval.py`) —
 формат сценария, проверки хода и итог — тоже чистые функции без сети; сам прогон на живых моделях
 (`scripts/dialog_eval.py`) запускается вручную.
+
+### Smoke-сценарии без Telegram (`make smoke`)
+
+Второй уровень проверки — пользовательские пути целиком: `scripts/smoke.py` запускает настоящий
+`main.main()`, но вместо Telegram подаёт приложению апдейты из текстовых сценариев `docs/smoke/*.md`, а
+исходящие вызовы Bot API записывает (сеть не используется). Модель, Ollama и MCP-серверы не нужны,
+данные пишутся во временную папку. На каждый шаг сохраняется скриншот диалога (нужен Chrome, иначе
+остаётся HTML), в конце — `reports/smoke/<время>/report.md` с результатом шагов, причинами падений и
+подсказкой «где искать» (обработчик команды с `файл:строка`). Код выхода 1, если что-то упало.
+
+```bash
+make smoke                                   # все docs/smoke/*.md
+make smoke ARGS="docs/smoke/04-queue-empty.md"   # один сценарий
+```
+
+Формат сценариев — `docs/smoke/README.md`. В Claude Code: `/qa-run` — код-тесты и smoke с единым
+отчётом, `/qa-update-smoke` — обновить сценарии под новую фичу и прогнать всё заново.
+
+### QA после PR (`.github/workflows/qa.yml`)
+
+Оба уровня встроены в поток разработки: на каждый PR GitHub Actions запускает `scripts/qa_ci.sh` —
+`compileall`, `ruff` по изменённым файлам (провал только при РОСТЕ числа замечаний относительно
+основной ветки: старые `E501` PR чинить не обязан), `pytest` с покрытием и smoke-сценарии. Итог —
+ОДИН обновляемый комментарий в PR (`scripts/qa_report.py`: таблица проверок, покрытие, упавшие тесты
+и шаги smoke с подсказкой «где искать»), тот же текст в Job summary и артефакт «qa-report»
+(скриншоты шагов smoke, 14 дней). Job краснеет, если что-то упало. Тот же прогон — локально:
+
+```bash
+PYTHON=.venv/bin/python make qa     # результаты и отчёт — reports/qa-ci/
+```
+
+Отчёт автоматический: без модели, сети и Telegram, поэтому `/watch`, `/support` и ответы живой
+модели по-прежнему проверяются вручную; он не заменяет ревью (AI-ревью — отдельный workflow).
+
+**Модель угроз отличается от AI-ревью.** Там код PR — только данные, здесь он ИСПОЛНЯЕТСЯ
+(`pytest` импортирует `src/` и `tests/`), поэтому:
+
+- workflow идёт на GitHub-hosted runner (`ubuntu-latest`, одноразовая ВМ без секретов) и не должен
+  переезжать на ваш self-hosted runner: тот же репозиторий публичный, а код чужого PR на вашей
+  машине выполнять нельзя;
+- событие `pull_request` (не `pull_request_target`): у PR из форка токен только для чтения, секретов
+  у job нет вообще (только `github.token`); комментарий для форка не публикуется, отчёт остаётся в
+  Job summary и артефакте;
+- комментарий находится по маркеру `<!-- pr-qa-report -->` И автору (`github-actions[bot]`); текст
+  из вывода тестов (его пишет код PR) попадает в комментарий обезвреженным (`@user`, HTML-комментарии)
+  и в блоке кода.
+
+Состав: `scripts/qa_ci.sh` (прогон), `scripts/qa_report_lib.py` (чистые правила разбора и сборки
+комментария; тесты — `tests/test_qa_report_lib.py`), `scripts/qa_report.py` (CLI, публикация через
+`gh api`), `.github/workflows/qa.yml`.
 
 ## Разработка через OpenSpec
 

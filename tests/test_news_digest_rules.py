@@ -168,3 +168,31 @@ def test_moments_and_next_digest():
     assert rules.next_digest_at(enabled, None, 6) == enabled + timedelta(hours=6)
     last = enabled + timedelta(hours=7)
     assert rules.next_digest_at(enabled, last, 6) == last + timedelta(hours=6)
+
+
+# --- Дополнение: терпимый разбор JSON -----------------------------------------
+
+
+def test_parse_json_object_cases():
+    assert rules.parse_json_object(None) is None
+    assert rules.parse_json_object("") is None
+    assert rules.parse_json_object('{"a": 1}') == {"a": 1}
+    assert rules.parse_json_object('Вот ответ: {"a": 1} Спасибо.') == {"a": 1}
+    assert rules.parse_json_object('```json\n{"a": 2}\n```') == {"a": 2}
+    assert rules.parse_json_object('```\n{"a": 3}\n```') == {"a": 3}
+
+
+@pytest.mark.parametrize(
+    "raw", ["[1, 2]", '"строка"', "42", "{обрезанный", "текст } без { пары"]
+)
+def test_parse_json_object_of_non_object_or_broken_text_is_none(raw):
+    assert rules.parse_json_object(raw) is None
+
+
+def test_parse_json_object_skips_broken_braces_before_a_real_object():
+    assert rules.parse_json_object('{не json} затем {"a": 1}') == {"a": 1}
+
+
+def test_parse_json_object_prefers_fenced_block_over_surrounding_text():
+    raw = 'Сначала {"a": 1}\n```json\n{"b": 2}\n```'
+    assert rules.parse_json_object(raw) == {"b": 2}

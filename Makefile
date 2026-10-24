@@ -1,4 +1,4 @@
-.PHONY: install run test clean index dev-index support-index review-index tune tune-report news-eval
+.PHONY: install run test clean index dev-index support-index review-index tune tune-report news-eval smoke qa
 
 install:
 	pip install -r requirements.txt
@@ -50,3 +50,15 @@ clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 	rm -rf .pytest_cache .ruff_cache build dist *.egg-info
+
+# Smoke-сценарии docs/smoke/*.md: настоящие обработчики бота без Telegram и без модели, скриншоты
+# шагов и отчёт в reports/smoke/<время>/. Аргументы — пути сценариев через ARGS.
+smoke:
+	python scripts/smoke.py $(ARGS)
+
+# QA-прогон как в CI (.github/workflows/qa.yml): compileall, ruff по изменённым файлам, pytest с
+# покрытием и smoke; результаты и единый отчёт — reports/qa-ci/. Интерпретатор — PYTHON, основная
+# ветка — BASE: `PYTHON=.venv/bin/python make qa`. Код выхода 1, если что-то упало.
+qa:
+	@PYTHON=$(or $(PYTHON),python) bash scripts/qa_ci.sh reports/qa-ci $(or $(BASE),main); rc=$$?; \
+	$(or $(PYTHON),python) scripts/qa_report.py --dir reports/qa-ci --dry-run; exit $$rc

@@ -605,3 +605,197 @@ def test_question_numbers_are_set_numbers_and_shown_in_summary():
     report["questions"][1]["number"] = 9
     assert rme.question_numbers(report) == [1, 9]
     assert "номера из набора: 1, 9" in rme.format_summary(report)
+
+
+# --------------------------------------------------------------------------- #
+# Дополнение: ветки блока модели, цитаты судьи, строки обращения и сводка с исключениями
+# --------------------------------------------------------------------------- #
+
+
+def _with_citation_verdict(attempt: Attempt, verdict: str) -> Attempt:
+    attempt.result.citation_verdict = ev.CitationVerdict(verdict)
+    return attempt
+
+
+def _block(runs: list[QuestionRun], model: ModelSpec = LOCAL) -> str:
+    agg = rme.aggregate_model(runs, model.key)
+    return "\n".join(rme._model_block(1, model.to_dict(), agg))
+
+
+def test_aggregate_counts_citation_judge_verdicts_and_ignores_unknown_ones():
+    attempts = [
+        _with_citation_verdict(_attempt(LOCAL.key, 1), ev.CITATION_SUPPORTED),
+        _with_citation_verdict(_attempt(LOCAL.key, 2), ev.CITATION_PARTIAL),
+        _with_citation_verdict(_attempt(LOCAL.key, 3), "странный"),
+        _attempt(LOCAL.key, 4),
+    ]
+    agg = rme.aggregate_model([_run(1, attempts)], LOCAL.key)
+    assert agg["cit_verdicts"] == {
+        ev.CITATION_SUPPORTED: 1,
+        ev.CITATION_PARTIAL: 1,
+        ev.CITATION_UNSUPPORTED: 0,
+    }
+    assert agg["cit_judge_missing"] == 1  # только обращение 4: у «странного» вердикт всё же есть
+
+
+def test_settings_line_with_and_without_candidates():
+    base = rme._settings_line({"strategy": "structural", "top_k": 3, "min_score": 0.5})
+    assert base == (
+        "Настройки поиска: стратегия structural, top-k 3, порог 0.5, "
+        "переписывание вопроса выключено."
+    )
+    assert "кандидатов 8" in rme._settings_line({"candidates": 8})
+    assert "стратегия ?, top-k ?, порог ?" in rme._settings_line({})
+
+
+def test_model_block_shows_citation_verdicts_false_abstain_and_correct_refusal():
+    runs = [
+        _run(1, [_with_citation_verdict(_attempt(LOCAL.key, 1), ev.CITATION_SUPPORTED)]),
+        _run(2, [_attempt(LOCAL.key, 1, abstained=True)]),
+        _run(3, [_attempt(LOCAL.key, 1, abstained=True, coverage=None)], abstain=True),
+    ]
+    text = _block(runs)
+    assert "Цитаты: проверенные в 1 из 1 ответов" in text
+    assert "подтверждается — 1" in text
+    assert "без оценки судьи" not in text
+    assert "Вопрос вне корпуса: верный отказ в 1 из 1 ответов." in text
+    assert "⚠️ Ложных отказов («не знаю») по корпусу: 1." in text
+
+
+def test_model_block_names_citation_attempts_without_judge_verdict():
+    text = _block([_run(1, [_attempt(LOCAL.key, 1)])])
+    assert "без оценки судьи — 1" in text
+
+
+def test_model_block_speed_variants():
+    only_cold = _block([_run(1, [_attempt(LOCAL.key, 1, cold=True, tokens=100, elapsed=10)])])
+    assert "нет данных вне холодного старта" in only_cold
+    cold_line = "Холодный старт (первое обращение, не входит в статистику): 10.0 ток/с, 10 с."
+    assert cold_line in only_cold
+
+    no_tokens = _block([_run(1, [_attempt(LOCAL.key, 1, tokens=None)])])
+    assert "Скорость: нет данных (токены ответа неизвестны или нет ответов)." in no_tokens
+    assert "Скорость неизвестна (провайдер не вернул токены): 1." in no_tokens
+
+    normal = _block([_run(1, [_attempt(LOCAL.key, 1, tokens=100, elapsed=10)])])
+    assert "медиана 10.0 ток/с" in normal
+    assert "(обращений: 1)" in normal
+
+
+def test_model_block_failed_cold_start_and_failure_reasons_ranked():
+    attempts = [
+        _attempt(LOCAL.key, 1, cold=True, error="таймаут", coverage=None),
+        _attempt(LOCAL.key, 2, error="таймаут", coverage=None),
+        _attempt(LOCAL.key, 3, error="отказ сервера", coverage=None),
+        _attempt(LOCAL.key, 4),
+    ]
+    text = _block([_run(1, attempts)])
+    assert "Холодный старт: первое обращение не завершилось ответом." in text
+    assert "Стабильность: ответ получен в 1 из 4 обращений." in text
+    assert "Причины сбоев: таймаут ×2; отказ сервера ×1." in text
+
+
+def test_model_block_unjudged_answers_with_and_without_reasons():
+    with_reason = _block(
+        [_run(1, [_attempt(LOCAL.key, 1, coverage=None, judge_error="судья недоступен")])]
+    )
+    assert "Не оценено судьёй: 1 (судья недоступен ×1)." in with_reason
+    assert "нет ответов, оценённых судьёй" in with_reason
+    without_reason = _block([_run(1, [_attempt(LOCAL.key, 1, coverage=None)])])
+    assert "Не оценено судьёй: 1." in without_reason
+
+
+def test_model_block_average_calls_and_spread_between_repeats():
+    attempts = [
+        _attempt(LOCAL.key, 1, coverage=1.0, calls=1),
+        _attempt(LOCAL.key, 2, coverage=0.5, calls=2),
+    ]
+    steady = [_attempt(LOCAL.key, 1, coverage=1.0), _attempt(LOCAL.key, 2, coverage=1.0)]
+    text = _block([_run(1, attempts), _run(2, steady)])
+    assert "Вызовов модели на ответ в среднем: 1.2." in text
+    assert "вопрос 1: 1–2 из 2; вопрос 2: 2 из 2" in text
+
+
+def test_spread_text_formats_range_and_single_value():
+    assert rme._spread_text({3: (0.5, 1.0, 2), 1: (1.0, 1.0, 2)}) == (
+        "вопрос 1: 2 из 2; вопрос 3: 1–2 из 2"
+    )
+    assert rme._spread_text({}) == ""
+
+
+def test_summary_lists_excluded_questions_search_time_and_queue():
+    ok = _run(
+        1,
+        [_attempt(LOCAL.key, 1), _attempt(CLOUD.key, 1)],
+        search_seconds=2.0,
+    )
+    excluded = _run(2, [], search_error="эмбеддинги недоступны")
+    report = _report([ok, excluded])
+    report["queue"] = {"slot_wait_seconds": 12, "user_questions": 2}
+    text = rme.format_summary(report)
+    assert "Не вошли в сравнение из-за сбоя поиска: 1." in text
+    assert "к моделям не обращались): 1 — 2 (эмбеддинги недоступны)." in text
+    assert "Поиск по индексу: один на вопрос, в среднем 2.0 с" in text
+    assert "Очередь:" in text
+    assert "(номера из набора: 1, 2)" in text
+
+
+def test_summary_without_search_time_or_exclusions_has_no_such_lines():
+    report = _report([_run(1, [_attempt(LOCAL.key, 1), _attempt(CLOUD.key, 1)])])
+    text = rme.format_summary(report)
+    assert "Исключено из сравнения" not in text
+    assert "Поиск по индексу:" not in text
+    assert "Очередь:" not in text
+
+
+def test_summary_of_kimi_judge_notes_fixed_temperature():
+    text = rme.format_summary(_rich_report())
+    assert "температуру задаёт сам Kimi" in text
+
+
+def test_attempt_lines_of_failed_attempt_with_and_without_error():
+    question = _q(1)
+    failed = Attempt(LOCAL.key, 2, ev.ModeResult(error="таймаут провайдера"), cold=True)
+    lines = rme._attempt_lines("ollama/m", failed, question)
+    assert lines[0] == "\n— ollama/m, повтор 2 (холодный старт) —"
+    assert lines[1] == "Сбой ответа: таймаут провайдера"
+    assert len(lines) == 2
+    silent = Attempt(LOCAL.key, 1, ev.ModeResult())
+    assert rme._attempt_lines("м", silent, question)[1] == "Сбой ответа: ответ не получен"
+
+
+def test_attempt_lines_of_abstain_question_report_refusal_or_answer():
+    question = _q(1, abstain=True)
+    refusal = _attempt(LOCAL.key, 1, abstained=True, coverage=None)
+    refused = rme._attempt_lines("м", refusal, question)
+    assert refused[-1] == "Отказ «не знаю»: да ✓"
+    answered = rme._attempt_lines("м", _attempt(LOCAL.key, 1, coverage=None), question)
+    assert answered[-1] == "Отказ «не знаю»: нет ✗ (дан ответ)"
+
+
+def test_attempt_lines_with_verdict_contradiction_note_and_missing_estimate():
+    question = _q(1)
+    attempt = _attempt(LOCAL.key, 1, coverage=0.5, contradicts=True)
+    attempt.result.verdict = ev.Verdict(present=(True, False), contradicts=True, note="Спорно")
+    text = "\n".join(rme._attempt_lines("м", attempt, question))
+    assert "Оценка: 50% фактов." in text
+    assert "✅ 1. a" in text and "❌ 2. b" in text
+    assert "⚠️ Есть утверждение, противоречащее ожиданию." in text
+    assert "Замечание судьи: Спорно" in text
+    failed_judge = _attempt(LOCAL.key, 1, coverage=None, judge_error="нет JSON")
+    no_verdict = "\n".join(rme._attempt_lines("м", failed_judge, question))
+    assert "Оценка не получена: нет JSON" in no_verdict
+    assert "Оценка не получена: нет данных" in "\n".join(
+        rme._attempt_lines("м", _attempt(LOCAL.key, 1, coverage=None), question)
+    )
+
+
+def test_attempt_lines_show_speed_tokens_calls_and_unknown_tokens():
+    question = _q(1)
+    fast = _attempt(LOCAL.key, 1, tokens=200, elapsed=10)
+    known = "\n".join(rme._attempt_lines("м", fast, question))
+    expected = "Скорость: 20.0 ток/с · 200 токенов ответа, промпт 100 · 1 выз. модели · 10.0 с"
+    assert expected in known
+    unknown = "\n".join(rme._attempt_lines("м", _attempt(LOCAL.key, 1, tokens=None), question))
+    assert "токены ответа неизвестны" in unknown
+    assert "неизвестна" in unknown

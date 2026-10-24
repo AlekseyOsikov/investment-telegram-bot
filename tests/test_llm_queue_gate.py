@@ -383,3 +383,237 @@ def test_shutdown_cancels_everything():
         assert gate.chat_jobs(1) == [] and gate.chat_jobs(2) == []
 
     run(scenario())
+
+
+# --- Дополнение: признаки отмены, сбои уведомлений, гонка слота и остановка ---------------------
+
+import logging  # noqa: E402
+
+from llm_queue.gate import Job  # noqa: E402
+
+
+def test_job_context_exposes_cancel_flag_to_work_and_threads():
+    async def scenario():
+        gate = make_gate()
+        seen = []
+        release = asyncio.Event()
+
+        async def work(ctx):
+            seen.append((ctx.cancelled, ctx.should_cancel()))
+            await release.wait()
+            seen.append((ctx.cancelled, ctx.should_cancel()))
+
+        sub = gate.submit(1, KIND_MAIN, "q", work)
+        await settle()
+        sub.job.cancelled = True  # как после cancel_job: флаг видят и корутина, и поток
+        release.set()
+        await sub.job.task
+        assert seen == [(False, False), (True, True)]
+
+    run(scenario())
+
+
+def test_waited_seconds_of_job_is_visible_in_context():
+    async def scenario():
+        gate = make_gate()
+        waits = []
+
+        async def work(ctx):
+            waits.append(ctx.waited_seconds)
+
+        sub = gate.submit(1, KIND_MAIN, "q", work)
+        await sub.job.task
+        assert len(waits) == 1 and waits[0] >= 0.0
+
+    run(scenario())
+
+
+def test_late_callback_receives_exception_of_cancelled_thread():
+    async def scenario():
+        gate = make_gate()
+        started = threading.Event()
+        release = threading.Event()
+        late_calls = []
+
+        def failing():
+            started.set()
+            release.wait(5)
+            raise ValueError("поток упал")
+
+        async def late(result, error):
+            late_calls.append((result, error))
+
+        async def work(ctx):
+            await ctx.run_thread(failing, late=late)
+
+        sub = gate.submit(1, KIND_SMART_AGENT, "q", work)
+        while not started.is_set():
+            await asyncio.sleep(0.005)
+        gate.cancel_job(sub.job, "user")
+        await settle()
+        release.set()
+        for _ in range(100):
+            if late_calls:
+                break
+            await asyncio.sleep(0.01)
+        assert len(late_calls) == 1
+        result, error = late_calls[0]
+        assert result is None
+        assert isinstance(error, ValueError) and str(error) == "поток упал"
+
+    run(scenario())
+
+
+def test_failing_late_callback_is_logged_and_slot_is_still_released(caplog):
+    async def scenario():
+        gate = make_gate()
+        started = threading.Event()
+        release = threading.Event()
+        ran_next = []
+
+        def blocking():
+            started.set()
+            release.wait(5)
+            return "ok"
+
+        async def late(result, error):
+            raise RuntimeError("не удалось уведомить")
+
+        async def agent(ctx):
+            await ctx.run_thread(blocking, late=late)
+
+        async def nxt(ctx):
+            ran_next.append(1)
+
+        a = gate.submit(1, KIND_SMART_AGENT, "q", agent)
+        while not started.is_set():
+            await asyncio.sleep(0.005)
+        b = gate.submit(2, KIND_MAIN, "n", nxt)
+        gate.cancel_job(a.job, "user")
+        await settle()
+        release.set()
+        await b.job.task
+        await settle(10)
+        assert ran_next == [1]
+
+    with caplog.at_level(logging.ERROR):
+        run(scenario())
+    assert "Сбой уведомления после отмены вопроса" in caplog.text
+
+
+def test_expired_job_without_notify_callback_is_dropped_silently():
+    async def scenario():
+        gate = make_gate(ttl=0.05)
+        block = asyncio.Event()
+        ran = []
+
+        async def blocker(ctx):
+            await block.wait()
+
+        async def victim(ctx):
+            ran.append(1)
+
+        a = gate.submit(1, KIND_MAIN, "block", blocker)
+        await settle()
+        b = gate.submit(2, KIND_MAIN, "v", victim)
+        await b.job.task
+        assert b.job.expired is True
+        assert ran == [] and gate.chat_jobs(2) == []
+        block.set()
+        await a.job.task
+
+    run(scenario())
+
+
+def test_failing_expiry_notice_is_logged_and_does_not_break_the_gate(caplog):
+    async def scenario():
+        gate = make_gate(ttl=0.05)
+        block = asyncio.Event()
+
+        async def blocker(ctx):
+            await block.wait()
+
+        async def notify(text):
+            raise ConnectionError("чат недоступен")
+
+        async def victim(ctx):
+            raise AssertionError("не должен запускаться")
+
+        a = gate.submit(1, KIND_MAIN, "block", blocker)
+        await settle()
+        b = gate.submit(2, KIND_MAIN, "v", victim, notify=notify)
+        await b.job.task
+        assert b.job.expired is True
+        block.set()
+        await a.job.task
+        assert gate.chat_jobs(1) == [] and gate.chat_jobs(2) == []
+
+    with caplog.at_level(logging.WARNING):
+        run(scenario())
+    assert "Не удалось отправить служебное сообщение очереди" in caplog.text
+
+
+def test_slot_handed_over_but_waiter_cancelled_in_same_tick_does_not_leak_slot():
+    async def scenario():
+        gate = make_gate()
+        holder_ready = asyncio.Event()
+        holder_release = asyncio.Event()
+
+        async def holder():
+            async with gate.slot(RESEARCH):
+                holder_ready.set()
+                await holder_release.wait()
+
+        async def waiter():
+            async with gate.slot(RESEARCH):
+                raise AssertionError("слот не должен достаться отменённому")
+
+        holder_task = asyncio.create_task(holder())
+        await holder_ready.wait()
+        waiter_task = asyncio.create_task(waiter())
+        await settle()
+        holder_release.set()
+        await asyncio.sleep(0)  # holder выходит и выдаёт слот ожидающему, тот ещё не проснулся
+        assert gate._free == 0 and not gate._waiters
+        waiter_task.cancel()
+        await asyncio.gather(holder_task, waiter_task, return_exceptions=True)
+        await settle()
+
+        done = []
+
+        async def work(ctx):
+            done.append(1)
+
+        sub = gate.submit(1, KIND_MAIN, "w", work)
+        assert not sub.queued  # слот свободен, утечки нет
+        await sub.job.task
+        assert done == [1]
+
+    run(scenario())
+
+
+def test_shutdown_cancels_unregistered_job_with_task_and_waits_for_it():
+    async def scenario():
+        gate = make_gate()
+        job = Job(
+            seq=99,
+            chat_id=0,
+            kind="research",
+            priority=RESEARCH,
+            text="",
+            enqueued_at=0.0,
+            registered=False,
+        )
+        job.task = asyncio.create_task(asyncio.sleep(3600))
+        gate._jobs[job.seq] = job
+        await gate.shutdown()
+        assert job.task.cancelled()
+
+    run(scenario())
+
+
+def test_shutdown_with_nothing_running_returns_at_once():
+    async def scenario():
+        await make_gate().shutdown()
+
+    run(scenario())

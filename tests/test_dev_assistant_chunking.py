@@ -85,3 +85,59 @@ def test_only_short_content_still_yields_chunk():
     chunks = chunk_markdown("# Заголовок\n\nкоротко\n", PATH)
     assert len(chunks) == 1
     assert "коротко" in chunks[0].text
+
+
+# --- Дополнение: разрезание длинного раздела (_split_long) ----------------------------------------
+
+from dev_assistant.chunking import _split_long  # noqa: E402
+
+
+def test_split_long_short_body_is_one_piece():
+    assert _split_long("Абзац один.\n\nАбзац два.", 100) == ["Абзац один.\n\nАбзац два."]
+
+
+def test_split_long_packs_paragraphs_up_to_limit_and_loses_nothing():
+    paragraphs = [f"Абзац номер {i} " + "х" * 20 for i in range(1, 7)]
+    chunks = _split_long("\n\n".join(paragraphs), 60)
+    assert all(len(chunk) <= 60 for chunk in chunks)
+    assert len(chunks) > 1
+    assert "\n\n".join(chunks) == "\n\n".join(paragraphs)
+
+
+def test_split_long_keeps_paragraph_boundaries_when_paragraphs_fit():
+    first, second = "а" * 50, "б" * 50
+    assert _split_long(f"{first}\n\n{second}", 60) == [first, second]
+
+
+def test_split_long_cuts_overlong_paragraph_by_lines():
+    lines = [f"строка {i} " + "я" * 20 for i in range(1, 6)]
+    chunks = _split_long("\n".join(lines), 60)
+    assert all(len(chunk) <= 60 for chunk in chunks)
+    assert "\n".join(chunks) == "\n".join(lines)
+
+
+def test_split_long_flushes_short_line_before_hard_cutting_a_longer_one():
+    chunks = _split_long("коротко\n" + "ж" * 150, 60)
+    assert chunks[0] == "коротко"
+    assert [len(chunk) for chunk in chunks[1:]] == [60, 60, 30]
+    assert "".join(chunks[1:]) == "ж" * 150
+
+
+def test_split_long_keeps_fenced_code_block_with_blank_lines_in_one_piece():
+    code = "```\nпервая\n\nвторая\n```"
+    chunks = _split_long(f"Вступление.\n\n{code}\n\nЗаключение.", 40)
+    assert any(code in chunk for chunk in chunks)
+    assert all(len(chunk) <= 40 for chunk in chunks)
+
+
+def test_split_long_cuts_fenced_block_only_when_it_exceeds_limit():
+    code = "```\n" + "\n\n".join("к" * 30 for _ in range(4)) + "\n```"
+    chunks = _split_long(code, 50)
+    assert all(len(chunk) <= 50 for chunk in chunks)
+    assert len(chunks) > 1
+    assert "".join(chunks).replace("\n", "") == code.replace("\n", "")
+
+
+def test_split_long_of_empty_body_is_empty():
+    assert _split_long("", 100) == []
+    assert _split_long("\n\n  \n", 100) == []

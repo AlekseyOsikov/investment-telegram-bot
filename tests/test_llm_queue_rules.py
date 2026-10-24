@@ -290,3 +290,37 @@ def test_support_is_a_known_kind_with_own_duration_window():
     assert stats.count(KIND_SUPPORT) == 3
     assert stats.count(KIND_DEV_ASSISTANT) == 0
     assert stats.median(KIND_SUPPORT) == 15.0
+
+
+# --- Дополнение: граничные случаи ---
+
+
+def test_entries_ahead_of_running_task_is_empty():
+    running = entry(1, running=True)
+    assert rules.entries_ahead([running, entry(2)], running) == []
+
+
+def test_entries_ahead_lists_running_first_then_earlier_waiting():
+    running = entry(1, running=True)
+    first, second, target = entry(2), entry(3), entry(4)
+    later = entry(5)
+    ahead = rules.entries_ahead([later, target, second, running, first], target)
+    assert [e.seq for e in ahead] == [1, 2, 3]
+
+
+def test_snippet_of_empty_or_blank_text_is_empty():
+    assert rules.snippet("") == ""
+    assert rules.snippet("   \n\t ") == ""
+
+
+def test_snippet_marks_truncation_by_words_and_by_chars():
+    assert rules.snippet("один два три четыре", max_words=2, max_chars=100) == "один два…"
+    assert rules.snippet("короткий вопрос", max_words=5, max_chars=100) == "короткий вопрос"
+    assert rules.snippet("абвгдеёжзий клмн", max_words=5, max_chars=10) == "абвгдеёжзи…"
+
+
+def test_cancel_all_text_names_count_or_says_nothing_to_cancel():
+    assert "Снято вопросов: 3." in rules.text_cancel_all(3)
+    assert "Ответы на них не придут" in rules.text_cancel_all(1)
+    assert rules.text_cancel_all(0) == rules.text_nothing_to_cancel()
+    assert rules.text_cancel_all(-2) == rules.text_nothing_to_cancel()

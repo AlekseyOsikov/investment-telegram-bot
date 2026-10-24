@@ -241,3 +241,26 @@ def test_combined_tools_dispatch_and_unknown():
 def test_combined_tools_name_collision_is_error():
     with pytest.raises(ValueError):
         CombinedTools(Layer("a"), Layer("a"))
+
+
+def test_tool_names_are_names_of_model_tools_only_and_a_copy():
+    tools, _, _ = make_tools()
+    names = tools.tool_names
+    assert names == [t["function"]["name"] for t in tools.openai_tools]
+    assert "apply_change" not in names and "discard_change" not in names
+    names.append("посторонний")
+    assert "посторонний" not in tools.tool_names
+
+
+def test_tool_names_of_empty_facade_is_empty_list():
+    class Bare:
+        openai_tools = []
+
+    tools = FilesTools(
+        Bare(),
+        max_result_chars=100,
+        registry=proposals.ProposalRegistry(600),
+        chat_id=1,
+        user_id=1,
+    )
+    assert tools.tool_names == []

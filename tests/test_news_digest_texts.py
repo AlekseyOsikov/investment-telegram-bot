@@ -114,3 +114,57 @@ def test_fixed_texts_have_no_guarantees_or_assessments():
     ]
     for text in fixed:
         assert GUARANTEE.search(text) is None, text
+
+
+# --- Дополнение: склонение и усечение длинного сообщения ---------------------------
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    ("number", "expected"),
+    [
+        (1, "час"),
+        (2, "часа"),
+        (4, "часа"),
+        (5, "часов"),
+        (11, "часов"),
+        (12, "часов"),
+        (14, "часов"),
+        (21, "час"),
+        (22, "часа"),
+        (101, "час"),
+        (111, "часов"),
+        (0, "часов"),
+    ],
+)
+def test_plural_picks_russian_form(number, expected):
+    assert texts._plural(number, ("час", "часа", "часов")) == expected
+
+
+def test_every_hours_uses_plural_forms():
+    assert texts._every_hours(1) == "раз в час"
+    assert texts._every_hours(2) == "раз в 2 часа"
+    assert texts._every_hours(6) == "раз в 6 часов"
+    assert texts._every_hours(21) == "раз в 21 час"
+
+
+def test_fit_telegram_keeps_short_text_as_is():
+    assert texts.fit_telegram("коротко") == "коротко"
+    exact = "я" * 4000
+    assert texts.fit_telegram(exact) == exact
+
+
+def test_fit_telegram_cuts_long_text_keeps_disclaimers_and_fits_limit():
+    long_text = "я" * 6000 + "\n\n" + texts.DISCLAIMERS
+    fitted = texts.fit_telegram(long_text)
+    assert len(fitted) <= 4000
+    assert fitted.endswith(texts.DISCLAIMERS)
+    assert "…" in fitted
+    assert fitted.startswith("я" * 100)
+
+
+def test_fit_telegram_respects_custom_limit():
+    fitted = texts.fit_telegram("б" * 2000 + texts.DISCLAIMERS, limit=1500)
+    assert len(fitted) <= 1500
+    assert fitted.endswith(texts.DISCLAIMERS)

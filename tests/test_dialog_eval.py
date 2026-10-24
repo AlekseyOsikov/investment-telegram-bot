@@ -227,3 +227,71 @@ def test_report_failed_flags_and_summary():
 def test_report_with_error_is_failed():
     report = ev.ScenarioReport(scenario=ev.parse_scenario(_raw()), error="ошибка API")
     assert report.failed and "прерван" in ev.format_summary(report)
+
+
+# --- Дополнение: чтение сценария с диска и строка хода -------------------------------------------
+
+import json  # noqa: E402
+
+
+def test_load_scenario_reads_json_file(tmp_path):
+    path = tmp_path / "scenario.json"
+    path.write_text(json.dumps(_raw(), ensure_ascii=False), encoding="utf-8")
+    scenario = ev.load_scenario(str(path))
+    assert scenario.name == "Пробный сценарий"
+    assert scenario.goal == "накопить на дом"
+    assert len(scenario.turns) == 10
+
+
+def test_load_scenario_missing_file_is_scenario_error_with_path(tmp_path):
+    path = str(tmp_path / "нет.json")
+    with pytest.raises(ev.ScenarioError, match="не удалось прочитать JSON") as error:
+        ev.load_scenario(path)
+    assert path in str(error.value)
+
+
+def test_load_scenario_with_broken_json_is_scenario_error(tmp_path):
+    path = tmp_path / "broken.json"
+    path.write_text("{не json", encoding="utf-8")
+    with pytest.raises(ev.ScenarioError, match="не удалось прочитать JSON"):
+        ev.load_scenario(str(path))
+
+
+def test_load_scenario_with_invalid_format_reports_the_source(tmp_path):
+    path = tmp_path / "bad.json"
+    path.write_text(json.dumps({"name": "x"}), encoding="utf-8")
+    with pytest.raises(ev.ScenarioError) as error:
+        ev.load_scenario(str(path))
+    assert str(path) in str(error.value)
+
+
+def test_turn_line_of_failed_turn_shows_error_only():
+    result = ev.TurnResult(_obs(None, None, number=3, error="таймаут провайдера"), None)
+    assert ev.format_turn_line(result) == " 3. ОШИБКА: таймаут провайдера"
+
+
+def test_turn_line_shows_stages_explanation_and_ok_status():
+    before = _task(ts.STAGE_PLANNING)
+    after = _task(ts.STAGE_EXECUTION)
+    result = ev.TurnResult(_obs(before, after, number=12), ev.EXPL_SOURCES)
+    expected = f"12. planning → execution; объяснение: {ev.EXPL_SOURCES}; ок"
+    assert ev.format_turn_line(result) == expected
+
+
+def test_turn_line_without_task_and_explanation_uses_dashes_and_none():
+    result = ev.TurnResult(_obs(None, None, number=1), None)
+    assert ev.format_turn_line(result) == " 1. — → —; объяснение: нет; ок"
+
+
+def test_turn_line_lists_violations_and_notes_under_the_line():
+    result = ev.TurnResult(
+        _obs(None, None, number=2),
+        None,
+        violations=[ev.Finding("explanation", "нет объяснения")],
+        notes=[ev.Finding("stage", "откат по просьбе")],
+    )
+    assert ev.format_turn_line(result).split("\n") == [
+        " 2. — → —; объяснение: нет; нарушение",
+        "      ✗ explanation: нет объяснения",
+        "      · stage: откат по просьбе",
+    ]
