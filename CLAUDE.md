@@ -70,6 +70,7 @@ MCP-инструменты, опрос цен, RAG-индексация). Про
 - `scripts/` — одноразовая оснастка (не часть бота): `news_eval.py` — оценка качества разбора новостей
   (набор — `data/news_eval/`, не коммитится; правила — `src/research/news_eval.py`; `make news-eval`);
   `rag_calibrate.py` — калибровка `RAG_MIN_SCORE` (запросы — в `data/rag_eval/`, не коммитятся); `dialog_eval.py` — прогон длинных диалогов `/smart_agent` с задачей и материалами (сценарии и отчёты — в `data/dialog_eval/`, не коммитятся; правила — `src/research/dialog_eval.py`); `ollama_tune.py` + `ollama_tune_lib.py` — подбор параметров локальной модели Ollama «до/после» (скорость, память, обрезка ответов, качество судьёй; варианты, вопросы и отчёты — в `data/ollama_tune/`, не коммитятся; чистые правила — `ollama_tune_lib.py`, тесты `tests/test_ollama_tune_lib.py`; `make tune`/`make tune-report`; Modelfile победителей — `scripts/ollama/`). Скрипт не часть бота и ничего не применяет сам: `.env`, `MAIN_MODEL` и рабочий `SYSTEM_PROMPT` остаются решением оператора. Ловушки (проверены на живом Ollama): удаление тега ЗАГРУЖЕННОЙ модели оставляет её в памяти — сначала выгрузка (`keep_alive: 0`), потом удаление; `num_predict` Modelfile перекрывается `max_tokens` бота (лимит ответа — `MAX_OUTPUT_TOKENS`); `reasoning_effort=none` рассуждение не выключает; `SYSTEM` Modelfile заменяется системным сообщением бота.
+  `smoke.py` + `smoke_lib.py` — smoke-прогон (`make smoke`): НАСТОЯЩИЙ `main.main()` с подменённым транспортом (`Bot._do_post` пишет исходящие вместо сети, `run_polling` не запускается); апдейты — из текстовых сценариев `docs/smoke/*.md` (формат — `docs/smoke/README.md`). Модель, MCP и Ollama не нужны, данные — во временной папке, прокси из окружения сбрасывается. На шаг — HTML/PNG-скриншот диалога (headless Chrome, без него остаётся HTML), итог — `reports/smoke/<время>/report.md` (не коммитится; код выхода 1 при падении; `--out DIR` — в другой каталог: `/qa-run` по умолчанию пишет в `reports/qa/<дата>_<время>/`, а в отслеживаемую `docs/qa/<дата>_<время>/` — только по просьбе сохранить результаты в репозитории). На КАЖДОМ шаге проверяются формулировки-гарантии и ошибки в логе. Чистые правила — `smoke_lib.py`, тесты `tests/test_smoke_lib.py`. То, чему нужна живая модель (вопрос модели, `/watch`, `/support`), проверяется вручную. Единый QA-прогон — скилл `/qa-run` (субагенты `test-writer`, `smoke-runner`), правка сценариев под новую фичу — `/qa-update-smoke` (`.claude/`).
 
 ## Оснастка AI-ревью PR (`scripts/pr_review*.py`, `.github/workflows/`)
 
@@ -121,6 +122,7 @@ make index     # python -m rag.cli (нужен локальный Ollama с EMBE
 make support-index  # python -m support_assistant.cli (индекс справки /support; нужен Ollama с EMBEDDINGS_MODEL)
 make review-index  # python scripts/pr_review.py index (индекс AI-ревью PR; нужен Ollama)
 make news-eval     # python scripts/news_eval.py (оценка разбора новостей для /news; нужна модель NEWS_*)
+make smoke     # python scripts/smoke.py (smoke-сценарии docs/smoke/*.md без Telegram и модели; отчёт со скриншотами — reports/smoke/)
 make clean     # удаляет __pycache__, .pytest_cache, .ruff_cache, build/dist
 python3 -m compileall -q src   # проверка синтаксиса без запуска
 ```
@@ -133,7 +135,8 @@ python3 -m compileall -q src   # проверка синтаксиса без з
 **Тесты** (`tests/`, `conftest.py` добавляет `src/` в `sys.path`; пакета нет, запуск `python
 src/main.py`) покрывают только чистые функции без сети, Telegram и LLM — без моков клиентов и
 `SmartAgent`. Новые правила покрывай тестами чистых функций. Всё остальное (`SmartAgent`, обработчики,
-живые MCP-серверы, Ollama, `pdftotext`) проверяется вручную. Перечень тестов по подсистемам — во
+живые MCP-серверы, Ollama, `pdftotext`) проверяется вручную; связку обработчиков без модели дополнительно
+гоняет smoke (`scripts/smoke.py`) — это отдельный слой вне `tests/`, а не исключение из правила «без моков». Перечень тестов по подсистемам — во
 вложенных `CLAUDE.md`; чистые правила оснастки `scripts/` (`ollama_tune_lib.py`) тестируются так же
 (`tests/conftest.py` добавляет в `sys.path` и `scripts/`).
 

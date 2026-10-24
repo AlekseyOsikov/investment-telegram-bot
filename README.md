@@ -626,11 +626,12 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 │                              # dialog_eval.py (прогон длинных диалогов /smart_agent с задачей и материалами),
 │                              # ollama_tune.py (подбор параметров локальной модели Ollama «до/после»),
 │                              # pr_review.py + pr_review_lib.py + pr_review_index.py (AI-ревью PR),
-│                              # news_eval.py (оценка качества разбора новостей, make news-eval)
+│                              # news_eval.py (оценка качества разбора новостей, make news-eval),
+│                              # smoke.py + smoke_lib.py (smoke-сценарии без Telegram, make smoke)
 ├── mcp_servers/project_files/ # Локальный MCP-сервер файлов проекта для /dev (MCP_FILES_ENABLED): поиск, чтение,
 │                              # предложения правок документации; вне src/
 ├── mock_servers/support_crm/ # Мок CRM для /support (вымышленные обращения); вне src/
-├── docs/                     # code-style.md, agent-profiles.md; support/ — FAQ для /support
+├── docs/                     # code-style.md, agent-profiles.md; support/ — FAQ для /support; smoke/ — сценарии make smoke
 ├── mcp_servers/news/         # Локальный MCP-сервер новостей для /news: ленты, дедупликация, привязка
 │                              # к тикерам (data/aliases.json), SQLite; вне src/, бот общается с ним по MCP
 ├── scripts/ollama/           # Modelfile победивших конфигураций локальных моделей (`ollama create`)
@@ -1043,6 +1044,23 @@ Markdown, перечень документов на временном дере
 Правила прогона длинных диалогов (`src/research/dialog_eval.py`, `tests/test_dialog_eval.py`) —
 формат сценария, проверки хода и итог — тоже чистые функции без сети; сам прогон на живых моделях
 (`scripts/dialog_eval.py`) запускается вручную.
+
+### Smoke-сценарии без Telegram (`make smoke`)
+
+Второй уровень проверки — пользовательские пути целиком: `scripts/smoke.py` запускает настоящий
+`main.main()`, но вместо Telegram подаёт приложению апдейты из текстовых сценариев `docs/smoke/*.md`, а
+исходящие вызовы Bot API записывает (сеть не используется). Модель, Ollama и MCP-серверы не нужны,
+данные пишутся во временную папку. На каждый шаг сохраняется скриншот диалога (нужен Chrome, иначе
+остаётся HTML), в конце — `reports/smoke/<время>/report.md` с результатом шагов, причинами падений и
+подсказкой «где искать» (обработчик команды с `файл:строка`). Код выхода 1, если что-то упало.
+
+```bash
+make smoke                                   # все docs/smoke/*.md
+make smoke ARGS="docs/smoke/04-queue-empty.md"   # один сценарий
+```
+
+Формат сценариев — `docs/smoke/README.md`. В Claude Code: `/qa-run` — код-тесты и smoke с единым
+отчётом, `/qa-update-smoke` — обновить сценарии под новую фичу и прогнать всё заново.
 
 ## Разработка через OpenSpec
 

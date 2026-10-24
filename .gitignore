@@ -46,3 +46,6 @@ docker/ai-review-runner/runner.env
 
 # Изолированные копии репозитория (git worktree) субагентов Claude Code
 .claude/worktrees/
+
+# Отчёты прогонов (make smoke, /qa-run)
+reports/

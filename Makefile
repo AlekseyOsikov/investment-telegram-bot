@@ -1,4 +1,4 @@
-.PHONY: install run test clean index dev-index support-index review-index tune tune-report news-eval
+.PHONY: install run test clean index dev-index support-index review-index tune tune-report news-eval smoke
 
 install:
 	pip install -r requirements.txt
@@ -50,3 +50,8 @@ clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
 	rm -rf .pytest_cache .ruff_cache build dist *.egg-info
+
+# Smoke-сценарии docs/smoke/*.md: настоящие обработчики бота без Telegram и без модели, скриншоты
+# шагов и отчёт в reports/smoke/<время>/. Аргументы — пути сценариев через ARGS.
+smoke:
+	python scripts/smoke.py $(ARGS)
