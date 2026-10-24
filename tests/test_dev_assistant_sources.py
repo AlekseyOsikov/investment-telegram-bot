@@ -48,3 +48,16 @@ def test_order_is_stable(tmp_path):
 def test_missing_docs_dir_is_fine(tmp_path):
     _touch(tmp_path, "README.md")
     assert list_source_files(str(tmp_path)) == ["README.md"]
+
+
+def test_is_excluded_by_directory_name_and_by_prefix():
+    from dev_assistant.sources import _is_excluded
+
+    assert _is_excluded("data/notes.md") is True
+    assert _is_excluded("docs/.venv/lib/README.md") is True
+    assert _is_excluded("openspec/changes") is True  # сам префикс
+    assert _is_excluded("openspec/changes/add-x/proposal.md") is True
+    assert _is_excluded("openspec/changes-old/readme.md") is False  # другой каталог с общим началом
+    assert _is_excluded("openspec/specs/queue/spec.md") is False
+    assert _is_excluded("README.md") is False
+    assert _is_excluded("docs/data.md") is False  # имя файла не считается каталогом

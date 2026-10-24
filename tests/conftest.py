@@ -4,8 +4,16 @@
 путь добавляется здесь, а не через setup.py или PYTHONPATH в Makefile.
 """
 
+import os
 import sys
 from pathlib import Path
+
+# Тестам сеть не нужна, а часть модулей src/ создаёт HTTP-клиентов при импорте: схему `socks://`
+# из окружения разработчика httpx не понимает (нужна `socks5://`) и роняет импорт. Прокси снимается
+# для всей сессии pytest здесь, а не копиями в отдельных тест-файлах; scripts/smoke.py делает то же.
+for _name in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY"):
+    os.environ.pop(_name, None)
+    os.environ.pop(_name.lower(), None)
 
 SRC = Path(__file__).resolve().parent.parent / "src"
 if str(SRC) not in sys.path:

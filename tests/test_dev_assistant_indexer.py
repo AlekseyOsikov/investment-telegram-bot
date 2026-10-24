@@ -107,3 +107,31 @@ def test_summary_text_lists_skipped():
     summary = indexer.BuildSummary(2, 9, (("a.md", "пустой файл"),), "2026-10-14T00:00:00+00:00")
     text = indexer.format_summary(summary, "data/dev_index")
     assert "файлов: 2" in text and "фрагментов: 9" in text and "a.md" in text
+
+
+def test_read_built_at_without_meta_file_is_none(tmp_path):
+    assert indexer.read_built_at(str(tmp_path)) is None
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{не json",
+        "[]",
+        '"строка"',
+        "{}",
+        '{"built_at": ""}',
+        '{"built_at": 5}',
+        '{"built_at": null}',
+    ],
+)
+def test_read_built_at_of_unusable_meta_is_none(tmp_path, content):
+    (tmp_path / "meta.json").write_text(content, encoding="utf-8")
+    assert indexer.read_built_at(str(tmp_path)) is None
+
+
+def test_read_built_at_returns_the_stored_date(tmp_path):
+    (tmp_path / "meta.json").write_text(
+        json.dumps({"built_at": "2026-10-01 12:00:00"}), encoding="utf-8"
+    )
+    assert indexer.read_built_at(str(tmp_path)) == "2026-10-01 12:00:00"

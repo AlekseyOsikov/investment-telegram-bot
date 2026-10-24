@@ -93,3 +93,52 @@ def test_embedding_failure_is_failed_with_reason():
     result = Fakes(embed_error=TimeoutError("бюджет")).run()
     assert result.outcome == search.FAILED
     assert "TimeoutError" in result.failure
+
+
+# --- Дополнение: рабочие функции по умолчанию и граничные значения отбора -------------------------
+
+
+def test_default_index_check_reports_missing_index_without_embedding(tmp_path):
+    # Ни одна функция не подставлена: используется настоящая проверка индекса на пустом каталоге,
+    # до эмбеддинга (а значит, и до сети) дело не доходит.
+    result = search.retrieve(config(index_dir=str(tmp_path)), "где очередь?")
+    assert result.outcome == search.NO_INDEX
+    assert result.chunks == () and result.failure is None
+
+
+def test_only_missing_functions_are_taken_from_defaults(tmp_path):
+    fakes = Fakes([Chunk("a", 0.9)])
+    result = search.retrieve(
+        config(index_dir=str(tmp_path)),
+        "вопрос",
+        embed=fakes.embed,
+        search=fakes.search,
+    )
+    assert result.outcome == search.NO_INDEX  # index_exists — настоящая, индекса нет
+    assert fakes.embedded == [] and fakes.searched == []
+
+
+def test_select_chunks_edge_values():
+    items = [Chunk("a", 0.9), Chunk("b", 0.5), Chunk("c", 0.5)]
+    kept = search.select_chunks(items, 0.5, 10)  # порог включает равные значения
+    assert [c.title for c in kept] == ["a", "b", "c"]
+    assert search.select_chunks(items, 0.0, 0) == []
+    assert search.select_chunks(items, 0.0, -3) == []
+    assert search.select_chunks([], 0.5, 3) == []
+    assert [c.title for c in search.select_chunks(items, -1.0, 2)] == ["a", "b"]
+
+
+def test_search_failure_reason_is_cut_to_200_characters():
+    class Broken(Fakes):
+        def search(self, strategy, index_dir, vector, limit):
+            raise RuntimeError("я" * 500)
+
+    result = Broken([Chunk("a", 0.9)]).run()
+    assert result.outcome == search.FAILED
+    assert len(result.failure) == 200
+    assert result.failure.startswith("RuntimeError: ")
+
+
+def test_config_defaults_to_markdown_strategy():
+    assert config().strategy == "markdown"
+    assert config(strategy="fixed").strategy == "fixed"

@@ -524,3 +524,344 @@ def test_detail_shows_history_and_both_rewrites():
     assert "Как выбирать облигации? → А ОФЗ?" in text
     assert "Переписанный запрос (1.0 с): акции" in text
     assert "Переписанный запрос с историей (1.5 с): выбор акций после облигаций" in text
+
+
+# --- Дополнение: тексты сводки, таблицы и деталей, блок режимов в ответах -------------------
+
+
+def _hq(number: int, *, history=(), sources=("Облигации",)) -> ev.Question:
+    return ev.Question(
+        number=number,
+        question=f"Вопрос {number}?",
+        kind="corpus_specific",
+        facts=("a",),
+        sources=tuple(sources),
+        history=tuple(history),
+    )
+
+
+def _rep(results, modes, **overrides) -> dict:
+    report = rm.build_retrieval_report(
+        started_at="2026-10-01 12:00:00",
+        finished_at="2026-10-01 12:05:00",
+        settings={"strategy": "structural", "top_k": 3, "min_score": 0.6},
+        results=results,
+        planned=len(results),
+        modes=modes,
+        unavailable={},
+    )
+    report.update(overrides)
+    return report
+
+
+def test_delta_pp_cases():
+    assert rm._delta_pp(None, 0.5) == ""
+    assert rm._delta_pp(0.5, None) == ""
+    assert rm._delta_pp(0.75, 0.5) == ", +25 п.п. к базовому"
+    assert rm._delta_pp(0.25, 0.5) == ", -25 п.п. к базовому"
+    assert rm._delta_pp(0.5, 0.5) == ", как базовый"
+    assert rm._delta_pp(0.504, 0.5) == ", как базовый"
+
+
+def test_pct_and_number_show_missing_values():
+    assert rm._pct(None) == "н/д"
+    assert rm._pct(0.5) == "50%"
+    assert rm._number(None, ".1f") == "н/д"
+    assert rm._number(1.25, ".1f") == "1.2"
+
+
+def test_mode_blocks_show_metrics_delta_to_baseline_and_failures():
+    results = [
+        _retrieval(1, **{rm.MODE_BASELINE: _mode("Другое"), rm.MODE_FILTER: _mode("Облигации А")}),
+        _retrieval(2, **{rm.MODE_BASELINE: _mode("Облигации Б"), rm.MODE_FILTER: _mode(error="x")}),
+    ]
+    modes = [rm.MODE_BASELINE, rm.MODE_FILTER]
+    aggregates = rm.aggregate_retrieval(results, modes)
+    text = "\n".join(rm._mode_blocks(aggregates, modes))
+    assert "• как до изменения" in text
+    assert "• с отбором" in text
+    assert "попал в ожидаемый документ: 1 из 2 (50%)" in text
+    assert "попал в ожидаемый документ: 1 из 1 (100%, +50 п.п. к базовому)" in text
+    assert "⚠️ поиск не удался на 1 вопросах" in text
+    assert "время поиска:" in text
+
+
+def test_mode_blocks_without_baseline_have_no_delta():
+    results = [_retrieval(1, **{rm.MODE_FILTER: _mode("Облигации")})]
+    aggregates = rm.aggregate_retrieval(results, [rm.MODE_FILTER])
+    text = "\n".join(rm._mode_blocks(aggregates, [rm.MODE_FILTER]))
+    assert "к базовому" not in text
+    assert "как базовый" not in text
+
+
+def test_mode_blocks_of_mode_without_answers_show_dashes():
+    aggregates = rm.aggregate_retrieval([], [rm.MODE_BASELINE])
+    text = "\n".join(rm._mode_blocks(aggregates, [rm.MODE_BASELINE]))
+    assert "0 из 0 (н/д)" in text
+    assert "MRR: н/д" in text
+
+
+def test_settings_line_lists_known_keys_history_and_filter_steps():
+    line = rm._settings_line(
+        {
+            "strategy": "structural",
+            "top_k": 3,
+            "candidates": 8,
+            "min_score": 0.6,
+            "relative_margin": 0.1,
+            "min_chunk_chars": 50,
+            "max_per_doc": 2,
+            "embeddings_model": "emb",
+            "rewrite_provider": "ollama",
+            "rewrite_model": "rw",
+            "rewrite_search_mode": "both",
+            "history_questions": 3,
+            "history_reference": True,
+            "filter_steps": {
+                "candidates": 10,
+                "relative_margin": 0.08,
+                "min_chunk_chars": 120,
+                "max_per_doc": 2,
+            },
+            "filter_reference": True,
+        }
+    )
+    assert line.startswith("Настройки: стратегия: structural, топ-K: 3, кандидатов: 8")
+    assert "эмбеддинги: emb" in line
+    assert "переписывание: ollama" in line
+    assert "прошлых вопросов в режиме «с контекстом диалога» (эталонное): 3" in line
+    assert "эталонные, у оператора шаги выключены" in line
+    assert line.endswith(".")
+
+
+def test_settings_line_working_origin_and_empty_values():
+    assert rm._settings_line({}) == ""
+    assert rm._settings_line({"strategy": "", "top_k": None}) == ""
+    line = rm._settings_line(
+        {"history_questions": 2, "filter_steps": {"candidates": 5}, "filter_reference": False}
+    )
+    assert "(рабочее): 2" in line
+    assert "(рабочие)" in line
+
+
+def test_summary_of_stopped_run_names_reason_and_counts():
+    results = [_retrieval(1, **{rm.MODE_BASELINE: _mode("Облигации")})]
+    report = _rep(results, [rm.MODE_BASELINE], status=ev.STATUS_STOPPED, stop_reason="по команде")
+    report["planned"] = 5
+    text = rm.format_retrieval_summary(report)
+    assert "⛔ Прогон остановлен: по команде. Обработано 1 из 5 вопросов" in text
+    assert "Прогон остановлен: 2026-10-01 12:05:00 (UTC)." in text
+    report["stop_reason"] = None
+    assert "причина не указана" in rm.format_retrieval_summary(report)
+
+
+def test_summary_of_completed_run_has_no_stop_line_but_has_settings_and_disclaimer():
+    results = [_retrieval(1, **{rm.MODE_BASELINE: _mode("Облигации")})]
+    text = rm.format_retrieval_summary(_rep(results, [rm.MODE_BASELINE]))
+    assert "⛔" not in text
+    assert "Прогон завершён: 2026-10-01 12:05:00 (UTC)." in text
+    assert "Настройки: стратегия: structural" in text
+    assert "Вопросов в расчёте: 1 из 1." in text
+    assert ev.DISCLAIMER in text
+
+
+def test_summary_names_unavailable_modes_and_missing_index_documents():
+    results = [
+        _retrieval(1, **{rm.MODE_BASELINE: _mode("Облигации")}),
+        _retrieval(2, missing=["Акции"], **{rm.MODE_BASELINE: _mode("Другое")}),
+    ]
+    report = _rep(
+        results,
+        [rm.MODE_BASELINE],
+        unavailable_modes={rm.MODE_REWRITE: rm.REWRITE_NOT_CONFIGURED},
+        index_missing=["Акции"],
+    )
+    text = rm.format_retrieval_summary(report)
+    assert f"⚠️ Режим «с переписыванием» недоступен: {rm.REWRITE_NOT_CONFIGURED}." in text
+    assert "Вопросов в расчёте: 1 из 2." in text
+    assert "исключены из метрик) на вопросах: 2." in text
+    assert "Не найдены в индексе: Акции." in text
+
+
+def test_summary_splits_metrics_between_multi_turn_and_standalone_questions():
+    single = QuestionRetrieval(
+        question=_hq(1), modes={rm.MODE_BASELINE: _mode("Облигации")}
+    )
+    multi = QuestionRetrieval(
+        question=_hq(2, history=("Раньше?",)), modes={rm.MODE_BASELINE: _mode("Другое")}
+    )
+    text = rm.format_retrieval_summary(_rep([single, multi], [rm.MODE_BASELINE]))
+    assert "▶ Многоходовые вопросы (1)" in text
+    assert "▶ Самостоятельные вопросы (1)" in text
+    only_single = rm.format_retrieval_summary(_rep([single], [rm.MODE_BASELINE]))
+    assert "▶" not in only_single
+
+
+def test_summary_reports_rewrite_statistics_with_and_without_history():
+    ok = QuestionRetrieval(
+        question=_hq(1),
+        modes={rm.MODE_BASELINE: _mode("Облигации")},
+        rewrite_query="облигации", rewrite_seconds=1.0,
+        context_rewrite_query="облигации снова", context_rewrite_seconds=3.0,
+    )
+    failed = QuestionRetrieval(
+        question=_hq(2),
+        modes={rm.MODE_BASELINE: _mode("Облигации")},
+        rewrite_failure="таймаут", rewrite_seconds=3.0,
+        context_rewrite_failure="таймаут", context_rewrite_seconds=1.0,
+    )
+    text = rm.format_retrieval_summary(_rep([ok, failed], [rm.MODE_BASELINE]))
+    assert "Переписывание: удалось 1 из 2, среднее время 2.0 с." in text
+    assert "Переписывание с историей диалога: удалось 1 из 2, среднее время 2.0 с." in text
+
+
+def test_summary_adds_queue_line_when_users_were_served():
+    results = [_retrieval(1, **{rm.MODE_BASELINE: _mode("Облигации")})]
+    report = _rep(results, [rm.MODE_BASELINE], queue={"slot_wait_seconds": 20, "user_questions": 2})
+    assert "Очередь:" in rm.format_retrieval_summary(report)
+    assert "Очередь:" not in rm.format_retrieval_summary(_rep(results, [rm.MODE_BASELINE]))
+
+
+def test_summary_ignores_unknown_mode_keys_of_the_report():
+    results = [_retrieval(1, **{rm.MODE_BASELINE: _mode("Облигации")})]
+    text = rm.format_retrieval_summary(_rep(results, [rm.MODE_BASELINE, "magic"]))
+    assert "magic" not in text
+
+
+def test_mode_cell_cases():
+    question = _question(sources=("Облигации",))
+    assert rm._mode_cell(question, None) == "—"
+    assert rm._mode_cell(question, _mode(error="x")) == "сбой"
+    assert rm._mode_cell(question, _mode()) == "пусто"
+    assert rm._mode_cell(question, _mode("Акции", "Облигации А")) == "#2"
+    assert rm._mode_cell(question, _mode("Акции")) == "мимо"
+
+
+def test_table_has_header_cells_per_mode_and_missing_source_note():
+    results = [
+        _retrieval(1, **{rm.MODE_BASELINE: _mode("Облигации"), rm.MODE_FILTER: _mode("Акции")}),
+        _retrieval(2, missing=["Облигации"], **{rm.MODE_BASELINE: _mode(error="x")}),
+    ]
+    text = rm.format_retrieval_table(_rep(results, [rm.MODE_BASELINE, rm.MODE_FILTER]))
+    header = "📋 По вопросам: позиция первого попадания (как до изменения · с отбором)"
+    assert text.startswith(header)
+    assert "1. Вопрос 1?\n   #1 · мимо" in text
+    assert "2. Вопрос 2?\n   сбой · — ⚠️ источника нет в индексе" in text
+
+
+def test_table_cuts_long_titles():
+    question = ev.Question(1, "я" * 60, "concept", ("a",), ("Облигации",))
+    item = QuestionRetrieval(question=question, modes={rm.MODE_BASELINE: _mode("Облигации")})
+    text = rm.format_retrieval_table(_rep([item], [rm.MODE_BASELINE]))
+    assert "я" * 37 + "…" in text
+    assert "я" * 38 not in text
+
+
+def test_detail_of_unknown_number_is_none():
+    assert rm.format_retrieval_detail(_rep([], [rm.MODE_BASELINE]), 3) is None
+
+
+def test_detail_shows_question_sources_history_and_missing_documents():
+    item = QuestionRetrieval(
+        question=_hq(1, history=("Раз?", "Два?"), sources=("Облигации", "Акции")),
+        modes={rm.MODE_BASELINE: _mode("Облигации")},
+        missing_sources=["Акции"],
+    )
+    text = rm.format_retrieval_detail(_rep([item], [rm.MODE_BASELINE]), 1)
+    assert "❓ Вопрос 1 (по специфике корпуса): Вопрос 1?" in text
+    assert "Ожидаемые источники: Облигации; Акции" in text
+    assert "История диалога (предыдущие вопросы): Раз? → Два?" in text
+    assert "⚠️ Нет в индексе: Акции" in text
+
+
+def test_detail_shows_rewrites_and_their_failures():
+    done = QuestionRetrieval(
+        question=_hq(1), modes={}, rewrite_query="облигации", rewrite_seconds=1.234,
+        context_rewrite_query="облигации снова", context_rewrite_seconds=2.0,
+    )
+    text = rm.format_retrieval_detail(_rep([done], []), 1)
+    assert "Переписанный запрос (1.2 с): облигации" in text
+    assert "Переписанный запрос с историей (2.0 с): облигации снова" in text
+    failed = QuestionRetrieval(
+        question=_hq(1), modes={}, rewrite_failure="таймаут", context_rewrite_failure="отказ"
+    )
+    text = rm.format_retrieval_detail(_rep([failed], []), 1)
+    assert "Переписывание не удалось: таймаут" in text
+    assert "Переписывание с историей не удалось: отказ" in text
+
+
+def test_detail_of_every_mode_state():
+    item = QuestionRetrieval(
+        question=_hq(1),
+        modes={
+            rm.MODE_BASELINE: _mode("Облигации А", "Акции", candidates=7),
+            rm.MODE_FILTER: _mode(error="индекс повреждён"),
+            rm.MODE_REWRITE: _mode(candidates=4),
+        },
+    )
+    text = rm.format_retrieval_detail(
+        _rep([item], [rm.MODE_BASELINE, rm.MODE_FILTER, rm.MODE_REWRITE, rm.MODE_CONCAT]), 1
+    )
+    assert "— Как до изменения —" in text
+    assert "Кандидатов найдено: 7, в выдаче: 2." in text
+    assert "✅ 1. Облигации А — фрагмент 0, близость 0.90" in text
+    assert "▫️ 2. Акции — фрагмент 1, близость 0.85" in text
+    assert "Сбой поиска: индекс повреждён" in text
+    assert "Материалов нет (кандидатов найдено: 4)." in text
+    assert "— Склейка —\nНет данных." in text
+
+
+def _variants_report(variants: dict, modes=None, unavailable=None) -> dict:
+    off = ev.ModeResult(answer="а", verdict=ev.Verdict(present=(True, False)))
+    on = ev.ModeResult(answer="б", verdict=ev.Verdict(present=(True, True)))
+    result = ev.QuestionResult(question=_hq(1), off=off, on=on, variants=variants)
+    extra = {}
+    if modes is not None:
+        extra["variant_modes"] = modes
+    if unavailable is not None:
+        extra["unavailable_modes"] = unavailable
+    return ev.build_report(
+        started_at="a",
+        finished_at="b",
+        settings={},
+        results=[result],
+        planned=1,
+        extra=extra or None,
+    )
+
+
+def test_variants_summary_is_none_without_extra_modes():
+    assert rm.format_variants_summary(_variants_report({})) is None
+    assert rm.format_variants_summary(_variants_report({}, modes=[], unavailable={})) is None
+
+
+def test_variants_summary_for_scored_mode_shows_coverage_counters_and_time():
+    mode = ev.ModeResult(
+        answer="в",
+        verdict=ev.Verdict(present=(True, True)),
+        rag_sources=[{"title": "Облигации А", "chunk_index": 0, "score": 0.8}],
+        elapsed=4.0,
+    )
+    text = rm.format_variants_summary(_variants_report({rm.MODE_FILTER: mode}, [rm.MODE_FILTER]))
+    assert text.startswith("🔀 Режимы поиска в ответах")
+    assert "• с отбором (по 1 вопросам)" in text
+    assert "покрытие: 100% (без RAG: 50%)" in text
+    assert "лучше: 1, равно: 0, хуже: 0" in text
+    assert "поиск сработал в 1, попал в ожидаемый документ в 1; время ответов 4 с" in text
+
+
+def test_variants_summary_for_mode_without_scored_answers_and_unavailable_mode():
+    text = rm.format_variants_summary(
+        _variants_report(
+            {}, [rm.MODE_FILTER], {rm.MODE_REWRITE: rm.REWRITE_NOT_CONFIGURED}
+        )
+    )
+    assert "• с отбором: нет оценённых ответов." in text
+    assert f"⚠️ «с переписыванием» недоступен: {rm.REWRITE_NOT_CONFIGURED}." in text
+
+
+def test_variants_summary_only_unavailable_modes_is_still_a_block():
+    text = rm.format_variants_summary(
+        _variants_report({}, [], {rm.MODE_REWRITE: "нет настройки"})
+    )
+    assert "недоступен: нет настройки." in text

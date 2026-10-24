@@ -251,3 +251,17 @@ def test_other_errors_propagate():
         pass
     else:
         raise AssertionError("ошибка 503 не должна проглатываться")
+
+
+def test_zero_attempts_gives_exhausted_outcome_without_calling_the_model(monkeypatch):
+    monkeypatch.setattr(rules, "MAX_ATTEMPTS", 0)
+
+    async def scenario():
+        model = Script(GOOD)
+        outcome = await analyzer.analyze_news(NEWS, make_gate(), model, None)
+        assert outcome.analysis is None
+        assert outcome.attempts == 0
+        assert outcome.reason == "исчерпаны попытки"
+        assert model.calls == []
+
+    run(scenario())

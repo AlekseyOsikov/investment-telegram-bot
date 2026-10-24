@@ -483,3 +483,85 @@ def test_real_wait_wakes_on_schedule_at_and_cancellation_ends_the_task_cleanly()
             await task
 
     asyncio.run(scenario())
+
+
+# --- Дополнение: длинная строка после короткой, наивный срок, остановка, журнал ---
+
+import logging  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from price_watch import scheduler as _pw  # noqa: E402
+
+
+def test_split_message_overlong_line_after_a_short_one_flushes_the_short_part_first():
+    parts = split_message("коротко\n" + "x" * 250, 100)
+    assert parts[0] == "коротко"
+    assert [len(part) for part in parts[1:]] == [100, 100, 50]
+    assert "".join(parts[1:]) == "x" * 250
+
+
+def test_schedule_at_naive_moment_is_treated_as_utc():
+    sched = WatchScheduler(lambda *a: None, lambda *a: None)
+    sched.schedule_at(datetime(2026, 9, 26, 12, 0, 0))
+    assert sched.next_due == datetime(2026, 9, 26, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_seconds_until_due_without_planned_moment_is_the_recheck_period():
+    sched = WatchScheduler(lambda *a: None, lambda *a: None)
+    assert sched._seconds_until_due() == RECHECK_SECONDS
+
+
+def test_wait_for_wake_returns_false_on_timeout():
+    sched = WatchScheduler(lambda *a: None, lambda *a: None)
+    assert asyncio.run(sched._wait_for_wake(0.01)) is False
+
+
+def test_log_unexpected_end_is_silent_for_cancelled_and_finished_tasks_and_logs_errors(caplog):
+    async def scenario():
+        async def ok():
+            return None
+
+        async def boom():
+            raise RuntimeError("упал")
+
+        async def forever():
+            await asyncio.sleep(3600)
+
+        done = asyncio.ensure_future(ok())
+        failed = asyncio.ensure_future(boom())
+        cancelled = asyncio.ensure_future(forever())
+        await asyncio.sleep(0)
+        cancelled.cancel()
+        await asyncio.gather(done, failed, cancelled, return_exceptions=True)
+        with caplog.at_level(logging.ERROR):
+            _pw._log_unexpected_end(cancelled)
+            _pw._log_unexpected_end(done)
+            assert caplog.text == ""
+            _pw._log_unexpected_end(failed)
+
+    asyncio.run(scenario())
+    assert "неожиданно остановился" in caplog.text
+
+
+def test_stop_scheduler_without_task_only_clears_bot_data():
+    async def scenario():
+        app = SimpleNamespace(bot_data={_pw.SCHEDULER_KEY: object(), "другое": 1})
+        await _pw.stop_scheduler(app)
+        assert app.bot_data == {"другое": 1}
+
+    asyncio.run(scenario())
+
+
+def test_stop_scheduler_cancels_the_task_and_removes_both_keys():
+    async def scenario():
+        async def forever():
+            await asyncio.sleep(3600)
+
+        task = asyncio.ensure_future(forever())
+        await asyncio.sleep(0)
+        app = SimpleNamespace(bot_data={_pw.SCHEDULER_KEY: object(), _pw.TASK_KEY: task})
+        await _pw.stop_scheduler(app)
+        assert task.cancelled()
+        assert app.bot_data == {}
+
+    asyncio.run(scenario())

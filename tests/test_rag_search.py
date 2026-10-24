@@ -180,3 +180,107 @@ def test_call_with_deadline_returns_value_and_propagates_errors():
         assert str(exc) == "x"
     else:
         raise AssertionError("исключение должно пробрасываться")
+
+
+# --- Дополнение: предел по часам и разбор итога переписывания ---------------------------------
+# Вызов модели (`request_rewrite`) требует клиента и проверяется вручную; в тестах переписывания
+# он заменяется простой функцией, а проверяется собственная логика `rewrite_query`.
+
+import threading  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+import pytest  # noqa: E402
+
+
+def _backend_config(provider: str = "ollama") -> rag_search.RagSearchConfig:
+    backend = SimpleNamespace(provider=provider, client=None, model="rw-model")
+    return make_config(rewrite_backend=backend, rewrite_timeout=1.0)
+
+
+def test_call_with_deadline_gives_up_on_a_stuck_call_without_waiting_for_it():
+    release = threading.Event()
+    try:
+        with pytest.raises(TimeoutError, match="нет ответа за 0.05 с"):
+            rag_search.call_with_deadline(lambda: release.wait(5) and "поздно", 0.05)
+    finally:
+        release.set()
+
+
+def test_call_with_deadline_returns_none_for_a_call_returning_none():
+    assert rag_search.call_with_deadline(lambda: None, 1.0) is None
+
+
+def test_rewrite_query_returns_normalized_query(monkeypatch):
+    calls = []
+
+    def fake_request(config, backend, user_text, history=()):
+        calls.append((backend.model, user_text, list(history)))
+        return '  Поисковый запрос: «облигации федерального займа»\nпояснение ниже'
+
+    monkeypatch.setattr(rag_search, "request_rewrite", fake_request)
+    result = rag_search.rewrite_query(_backend_config(), "что за облигации?", ["раньше?"])
+    assert result == ("облигации федерального займа", None)
+    assert calls == [("rw-model", "что за облигации?", ["раньше?"])]
+
+
+@pytest.mark.parametrize("raw", [None, "", "   \n ", "Извините, не могу помочь", "查询债券"])
+def test_rewrite_query_with_unusable_answer_gives_reason(monkeypatch, raw):
+    monkeypatch.setattr(rag_search, "request_rewrite", lambda *args, **kwargs: raw)
+    assert rag_search.rewrite_query(_backend_config(), "вопрос") == (
+        None,
+        "модель вернула пустой или непригодный запрос",
+    )
+
+
+def test_rewrite_query_failure_gives_type_and_message_without_raising(monkeypatch):
+    def broken(*args, **kwargs):
+        raise ConnectionError("сервер недоступен")
+
+    monkeypatch.setattr(rag_search, "request_rewrite", broken)
+    query, reason = rag_search.rewrite_query(_backend_config(), "вопрос")
+    assert query is None
+    assert reason == "ConnectionError: сервер недоступен"
+
+
+def test_rewrite_query_failure_reason_is_cut_to_200_characters(monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("я" * 500)
+
+    monkeypatch.setattr(rag_search, "request_rewrite", broken)
+    _, reason = rag_search.rewrite_query(_backend_config(), "вопрос")
+    assert len(reason) == 200
+
+
+def test_rewrite_query_timeout_is_reported_as_failure(monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(
+        rag_search, "request_rewrite", lambda *args, **kwargs: release.wait(5) and "поздно"
+    )
+    config = make_config(
+        rewrite_backend=SimpleNamespace(provider="ollama", client=None, model="m"),
+        rewrite_timeout=0.05,
+    )
+    try:
+        query, reason = rag_search.rewrite_query(config, "вопрос")
+    finally:
+        release.set()
+    assert query is None
+    assert reason.startswith("TimeoutError:")
+
+
+def test_retrieve_with_configured_rewrite_uses_its_result_and_reports_status(monkeypatch):
+    monkeypatch.setattr(
+        rag_search, "request_rewrite", lambda *args, **kwargs: "переписанный запрос"
+    )
+    recorder = Recorder({"переписанный запрос": [Chunk("a", 0.9)]})
+    result, _ = run(
+        config=make_config(
+            rewrite_backend=SimpleNamespace(provider="ollama", client=None, model="m"),
+            rewrite_timeout=1.0,
+        ),
+        history=["раньше?"],
+        recorder=recorder,
+    )
+    assert recorder.embedded == [["переписанный запрос"]]
+    assert result.search_info.rewrite_status == rag_context.REWRITE_OK
+    assert result.search_info.history_used == 1

@@ -151,3 +151,36 @@ def test_tool_error_message_strips_sdk_prefix():
         "Error executing tool apply_change: Исходное содержимое изменилось.", "apply_change"
     ) == "Исходное содержимое изменилось."
     assert proposals.tool_error_message("Error executing tool apply_change", "apply_change")
+
+
+# --- Дополнение: слишком длинный callback_data и текст отказа ----------------------
+
+
+def test_callback_data_longer_than_telegram_limit_is_rejected(monkeypatch):
+    monkeypatch.setattr(proposals, "CALLBACK_MAX_BYTES", 10)
+    with pytest.raises(ValueError, match="64 байт"):
+        proposals.build_callback_data(proposals.ACTION_APPLY, "0123456789ab")
+
+
+def test_callback_data_has_prefix_action_and_id_within_limit():
+    data = proposals.build_callback_data(proposals.ACTION_DISCARD, "0123456789ab")
+    assert data == f"dev:{proposals.ACTION_DISCARD}:0123456789ab"
+    assert len(data.encode("utf-8")) <= 64
+
+
+@pytest.mark.parametrize(
+    "proposal_id", ["", "XYZ", "0123456789a", "0123456789abc", "0123456789AB"]
+)
+def test_callback_data_rejects_bad_ids(proposal_id):
+    with pytest.raises(ValueError):
+        proposals.build_callback_data(proposals.ACTION_APPLY, proposal_id)
+
+
+def test_callback_data_rejects_unknown_action():
+    with pytest.raises(ValueError):
+        proposals.build_callback_data("delete", "0123456789ab")
+
+
+def test_failure_text_names_reason_and_says_file_unchanged():
+    text = proposals.failure_text("файл изменился")
+    assert text == "⚠️ Не применено: файл изменился\nФайл не менялся."
