@@ -50,7 +50,7 @@ jobs:
         continue-on-error: true
         env:
           BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
-        run: scripts/qa_ci.sh qa-out "origin/${BASE_REF}"
+        run: bash scripts/qa_ci.sh qa-out "origin/${BASE_REF}"
 
       - name: Build report
         if: always()

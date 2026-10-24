@@ -60,5 +60,5 @@ smoke:
 # покрытием и smoke; результаты и единый отчёт — reports/qa-ci/. Интерпретатор — PYTHON, основная
 # ветка — BASE: `PYTHON=.venv/bin/python make qa`. Код выхода 1, если что-то упало.
 qa:
-	@PYTHON=$(or $(PYTHON),python) scripts/qa_ci.sh reports/qa-ci $(or $(BASE),main); rc=$$?; \
+	@PYTHON=$(or $(PYTHON),python) bash scripts/qa_ci.sh reports/qa-ci $(or $(BASE),main); rc=$$?; \
 	$(or $(PYTHON),python) scripts/qa_report.py --dir reports/qa-ci --dry-run; exit $$rc
