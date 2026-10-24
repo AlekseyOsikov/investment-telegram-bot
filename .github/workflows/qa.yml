@@ -1,0 +1,80 @@
+# QA после PR: код-тесты (compileall, ruff, pytest с покрытием) и smoke-сценарии со скриншотами,
+# итог — один обновляемый комментарий в PR, Job summary и артефакт «qa-report».
+#
+# Модель угроз ОТЛИЧАЕТСЯ от ai-review.yml: тут исполняется код PR (pytest импортирует src/ и
+# tests/), поэтому:
+# - только GitHub-hosted runner (одноразовая ВМ без секретов). Менять runs-on на self-hosted
+#   нельзя: на runner ревью (ai-review) код PR должен оставаться данными;
+# - событие pull_request, а не pull_request_target: для PR из форка токен только для чтения, а
+#   секретов у job нет вообще (используется лишь github.token);
+# - комментарий публикуется только если токен позволяет (PR из этого репозитория); для форка
+#   отчёт остаётся в Job summary и артефакте.
+name: QA
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+# Один прогон на PR: новый коммит отменяет устаревший незавершённый.
+concurrency:
+  group: qa-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  qa:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # Нужна вся история: ruff сравнивается с основной веткой (git diff base...HEAD, worktree).
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt pytest pytest-cov ruff
+
+      # Падение проверок не обрывает job: отчёт собирается всегда, итог — в последнем шаге.
+      - name: Run QA checks
+        continue-on-error: true
+        env:
+          BASE_REF: ${{ github.base_ref || github.event.repository.default_branch }}
+        run: scripts/qa_ci.sh qa-out "origin/${BASE_REF}"
+
+      - name: Build report
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: >-
+          python scripts/qa_report.py --dir qa-out
+          --sha "$HEAD_SHA" --pr "${PR_NUMBER:-0}" --run-url "$RUN_URL"
+
+      - name: Upload report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qa-report
+          path: qa-out
+          retention-days: 14
+
+      - name: Fail if checks failed
+        if: always()
+        run: |
+          if [ ! -s qa-out/status.txt ] || grep -qE '^(compile|ruff|pytest|smoke)=[1-9]' qa-out/status.txt; then
+            echo "QA: есть упавшие проверки, см. отчёт"
+            exit 1
+          fi

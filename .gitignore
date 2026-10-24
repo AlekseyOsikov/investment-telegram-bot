@@ -49,3 +49,4 @@ docker/ai-review-runner/runner.env
 
 # Отчёты прогонов (make smoke, /qa-run)
 reports/
+qa-out/
