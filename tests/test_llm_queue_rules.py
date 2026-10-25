@@ -324,3 +324,11 @@ def test_cancel_all_text_names_count_or_says_nothing_to_cancel():
     assert "Ответы на них не придут" in rules.text_cancel_all(1)
     assert rules.text_cancel_all(0) == rules.text_nothing_to_cancel()
     assert rules.text_cancel_all(-2) == rules.text_nothing_to_cancel()
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [(0, "0 с"), (45.4, "45 с"), (60, "1 мин"), (125, "2 мин 5 с"), (-3, "0 с"), (-0.4, "0 с")],
+)
+def test_format_duration_rounds_to_whole_seconds(seconds, expected):
+    assert rules.format_duration(seconds) == expected

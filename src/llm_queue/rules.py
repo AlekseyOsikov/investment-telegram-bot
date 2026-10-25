@@ -160,6 +160,15 @@ def _round_up_minutes(seconds: float) -> int:
     return max(1, math.ceil(seconds / 60))
 
 
+def format_duration(seconds: float) -> str:
+    """Длительность в целых секундах: «0 с», «45 с», «1 мин», «2 мин 5 с»; отрицательная — «0 с»."""
+    total = max(0, round(seconds))
+    minutes, rest = divmod(total, 60)
+    if not minutes:
+        return f"{rest} с"
+    return f"{minutes} мин" if not rest else f"{minutes} мин {rest} с"
+
+
 def estimate_wait(
     stats: DurationStats,
     ahead_kinds: Sequence[str],
