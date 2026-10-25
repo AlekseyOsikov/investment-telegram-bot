@@ -160,7 +160,8 @@ def write_report(out_dir: Path, args, results: list[lib.TaskResult]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--branch", help=f"создать ветку прогона от тега {POOL_TAG}")
+    parser.add_argument("--branch", help="создать ветку прогона от тега из --from")
+    parser.add_argument("--from", dest="pool_tag", default=POOL_TAG, help=f"тег пула ({POOL_TAG})")
     parser.add_argument("--tasks", help="T03, T03-T07, T01,T05 (по умолчанию все)")
     parser.add_argument("--model", help="модель для claude --model")
     parser.add_argument("--env", action="append", default=[], help="KEY=VALUE для процесса claude")
@@ -178,7 +179,7 @@ def main() -> int:
     if git("status", "--porcelain"):
         sys.exit("Рабочая копия не чистая: закоммитьте или уберите изменения.")
     if args.branch:
-        git("switch", "-c", args.branch, POOL_TAG)
+        git("switch", "-c", args.branch, args.pool_tag)
     branch = git("branch", "--show-current")
     if not branch.startswith("exec-loop-") or branch in ("exec-loop-base",):
         sys.exit(f"Запуск только на ветке прогона exec-loop-*, сейчас: {branch!r} (см. --branch).")

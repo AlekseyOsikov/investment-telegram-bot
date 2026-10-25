@@ -119,3 +119,10 @@ def test_parse_claude_output_variants():
     assert lib.parse_claude_output("Warning: no stdin\n" + listing)["num_turns"] == 4
     assert lib.parse_claude_output("[]") == {} and lib.parse_claude_output("мусор") == {}
     assert lib.parse_claude_output("[1, 2") == {}
+
+
+def test_parse_backlog_stops_at_next_pool_heading():
+    text = BACKLOG + "\n---\n\n# Новый пул\n\nтаблица\n\n## T04 — четвёртая\nТело.\n"
+    tasks = lib.parse_backlog(text)
+    assert [t.task_id for t in tasks] == ["T01", "T02", "T03", "T04"]
+    assert tasks[2].body == "Тело третьей."

@@ -67,7 +67,8 @@ def parse_backlog(text: str) -> list[Task]:
     for i, match in enumerate(matches):
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         body = text[match.end() : end].strip()
-        body = re.sub(r"\n-{3,}\s*$", "", body).strip()
+        body = re.split(r"^# ", body, maxsplit=1, flags=re.MULTILINE)[0]  # заголовок нового пула
+        body = re.sub(r"\n-{3,}\s*$", "", body.strip()).strip()
         tasks.append(Task(match.group(1), match.group(2).strip(), body))
     return tasks
 
