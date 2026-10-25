@@ -93,5 +93,14 @@ T18) only_file src/dev_assistant/CLAUDE.md
 *) fail "неизвестная задача" ;;
 esac
 
-$PYTEST tests -q >/dev/null 2>&1 || fail "полный pytest красный"
+# Подсаженные красные тесты чужих задач T01–T03 ещё могут быть красными: они не считаются провалом.
+RED_T01="tests/test_dev_assistant_rules.py::test_invalid_elements_raise[0]"
+RED_T02="tests/test_price_watch_texts.py::test_every_text_declines_units"
+RED_T03="tests/test_news_digest_rules.py::test_sort_by_importance_then_freshness_with_unanalyzed_last"
+deselect=()
+for other in T01 T02 T03; do
+  [ "$other" = "$id" ] && continue
+  var="RED_$other"; deselect+=(--deselect "${!var}")
+done
+$PYTEST tests -q "${deselect[@]}" >/dev/null 2>&1 || fail "полный pytest красный (кроме чужих подсаженных T01–T03)"
 echo "СДЕЛАНО $id"
