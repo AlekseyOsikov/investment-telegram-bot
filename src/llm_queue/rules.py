@@ -258,7 +258,7 @@ def parse_cancel_arg(args: Sequence[str]) -> CancelArg:
 
 def select_by_number(jobs: Sequence, number: int):
     """Вопрос по номеру из `/queue` (нумерация с 1 в порядке отправки) или None."""
-    if 0 <= number <= len(jobs):
+    if 1 <= number <= len(jobs):
         return jobs[number - 1]
     return None
 
