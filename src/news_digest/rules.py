@@ -236,7 +236,8 @@ def sort_items(items: list[dict]) -> list[dict]:
         return IMPORTANCE_RANK.get(analysis.get("importance"), len(IMPORTANCE_RANK))
 
     by_time = sorted(items, key=lambda item: item.get("published_at") or "", reverse=True)
-    return sorted(items, key=rank)
+    # Сортировка устойчивая: внутри одного уровня сохраняется порядок «свежие первыми».
+    return sorted(by_time, key=rank)
 
 
 def is_urgent(item: dict) -> bool:
