@@ -6,11 +6,14 @@ cd "$(dirname "$0")/.."
 export TELEGRAM_BOT_TOKEN=x DEEPSEEK_API_KEY=x
 PY=.venv/bin/python; PYTEST=.venv/bin/pytest; RUFF=.venv/bin/ruff
 BASE=exec-loop-baseline
+# Начало текущей задачи: раннер задаёт TASK_BASE (коммит перед задачей), по умолчанию — база пула.
+TB="${TASK_BASE:-$BASE}"
 fail() { echo "НЕ СДЕЛАНО $id: $*"; exit 1; }
 
 # Коммит с изменениями с момента входа в задачу проверяет раннер; здесь — рабочая копия против базы.
-changed() { { git diff --name-only "$BASE" -- "$@"; git ls-files --others --exclude-standard -- "$@"; } | grep -v "^tasks/\|^\.venv\|^reports/\|^out/"; true; }
-untouched() { [ -z "$(changed "$1")" ] || fail "файл $1 менять нельзя"; }
+changed() { { git diff --name-only "$TB" -- "$@"; git ls-files --others --exclude-standard -- "$@"; } | grep -v "^tasks/\|^\.venv\|^reports/\|^out/"; true; }
+no_removed() { # в файле нельзя удалять и менять строки относительно базы (допустимы добавления)
+  [ -z "$(git diff "$BASE" -- "$1" | grep '^-[^-]')" ] || fail "из $1 удалены или изменены строки"; }
 cov() { # cov <файл src> <минимум %>
   $PYTEST tests -q --cov=src --cov-report=json:/tmp/exec_loop_cov.json >/dev/null 2>&1
   $PY - "$1" "$2" <<'P' || fail "покрытие $1 ниже $2 %"
@@ -23,7 +26,7 @@ src_untouched() { [ -z "$(changed src)" ] || fail "src/ менять нельз�
 only_file() { [ "$(changed . | sort -u)" = "$1" ] || fail "изменён не только $1: $(changed . | sort -u | tr '\n' ' ')"; }
 regression() { # regression <тест-файл> <файл src>: тесты задачи падают на базовой версии src
   [ -n "$(changed tests)" ] || fail "нет изменений в tests/"
-  tmp=$(mktemp -d); git archive "$BASE" src | tar -x -C "$tmp"
+  tmp=$(mktemp -d); git archive "$TB" src | tar -x -C "$tmp"
   cp -r tests "$tmp/tests"; rm -rf "$tmp/tests/__pycache__"
   ( cd "$tmp" && ln -s "$OLDPWD/.venv" .venv && .venv/bin/pytest tests/$1 -q -x >/dev/null 2>&1 ) \
     && { rm -rf "$tmp"; fail "новый тест не падает на старом коде"; }
@@ -31,11 +34,11 @@ regression() { # regression <тест-файл> <файл src>: тесты за�
 }
 
 case "$id" in
-T01) untouched tests/test_dev_assistant_rules.py
+T01) no_removed tests/test_dev_assistant_rules.py
      $PYTEST tests/test_dev_assistant_rules.py -q >/dev/null 2>&1 || fail "тесты dev_assistant_rules красные" ;;
-T02) untouched tests/test_price_watch_texts.py
+T02) no_removed tests/test_price_watch_texts.py
      $PYTEST tests/test_price_watch_texts.py -q >/dev/null 2>&1 || fail "тесты price_watch_texts красные" ;;
-T03) untouched tests/test_news_digest_rules.py
+T03) no_removed tests/test_news_digest_rules.py
      $RUFF check src/news_digest/rules.py >/dev/null 2>&1 || fail "ruff по news_digest/rules.py" ;;
 T04) $PY -c "
 import sys; sys.path.insert(0,'src')
@@ -78,7 +81,7 @@ assert texts.every_text('١٥m')=='١٥m' and texts.every_text('15m')=='раз �
 T14) [ "$(grep -c 'analysis\.get("importance")' src/news_digest/rules.py)" = 1 ] || fail "выражение get(\"importance\") должно быть одно"
      grep -q '_importance' src/news_digest/rules.py || fail "нет помощника _importance"
      $RUFF check src/news_digest/rules.py >/dev/null 2>&1 || fail "ruff"
-     untouched tests/test_news_digest_rules.py ;;
+     no_removed tests/test_news_digest_rules.py ;;
 T15) $RUFF check src/rag/cli.py src/rag/extraction.py src/providers/main_client.py >/dev/null 2>&1 || fail "ruff по трём файлам"
      $PY -m compileall -q src >/dev/null 2>&1 || fail "compileall" ;;
 T16) only_file src/price_watch/CLAUDE.md
