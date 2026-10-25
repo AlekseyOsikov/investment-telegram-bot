@@ -33,6 +33,17 @@ def test_error_names_element():
         rules.parse_user_ids("1,two")
 
 
+def test_format_user_ids_joins_and_collapses_duplicates():
+    assert rules.format_user_ids([1, 2, 3]) == "1,2,3"
+    assert rules.format_user_ids([5, 7, 5, 7]) == "5,7"
+    assert rules.format_user_ids([]) == ""
+
+
+@pytest.mark.parametrize("ids", [[], [42], [3, 1, 2], [5, 7, 5, 7, 9]])
+def test_format_user_ids_roundtrip(ids):
+    assert rules.parse_user_ids(rules.format_user_ids(ids)) == tuple(dict.fromkeys(ids))
+
+
 def test_authorized_by_user_id():
     assert rules.is_authorized(SimpleNamespace(id=7), (5, 7))
     assert not rules.is_authorized(SimpleNamespace(id=8), (5, 7))

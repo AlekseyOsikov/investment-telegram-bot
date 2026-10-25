@@ -87,6 +87,13 @@ def parse_user_ids(raw: str | None) -> tuple[int, ...]:
     return tuple(result)
 
 
+def format_user_ids(ids: Iterable[int]) -> str:
+    """Собирает список id через запятую — обратная к `parse_user_ids`.
+
+    Дубли схлопываются с сохранением порядка, пусто → пустая строка."""
+    return ",".join(str(value) for value in dict.fromkeys(ids))
+
+
 def is_authorized(user: Any, allowed_ids: Iterable[int]) -> bool:
     """Отправитель входит в список. Сравнение — по id ПОЛЬЗОВАТЕЛЯ, не чата; отправитель
     без определяемого id (`None`, анонимный администратор, канал) недопустим."""
