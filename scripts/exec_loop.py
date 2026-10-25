@@ -196,11 +196,41 @@ def run_iteration(target: lib.Task, args, tracker: Path, gates: list[str],
             return result
         previous = report
         rollback(base)
-    blocked = lib.mark_blocked(tracker.read_text(encoding="utf-8"), target)
-    tracker.write_text(blocked, encoding="utf-8")
+    return result
+
+
+def settle_tracker(result: lib.TaskResult, target: lib.Task, args, tracker: Path) -> None:
+    """Отметки трекера на ветке прогона: `[!]` для проваленной задачи (всегда), `[x]` для
+    выполненных — только в режиме branches (там коммит задачи остался в её ветке)."""
+    text = tracker.read_text(encoding="utf-8")
+    if result.passed:
+        if args.commits != lib.COMMITS_BRANCHES:
+            return
+        ids = set(result.task_id.split(","))
+        text = lib.mark_done(text, [t for t in lib.parse_tracker(text) if t.task_id in ids])
+        note = f"exec_loop: {result.task_id} выполнена (ветка {result.branch})"
+    else:
+        text = lib.mark_blocked(text, target)
+        note = f"exec_loop: {target.task_id} заблокирована после {args.attempts} попыток"
+    tracker.write_text(text, encoding="utf-8")
     git("add", args.tracker)
-    note = f"exec_loop: {target.task_id} заблокирована после {args.attempts} попыток"
     git("commit", "-q", "-m", note)
+
+
+def run_in_branch(target: lib.Task, args, tracker: Path, gates: list[str],
+                  out_dir: Path) -> lib.TaskResult:
+    """Режим branches: задача выполняется в своей ветке от текущего коммита ветки прогона."""
+    base_branch = git("branch", "--show-current")
+    taken = set(git("for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines())
+    name = lib.task_branch_name(base_branch, target.task_id, taken)
+    git("switch", "-c", name)
+    try:
+        result = run_iteration(target, args, tracker, gates, out_dir)
+    finally:
+        git("switch", base_branch)
+    result.branch = name
+    if not result.passed:
+        git("branch", "-D", name)  # откатано до коммита старта: сохранять нечего
     return result
 
 
@@ -222,6 +252,9 @@ def main() -> int:
     parser.add_argument("--attempts", type=int, default=2, help="попыток на задачу")
     parser.add_argument("--max-tasks", type=int, default=0, help="остановиться после N итераций")
     parser.add_argument("--stop-on-fail", action="store_true", help="стоп после первого провала")
+    parser.add_argument("--commits", choices=lib.COMMIT_MODES, default=lib.COMMITS_SEQUENTIAL,
+                        help="коммиты задач: sequential — подряд в одной ветке (по умолчанию); "
+                             "branches — каждая задача в своей ветке от общей точки старта")
     parser.add_argument("--gate", action="append", default=None,
                         help="проверка проекта (повторяемая; по умолчанию сборка и тесты)")
     parser.add_argument("--no-gates", action="store_true", help="не запускать проверки проекта")
@@ -237,6 +270,7 @@ def main() -> int:
         for task in tasks:
             checks = "; ".join(task.checks) or "—"
             print(f"[{task.status:7}] {task.task_id}: {task.title}  (проверка: {checks})")
+        print(f"\nРежим коммитов: {args.commits}")
         print(f"\n===== промпт\n{lib.build_prompt(args.tracker)}")
         return 0
     if git("status", "--porcelain"):
@@ -255,7 +289,9 @@ def main() -> int:
         if target is None or (args.max_tasks and len(results) >= args.max_tasks):
             break
         print(f"[{target.task_id}] {target.title} …", flush=True)
-        result = run_iteration(target, args, tracker, gates, out_dir)
+        run = run_in_branch if args.commits == lib.COMMITS_BRANCHES else run_iteration
+        result = run(target, args, tracker, gates, out_dir)
+        settle_tracker(result, target, args, tracker)
         results.append(result)
         write_report(out_dir, branch, args.model or "по умолчанию", results)
         verdict = "готово" if result.passed else "ПРОВАЛ"

@@ -60,6 +60,7 @@ class TaskResult:
     passed: bool = False
     commit_by_runner: bool = False  # ассистент не закоммитил сам — коммит сделал раннер
     note: str = ""  # аномалии: взял не ту задачу, отметил несколько и т. п.
+    branch: str = ""  # ветка задачи (режим commits=branches)
 
     @property
     def seconds(self) -> float:
@@ -126,6 +127,36 @@ def newly_done(before: list[Task], after: list[Task]) -> list[Task]:
     """Задачи, которые были открыты до попытки и отмечены `[x]` после неё."""
     was_open = {t.task_id for t in before if t.status == STATUS_OPEN}
     return [t for t in after if t.status == STATUS_DONE and t.task_id in was_open]
+
+
+COMMITS_SEQUENTIAL = "sequential"  # все задачи друг за другом в одной ветке
+COMMITS_BRANCHES = "branches"  # каждая задача в своей ветке от общей точки старта
+COMMIT_MODES = (COMMITS_SEQUENTIAL, COMMITS_BRANCHES)
+
+
+def task_branch_name(
+    base_branch: str, task_id: str, taken: set[str] | frozenset[str] = frozenset()
+) -> str:
+    """Имя ветки задачи: `<ветка прогона>-<id>`; `№3` → `N3`; занятое имя получает `-2`, `-3`…
+
+    Слэш не используется: ветка `run1` и ветка `run1/T01` в git несовместимы.
+    """
+    safe = re.sub(r"[^\w.-]+", "-", task_id.replace("№", "N")).strip("-.") or "task"
+    name = f"{base_branch}-{safe}"
+    candidate, n = name, 1
+    while candidate in taken:
+        n += 1
+        candidate = f"{name}-{n}"
+    return candidate
+
+
+def mark_done(text: str, tasks: list[Task]) -> str:
+    """Меняет чекбоксы переданных задач на `[x]` (в режиме branches трекер основной ветки ведёт
+    раннер: коммит задачи лежит в её ветке, а здесь остаётся только отметка)."""
+    lines = text.split("\n")
+    for task in tasks:
+        lines[task.line] = lines[task.line].replace("[ ]", "[x]", 1)
+    return "\n".join(lines)
 
 
 def mark_blocked(text: str, task: Task) -> str:
@@ -247,6 +278,11 @@ def _fmt_seconds(seconds: float) -> str:
     return f"{total // 60} мин {total % 60} с" if total >= 60 else f"{total} с"
 
 
+def _note(result: TaskResult) -> str:
+    parts = [result.note, f"ветка `{result.branch}`" if result.branch and result.passed else ""]
+    return "; ".join(p for p in parts if p)
+
+
 def render_log(run_name: str, model: str, results: list[TaskResult]) -> str:
     """Лог выполнения (задача → результат → время) и сводка метрик в Markdown."""
     m = compute_metrics(results)
@@ -266,7 +302,7 @@ def render_log(run_name: str, model: str, results: list[TaskResult]) -> str:
         changed = r.attempts[-1].changed_files if r.attempts else 0
         lines.append(
             f"| {r.task_id} | {verdict} | {len(r.attempts)} | {_fmt_seconds(r.seconds)} | "
-            f"{turns} | {changed} | {r.failure_class or ''} | {r.note} |"
+            f"{turns} | {changed} | {r.failure_class or ''} | {_note(r)} |"
         )
     pct = 100 * m.first_try / m.total if m.total else 0
     lines += [

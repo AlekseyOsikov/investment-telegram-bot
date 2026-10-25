@@ -152,3 +152,30 @@ def test_retry_prompt_carries_only_the_tail_of_check_output():
     prompt = lib.build_prompt("t.md", "x" * 5000 + "КОНЕЦ")
     assert "предыдущая попытка" in prompt and "КОНЕЦ" in prompt and prompt.count("x") <= 1500
     assert "(пусто)" in lib.build_prompt("t.md", "  ")
+
+
+def test_task_branch_name_is_flat_safe_and_unique():
+    assert lib.task_branch_name("exec-loop-run1", "T05") == "exec-loop-run1-T05"
+    assert lib.task_branch_name("run", "№3") == "run-N3"
+    assert lib.task_branch_name("run", "A, B/C") == "run-A-B-C"
+    assert lib.task_branch_name("run", "T1", {"run-T1"}) == "run-T1-2"
+    assert lib.task_branch_name("run", "T1", {"run-T1", "run-T1-2"}) == "run-T1-3"
+    assert "/" not in lib.task_branch_name("run", "a/b")
+    assert lib.COMMIT_MODES == ("sequential", "branches")
+
+
+def test_mark_done_changes_only_given_tasks():
+    tasks = lib.parse_tracker(TRACKER)
+    text = lib.mark_done(TRACKER, [tasks[0], tasks[3]])
+    assert "- [x] T01 bug: первая" in text and "- [x] Задача без идентификатора" in text
+    assert "- [ ] 2025-1" in text and text.count("[x]") == 3
+    assert lib.mark_done(TRACKER, []) == TRACKER
+
+
+def test_render_log_shows_branch_only_for_passed_tasks():
+    done = result("T01", attempt())
+    done.branch = "run-T01"
+    failed = result("T02", attempt(), passed=False)
+    failed.branch = "run-T02"
+    text = lib.render_log("run", "m", [done, failed])
+    assert "ветка `run-T01`" in text and "run-T02" not in text
