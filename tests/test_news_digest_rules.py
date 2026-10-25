@@ -202,3 +202,21 @@ def test_parse_json_object_skips_broken_braces_before_a_real_object():
 def test_parse_json_object_prefers_fenced_block_over_surrounding_text():
     raw = 'Сначала {"a": 1}\n```json\n{"b": 2}\n```'
     assert rules.parse_json_object(raw) == {"b": 2}
+
+
+def test_count_by_importance_counts_levels_and_unanalyzed():
+    items = [
+        {"analysis": {"importance": "high"}},
+        {"analysis": {"importance": "high"}},
+        {"analysis": {"importance": "low"}},
+        {"analysis": None},
+        {},
+        {"analysis": {"importance": "bogus"}},
+    ]
+    result = rules.count_by_importance(items)
+    assert result == {"high": 2, "medium": 0, "low": 1, "unanalyzed": 3}
+    assert list(result) == ["high", "medium", "low", "unanalyzed"]
+
+
+def test_count_by_importance_of_empty_list_is_all_zeros():
+    assert rules.count_by_importance([]) == {"high": 0, "medium": 0, "low": 0, "unanalyzed": 0}

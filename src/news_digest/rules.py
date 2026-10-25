@@ -246,6 +246,19 @@ def is_urgent(item: dict) -> bool:
     return bool(analysis) and analysis.get("importance") == "high"
 
 
+def count_by_importance(items: list[dict]) -> dict[str, int]:
+    """Число новостей по важности: все коды `IMPORTANCE_LEVELS` по порядку и последним
+    `unanalyzed` — новости без разбора или с неизвестной важностью."""
+    counts = {code: 0 for code in IMPORTANCE_LEVELS}
+    counts["unanalyzed"] = 0
+    for item in items:
+        analysis = item.get("analysis") or {}
+        importance = analysis.get("importance")
+        key = importance if importance in IMPORTANCE_LEVELS else "unanalyzed"
+        counts[key] += 1
+    return counts
+
+
 def messages_left(sent_today: int, max_per_day: int) -> int:
     # Лимит могли снизить в .env после отправки: остаток не уходит в минус.
     return max(0, max_per_day - sent_today)
