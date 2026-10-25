@@ -85,11 +85,15 @@ T14) [ "$(grep -c 'analysis\.get("importance")' src/news_digest/rules.py)" = 1 ]
 T15) $RUFF check src/rag/cli.py src/rag/extraction.py src/providers/main_client.py >/dev/null 2>&1 || fail "ruff по трём файлам"
      $PY -m compileall -q src >/dev/null 2>&1 || fail "compileall" ;;
 T16) only_file src/price_watch/CLAUDE.md
-     grep -q 'RECHECK_SECONDS` (час)' src/price_watch/CLAUDE.md || fail "не исправлено значение RECHECK_SECONDS" ;;
+     line=$(grep 'RECHECK_SECONDS' src/price_watch/CLAUDE.md | head -1)
+     echo "$line" | grep -Eq '(^|[^0-9])(10 мин|600 с)' && fail "RECHECK_SECONDS в тексте всё ещё не равен 3600 с"
+     echo "$line" | grep -Eq 'час|3600|60 мин' || fail "в тексте нет значения RECHECK_SECONDS (3600 с = час)" ;;
 T17) only_file src/llm_queue/CLAUDE.md
-     grep -q 'окно 20 длительностей' src/llm_queue/CLAUDE.md || fail "не исправлено окно статистики" ;;
+     grep -q 'окно 50' src/llm_queue/CLAUDE.md && fail "окно статистики в тексте всё ещё 50"
+     grep -Eq 'окно[^.;]{0,20}\b20\b|\b20\b[^.;]{0,20}длительност' src/llm_queue/CLAUDE.md || fail "в тексте нет окна 20" ;;
 T18) only_file src/dev_assistant/CLAUDE.md
-     grep -q '`DEV_ASSISTANT_TOP_K` (5)' src/dev_assistant/CLAUDE.md || fail "не исправлен TOP_K" ;;
+     grep -q 'DEV_ASSISTANT_TOP_K` (10)' src/dev_assistant/CLAUDE.md && fail "TOP_K в тексте всё ещё 10"
+     grep -Eq 'DEV_ASSISTANT_TOP_K`[^,]{0,10}\b5\b' src/dev_assistant/CLAUDE.md || fail "в тексте нет TOP_K = 5" ;;
 *) fail "неизвестная задача" ;;
 esac
 
