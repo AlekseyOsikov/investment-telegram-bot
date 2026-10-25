@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 
@@ -121,6 +122,23 @@ def build_prompt(task: Task, previous_check_output: str | None = None) -> str:
         tail = previous_check_output.strip()[-1500:]
         prompt += RETRY_SUFFIX.format(task_id=task.task_id, check_output=tail or "(пусто)")
     return prompt
+
+
+def parse_claude_output(raw: str) -> dict:
+    """Итоговое событие `claude -p --output-format json`: словарь или список событий (тогда —
+    последнее с `type == "result"`); перед JSON допускается постороннее предупреждение. Не
+    разобралось — пустой словарь."""
+    starts = [i for i in (raw.find("["), raw.find("{")) if i != -1]
+    if not starts:
+        return {}
+    try:
+        data = json.loads(raw[min(starts) :])
+    except ValueError:
+        return {}
+    if isinstance(data, list):
+        events = (e for e in reversed(data) if isinstance(e, dict) and e.get("type") == "result")
+        data = next(events, {})
+    return data if isinstance(data, dict) else {}
 
 
 def classify_failure(attempts: list[Attempt]) -> str:

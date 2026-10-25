@@ -42,7 +42,7 @@ CHECK_TIMEOUT_SECONDS = 600
 IGNORED_PREFIXES = ("tasks/", "reports/", ".venv", "out/")
 
 ALLOWED_TOOLS = [
-    "Read", "Edit", "Write", "Grep", "Glob", "Agent",
+    "Read", "Edit", "Write", "Grep", "Glob", "Task", "Agent",
     "Bash(.venv/bin/pytest:*)", "Bash(.venv/bin/ruff:*)", "Bash(.venv/bin/python:*)",
     "Bash(TELEGRAM_BOT_TOKEN=x DEEPSEEK_API_KEY=x .venv/bin/pytest:*)",
     "Bash(tasks/check.sh:*)", "Bash(bash tasks/check.sh:*)",
@@ -89,14 +89,6 @@ def run_check(task_id: str, base: str) -> tuple[bool, str]:
     return code == 0 and not timed_out, out
 
 
-def parse_claude_json(raw: str) -> dict:
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def run_attempt(
     task: lib.Task, number: int, previous: str | None, args, out_dir: Path
 ) -> lib.Attempt:
@@ -114,7 +106,7 @@ def run_attempt(
     code, out, timed_out = run_process(cmd, env, args.timeout)
     seconds = time.monotonic() - started
     (out_dir / f"attempt_{task.task_id}_{number}.json").write_text(out, encoding="utf-8")
-    data = parse_claude_json(out)
+    data = lib.parse_claude_output(out)
 
     passed, check_out = run_check(task.task_id, base)
     (out_dir / f"check_{task.task_id}_{number}.txt").write_text(check_out, encoding="utf-8")

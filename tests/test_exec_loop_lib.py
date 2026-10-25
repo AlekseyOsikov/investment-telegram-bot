@@ -109,3 +109,13 @@ def test_render_log_has_rows_and_metrics():
     assert "| T01 | ✅ с 1-й попытки | 1 | 1 мин 15 с |" in text
     assert "| T02 | ❌ |" in text and "нерабочий код" in text
     assert "Подряд без паузы с начала пула: **1**" in text and "model-x" in text
+
+
+def test_parse_claude_output_variants():
+    event = '{"type": "result", "num_turns": 4, "total_cost_usd": 0.1}'
+    assert lib.parse_claude_output(event)["num_turns"] == 4
+    listing = f'[{{"type": "system"}}, {event}]'
+    assert lib.parse_claude_output(listing)["total_cost_usd"] == 0.1
+    assert lib.parse_claude_output("Warning: no stdin\n" + listing)["num_turns"] == 4
+    assert lib.parse_claude_output("[]") == {} and lib.parse_claude_output("мусор") == {}
+    assert lib.parse_claude_output("[1, 2") == {}
