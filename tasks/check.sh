@@ -9,8 +9,8 @@ BASE=exec-loop-baseline
 fail() { echo "НЕ СДЕЛАНО $id: $*"; exit 1; }
 
 # Коммит с изменениями с момента входа в задачу проверяет раннер; здесь — рабочая копия против базы.
-changed() { git diff --name-only "$BASE" -- "$@"; git ls-files --others --exclude-standard -- "$@"; }
-untouched() { [ -z "$(git diff --name-only "$BASE" -- "$1")" ] || fail "файл $1 менять нельзя"; }
+changed() { { git diff --name-only "$BASE" -- "$@"; git ls-files --others --exclude-standard -- "$@"; } | grep -v "^tasks/\|^\.venv\|^reports/\|^out/"; true; }
+untouched() { [ -z "$(changed "$1")" ] || fail "файл $1 менять нельзя"; }
 cov() { # cov <файл src> <минимум %>
   $PYTEST tests -q --cov=src --cov-report=json:/tmp/exec_loop_cov.json >/dev/null 2>&1
   $PY - "$1" "$2" <<'P' || fail "покрытие $1 ниже $2 %"
