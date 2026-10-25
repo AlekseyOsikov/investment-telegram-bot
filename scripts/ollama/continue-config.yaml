@@ -2,6 +2,7 @@
 # Установка: cp scripts/ollama/continue-config.yaml ~/.continue/config.yaml и перезапустить IDE.
 # Правила проекта подхватываются из .continue/rules/*.md в корне репозитория (alwaysApply),
 # список файлов, закрытых от модели, — .continueignore.
+# Подобрано под Ryzen 9 7940HS + Radeon 780M (Ollama в Docker, Vulkan): см. docs/local-llm.md.
 name: Investment bot (local)
 version: 1.0.0
 schema: v1

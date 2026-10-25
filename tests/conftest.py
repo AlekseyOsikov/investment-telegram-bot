@@ -24,6 +24,12 @@ SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+# Чистые правила оснастки «локальная модель как код-ассистент» (scripts/ollama/local_llm_lib.py):
+# скрипты запускаются файлами, поэтому каталог добавляется отдельно, как у mcp_servers ниже.
+SCRIPTS_OLLAMA = SCRIPTS / "ollama"
+if str(SCRIPTS_OLLAMA) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_OLLAMA))
+
 # Чистая выборка мок-CRM поддержки (mock_servers/support_crm/crm_store.py): сервер не пакет и
 # `src/` его не импортирует; тесты берут только чистый модуль.
 MOCK_CRM = Path(__file__).resolve().parent.parent / "mock_servers" / "support_crm"
