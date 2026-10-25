@@ -107,7 +107,7 @@
 ## Конфигурация (`config.py`, `.env.example`)
 
 `DEV_ASSISTANT_USER_IDS` (пусто — выкл.; мусор — запуск останавливается), `DEV_ASSISTANT_INDEX_DIR`
-(`data/dev_index`), `DEV_ASSISTANT_TOP_K` (10), `DEV_ASSISTANT_MIN_SCORE` (0.0 — не откалибровано),
+(`data/dev_index`), `DEV_ASSISTANT_TOP_K` (5), `DEV_ASSISTANT_MIN_SCORE` (0.0 — не откалибровано),
 `DEV_ASSISTANT_HISTORY_TURNS` (6), `MCP_GIT_DIR` (каталог проекта `mcp-git`; пусто — git-слой выкл.;
 неверный путь — предупреждение в журнале). Файловый слой: `MCP_FILES_ENABLED` (`false`),
 `DEV_FILES_STAGING_DIR` (`data/dev_proposals`), `DEV_PATCHES_DIR` (`data/dev_patches`),
