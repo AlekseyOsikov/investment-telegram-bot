@@ -55,6 +55,10 @@ def test_every_text_leaves_unknown_value_as_is():
     assert texts.every_text("часто") == "часто"
 
 
+def test_every_text_leaves_non_ascii_digits_as_is():
+    assert texts.every_text("١٥m") == "١٥m"
+
+
 def test_format_price_uses_comma_and_trims_zeros():
     assert texts.format_price(301.2) == "301,2"
     assert texts.format_price(100.0) == "100"
