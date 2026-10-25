@@ -228,12 +228,17 @@ def next_step(attempt: int, validation: Validation) -> str:
 # --- выбор элементов сообщений и сроки ------------------------------------------------------
 
 
+def _importance(item: dict) -> str | None:
+    """Важность из разбора новости; `None` — новость без разбора или без поля."""
+    analysis = item.get("analysis") or {}
+    return analysis.get("importance")
+
+
 def sort_items(items: list[dict]) -> list[dict]:
     """Сначала важные, внутри уровня — свежие. Новость без разбора — после всех разобранных."""
 
     def rank(item: dict) -> int:
-        analysis = item.get("analysis") or {}
-        return IMPORTANCE_RANK.get(analysis.get("importance"), len(IMPORTANCE_RANK))
+        return IMPORTANCE_RANK.get(_importance(item), len(IMPORTANCE_RANK))
 
     by_time = sorted(items, key=lambda item: item.get("published_at") or "", reverse=True)
     # Сортировка устойчивая: внутри одного уровня сохраняется порядок «свежие первыми».
@@ -242,8 +247,7 @@ def sort_items(items: list[dict]) -> list[dict]:
 
 def is_urgent(item: dict) -> bool:
     """Срочное — только разобранная новость с высокой важностью."""
-    analysis = item.get("analysis")
-    return bool(analysis) and analysis.get("importance") == "high"
+    return _importance(item) == "high"
 
 
 def count_by_importance(items: list[dict]) -> dict[str, int]:
@@ -252,8 +256,7 @@ def count_by_importance(items: list[dict]) -> dict[str, int]:
     counts = {code: 0 for code in IMPORTANCE_LEVELS}
     counts["unanalyzed"] = 0
     for item in items:
-        analysis = item.get("analysis") or {}
-        importance = analysis.get("importance")
+        importance = _importance(item)
         key = importance if importance in IMPORTANCE_LEVELS else "unanalyzed"
         counts[key] += 1
     return counts
