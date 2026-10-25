@@ -50,7 +50,7 @@ ALLOWED_TOOLS = [
     "Bash(git add:*)", "Bash(git commit:*)",
     "Bash(grep:*)", "Bash(ls:*)", "Bash(wc:*)",
 ]
-DENIED_TOOLS = ["Read(./tasks/check.sh)", "Read(./.env)", "Read(./.env.*)", "Bash(git push:*)"]
+DENIED_TOOLS = ["Read(./tasks/check.sh)", "Read(./.env)", "Bash(git push:*)"]
 
 
 def git(*args: str, check: bool = True) -> str:
