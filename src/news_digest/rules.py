@@ -236,7 +236,7 @@ def sort_items(items: list[dict]) -> list[dict]:
         return IMPORTANCE_RANK.get(analysis.get("importance"), len(IMPORTANCE_RANK))
 
     by_time = sorted(items, key=lambda item: item.get("published_at") or "", reverse=True)
-    return sorted(by_time, key=rank)
+    return sorted(items, key=rank)
 
 
 def is_urgent(item: dict) -> bool:
@@ -246,7 +246,7 @@ def is_urgent(item: dict) -> bool:
 
 
 def messages_left(sent_today: int, max_per_day: int) -> int:
-    return max(max_per_day - sent_today, 0)
+    return max_per_day - sent_today
 
 
 def select_urgent(items: list[dict], budget: int) -> list[dict]:

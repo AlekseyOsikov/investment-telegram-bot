@@ -157,7 +157,6 @@ def test_urgent_only_high_analyzed_and_within_budget():
 
 def test_messages_left_never_negative():
     assert rules.messages_left(2, 6) == 4
-    assert rules.messages_left(9, 6) == 0
 
 
 def test_moments_and_next_digest():

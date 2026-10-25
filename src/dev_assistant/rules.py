@@ -80,7 +80,7 @@ def parse_user_ids(raw: str | None) -> tuple[int, ...]:
             value = int(item)
         except ValueError:
             raise ValueError(f"элемент {item!r} не является целым числом") from None
-        if value <= 0:
+        if value < 0:
             raise ValueError(f"элемент {item!r} не является идентификатором пользователя")
         if value not in result:
             result.append(value)

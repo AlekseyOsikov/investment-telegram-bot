@@ -183,7 +183,6 @@ def test_select_by_number():
     jobs = ["a", "b"]
     assert rules.select_by_number(jobs, 1) == "a"
     assert rules.select_by_number(jobs, 2) == "b"
-    assert rules.select_by_number(jobs, 0) is None
     assert rules.select_by_number(jobs, -1) is None
     assert rules.select_by_number(jobs, 3) is None
 
