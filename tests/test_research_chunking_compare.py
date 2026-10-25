@@ -81,3 +81,65 @@ def test_strategy_block_numbers_results_and_separates_them():
 def test_strategies_are_fixed_and_structural_in_order():
     assert [key for key, _ in cc._STRATEGIES] == ["fixed", "structural"]
     assert all(label for _, label in cc._STRATEGIES)
+
+
+# --- Точка входа и сборка ConversationHandler (фейки вместо Update) ---
+
+import asyncio  # noqa: E402
+
+from telegram.ext import CommandHandler, ConversationHandler, MessageHandler  # noqa: E402
+
+
+class _FakeMessage:
+    def __init__(self, text=None):
+        self.text = text
+        self.replies: list[str] = []
+
+    async def reply_text(self, text, **kwargs):
+        self.replies.append(text)
+
+
+class _FakeUpdate:
+    def __init__(self, text=None):
+        self.message = _FakeMessage(text)
+
+
+def test_command_sends_intro_and_waits_for_query():
+    update = _FakeUpdate()
+    state = asyncio.run(cc.chunking_compare_command(update, None))
+    assert state == cc.WAITING_QUERY
+    assert update.message.replies == [cc._INTRO_TEXT]
+
+
+def test_intro_says_technical_research_and_how_to_leave():
+    assert "техническое исследование" in cc._INTRO_TEXT
+    assert "не инвестиционный сервис" in cc._INTRO_TEXT
+    assert "/cancel" in cc._INTRO_TEXT
+
+
+def test_empty_query_asks_for_text_and_stays_in_state():
+    for text in (None, "", "   \n"):
+        update = _FakeUpdate(text)
+        state = asyncio.run(cc.chunking_compare_receive_query(update, None))
+        assert state == cc.WAITING_QUERY
+        assert update.message.replies == ["👉 Пожалуйста, отправь текст запроса."]
+
+
+def test_conversation_handler_has_entry_state_and_cancel_fallback():
+    handler = cc.build_chunking_compare_conversation_handler()
+    assert isinstance(handler, ConversationHandler)
+
+    (entry,) = handler.entry_points
+    assert isinstance(entry, CommandHandler)
+    assert "research_chunking_compare" in entry.commands
+    assert entry.callback is cc.chunking_compare_command
+
+    assert list(handler.states) == [cc.WAITING_QUERY]
+    (text_handler,) = handler.states[cc.WAITING_QUERY]
+    assert isinstance(text_handler, MessageHandler)
+    assert text_handler.callback is cc.chunking_compare_receive_query
+
+    (fallback,) = handler.fallbacks
+    assert isinstance(fallback, CommandHandler)
+    assert "cancel" in fallback.commands
+    assert fallback.callback is cc.chunking_compare_cancel
