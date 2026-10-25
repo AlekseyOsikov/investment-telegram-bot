@@ -247,7 +247,8 @@ def is_urgent(item: dict) -> bool:
 
 
 def messages_left(sent_today: int, max_per_day: int) -> int:
-    return max_per_day - sent_today
+    # Лимит могли снизить в .env после отправки: остаток не уходит в минус.
+    return max(0, max_per_day - sent_today)
 
 
 def select_urgent(items: list[dict], budget: int) -> list[dict]:

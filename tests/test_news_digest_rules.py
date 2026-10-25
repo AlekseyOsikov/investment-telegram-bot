@@ -159,6 +159,13 @@ def test_messages_left_never_negative():
     assert rules.messages_left(2, 6) == 4
 
 
+def test_messages_left_is_zero_when_limit_lowered_below_sent():
+    # Регрессия: лимит снизили, отправлено больше лимита — остаток не отрицательный.
+    assert rules.messages_left(8, 6) == 0
+    assert rules.messages_left(6, 6) == 0
+    assert rules.select_urgent([item("a", "high")], rules.messages_left(8, 6)) == []
+
+
 def test_moments_and_next_digest():
     assert rules.parse_moment("2026-10-18T10:00:00+03:00").utcoffset() == timedelta(hours=3)
     assert rules.parse_moment("2026-10-18T10:00:00").tzinfo == timezone.utc
