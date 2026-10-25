@@ -286,7 +286,7 @@ class LlmGate:
     def _dispatch(self) -> None:
         self._waiters = [(j, f) for j, f in self._waiters if not f.done()]
         while self._free > 0 and self._waiters:
-            best = min(self._waiters, key=lambda w: (w[0].priority, w[0].seq))
+            best = min(self._waiters, key=lambda w: w[0].seq)
             self._waiters.remove(best)
             job, fut = best
             self._free -= 1

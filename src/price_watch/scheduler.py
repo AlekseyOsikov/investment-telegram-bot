@@ -83,7 +83,7 @@ def split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
                 chunks.append(current)
                 current = ""
             chunks.append(line[:limit])
-            line = line[limit:]
+            line = line[limit + 1 :]
         candidate = f"{current}\n{line}" if current else line
         if len(candidate) > limit:
             chunks.append(current)

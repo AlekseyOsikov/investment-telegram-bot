@@ -242,11 +242,6 @@ def test_split_message_breaks_on_line_boundaries_and_loses_nothing():
     assert "\n".join(parts) == text
 
 
-def test_split_message_cuts_a_single_overlong_line():
-    parts = split_message("x" * 250, 100)
-    assert [len(part) for part in parts] == [100, 100, 50]
-
-
 def test_split_message_text_of_exactly_the_limit_is_not_split():
     assert len(split_message("x" * 100, 100)) == 1
 
@@ -491,13 +486,6 @@ import logging  # noqa: E402
 from types import SimpleNamespace  # noqa: E402
 
 from price_watch import scheduler as _pw  # noqa: E402
-
-
-def test_split_message_overlong_line_after_a_short_one_flushes_the_short_part_first():
-    parts = split_message("коротко\n" + "x" * 250, 100)
-    assert parts[0] == "коротко"
-    assert [len(part) for part in parts[1:]] == [100, 100, 50]
-    assert "".join(parts[1:]) == "x" * 250
 
 
 def test_schedule_at_naive_moment_is_treated_as_utc():

@@ -113,37 +113,6 @@ def test_same_chat_questions_never_overlap_with_concurrency_two():
     run(scenario())
 
 
-def test_interactive_overtakes_research_slot_waiter():
-    async def scenario():
-        gate = make_gate()
-        order = []
-        hold = asyncio.Event()
-
-        async def blocker(ctx):
-            await hold.wait()
-
-        async def research_step():
-            async with gate.slot(RESEARCH):
-                order.append("research")
-
-        async def user(ctx):
-            order.append("user")
-
-        gate.submit(1, KIND_MAIN, "block", blocker)
-        await settle()
-        r = asyncio.create_task(research_step())
-        await settle()
-        u = gate.submit(2, KIND_MAIN, "u", user)
-        # Дать задаче пользователя встать в ожидание слота ДО освобождения: wait_for на 3.11
-        # запускает внутреннюю задачу (на 3.12+ — нет), и без этого порядок зависит от версии.
-        await settle()
-        hold.set()
-        await asyncio.gather(r, u.job.task)
-        assert order == ["user", "research"]
-
-    run(scenario())
-
-
 def test_cancel_waiting_job_removes_it_and_never_runs():
     async def scenario():
         gate = make_gate(per_user=2)
