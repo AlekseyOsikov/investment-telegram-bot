@@ -4,6 +4,7 @@ set -u
 id="${1:?usage: check.sh Txx}"
 cd "$(dirname "$0")/.."
 export TELEGRAM_BOT_TOKEN=x DEEPSEEK_API_KEY=x
+unset ALL_PROXY HTTP_PROXY HTTPS_PROXY all_proxy http_proxy https_proxy  # httpx не понимает socks://
 PY=.venv/bin/python; PYTEST=.venv/bin/pytest; RUFF=.venv/bin/ruff
 BASE=exec-loop-baseline
 # Начало текущей задачи: раннер задаёт TASK_BASE (коммит перед задачей), по умолчанию — база пула.
