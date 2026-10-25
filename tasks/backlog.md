@@ -65,9 +65,12 @@
 полный `pytest` зелёный.
 **Проверка:** `tasks/check.sh T05`
 
-## T06 — test: докрыть `news_digest/rules.py`
-**Сделано, когда:** покрытие `src/news_digest/rules.py` = 100 %, новые тесты в
-`tests/test_news_digest_rules.py` (стиль файла), полный `pytest` зелёный, `src/` не менялся.
+## T06 — test: покрыть вход и сборку обработчика `/research_chunking_compare`
+Функции `chunking_compare_command` и `build_chunking_compare_conversation_handler` в
+`src/research/chunking_compare.py` не покрыты.
+**Сделано, когда:** покрытие `src/research/chunking_compare.py` ≥ 57 %, тесты в
+`tests/test_research_chunking_compare.py` без сети и Telegram, `src/` не менялся, полный `pytest`
+зелёный.
 **Проверка:** `tasks/check.sh T06`
 
 ## T07 — test: покрыть `research/_shared.py` (обработчик отмены)

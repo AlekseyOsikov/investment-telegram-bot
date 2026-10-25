@@ -50,7 +50,7 @@ import sys; sys.path.insert(0,'src')
 from llm_queue import rules
 assert rules.select_by_number(['a','b'], 0) is None and rules.select_by_number(['a','b'], 2) == 'b'" || fail "select_by_number"
      regression test_llm_queue_rules.py src/llm_queue/rules.py ;;
-T06) src_untouched; cov src/news_digest/rules.py 100 ;;
+T06) src_untouched; cov src/research/chunking_compare.py 57 ;;
 T07) src_untouched; cov src/research/_shared.py 100 ;;
 T08) src_untouched; cov src/price_watch/scheduler.py 99 ;;
 T09) src_untouched; cov src/research/chunking_stats.py 95 ;;
