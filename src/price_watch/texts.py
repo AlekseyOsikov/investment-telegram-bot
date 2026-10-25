@@ -46,7 +46,7 @@ _UNIT_FORMS = {
 
 def _plural_form(number: int, forms: tuple[str, str, str]) -> str:
     one, few, many = forms
-    if number % 10 == 1:
+    if number % 10 == 1 and number % 100 != 11:
         return one
     if 2 <= number % 10 <= 4 and not 12 <= number % 100 <= 14:
         return few
