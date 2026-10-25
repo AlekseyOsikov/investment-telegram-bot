@@ -1,4 +1,4 @@
-"""Чистые правила execution loop (День 5): разбор пула задач, промпт, классификация сбоя, метрики.
+"""Чистые правила execution loop (День 5): разбор трекера, промпт, классификация, метрики.
 
 Оснастка вне бота: `src/` её не импортирует. Модуль не знает про git, процессы и сеть:
 данные в данные; запуск и ввод-вывод — `scripts/exec_loop.py`.
@@ -16,14 +16,27 @@ FAIL_BROKEN_CODE = "нерабочий код"
 FAIL_LOOP = "зациклился / таймаут"
 FAIL_TOOLING = "сбой запуска ассистента"
 
-_TASK_RE = re.compile(r"^## (T\d+) — (.+)$", re.MULTILINE)
+_TASK_LINE_RE = re.compile(r"^- \[( |x|X|!)\] +(.+?)\s*$")
+_ID_RE = re.compile(r"^([A-Za-zА-Яа-я]{1,8}-?\d+):?$")
+_CHECK_LINE_RE = re.compile(r"^\s*Проверка:\s*(.+?)\s*$")
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+
+STATUS_OPEN = "open"
+STATUS_DONE = "done"
+STATUS_BLOCKED = "blocked"
+_MARK_TO_STATUS = {" ": STATUS_OPEN, "x": STATUS_DONE, "X": STATUS_DONE, "!": STATUS_BLOCKED}
 
 
 @dataclass(frozen=True)
 class Task:
+    """Задача трекера: `- [ ] T01 заголовок` и отступленное описание под ней."""
+
     task_id: str
     title: str
     body: str
+    status: str
+    checks: tuple[str, ...]  # команды из строк «Проверка: `cmd`» (необязательны)
+    line: int  # номер строки с чекбоксом (с 0)
 
 
 @dataclass
@@ -46,6 +59,7 @@ class TaskResult:
     attempts: list[Attempt] = field(default_factory=list)
     passed: bool = False
     commit_by_runner: bool = False  # ассистент не закоммитил сам — коммит сделал раннер
+    note: str = ""  # аномалии: взял не ту задачу, отметил несколько и т. п.
 
     @property
     def seconds(self) -> float:
@@ -60,68 +74,97 @@ class TaskResult:
         return None if self.passed else classify_failure(self.attempts)
 
 
-def parse_backlog(text: str) -> list[Task]:
-    """Разделы `## T01 — заголовок` → задачи; тело — текст до следующего заголовка (без `---`)."""
-    matches = list(_TASK_RE.finditer(text))
-    tasks = []
-    for i, match in enumerate(matches):
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
-        body = text[match.end() : end].strip()
-        body = re.split(r"^# ", body, maxsplit=1, flags=re.MULTILINE)[0]  # заголовок нового пула
-        body = re.sub(r"\n-{3,}\s*$", "", body.strip()).strip()
-        tasks.append(Task(match.group(1), match.group(2).strip(), body))
+def _split_id(head: str, position: int) -> tuple[str, str]:
+    """`T01 заголовок` → (`T01`, `заголовок`); без id в начале — `№<позиция>` и вся строка."""
+    first, _, rest = head.partition(" ")
+    if _ID_RE.match(first) and rest.strip():
+        return first.rstrip(":"), rest.strip()
+    return f"№{position}", head.strip()
+
+
+def parse_tracker(text: str) -> list[Task]:
+    """Markdown-список `- [ ]` / `- [x]` / `- [!]` → задачи в порядке файла.
+
+    Описание — строки под задачей с отступом (и пустые между ними); любая неотступленная строка
+    заканчивает задачу. Строка «Проверка: `команда`» в описании — приёмочная команда задачи.
+    Одинаковые id в одном трекере — ValueError (по id раннер сравнивает состояния).
+    """
+    lines = text.split("\n")
+    starts = [i for i, line in enumerate(lines) if _TASK_LINE_RE.match(line)]
+    tasks: list[Task] = []
+    for n, i in enumerate(starts):
+        mark, head = _TASK_LINE_RE.match(lines[i]).groups()
+        end = starts[n + 1] if n + 1 < len(starts) else len(lines)
+        body_lines: list[str] = []
+        for line in lines[i + 1 : end]:
+            if line.strip() and not line[0].isspace():
+                break
+            body_lines.append(line.strip())
+        body = "\n".join(body_lines).strip()
+        checks: list[str] = []
+        for line in body_lines:
+            found = _CHECK_LINE_RE.match(line)
+            if found:
+                commands = _BACKTICK_RE.findall(found.group(1))
+                checks += commands or [found.group(1)]
+        task_id, title = _split_id(head, n + 1)
+        tasks.append(
+            Task(task_id, title, body, _MARK_TO_STATUS[mark], tuple(checks), i)
+        )
+    ids = [t.task_id for t in tasks]
+    duplicates = sorted({x for x in ids if ids.count(x) > 1})
+    if duplicates:
+        raise ValueError(f"повторяются id задач: {', '.join(duplicates)}")
     return tasks
 
 
-def select_tasks(tasks: list[Task], spec: str | None) -> list[Task]:
-    """`T03`, `T03-T07`, `T01,T05` или пусто (все). Неизвестный id — ValueError."""
-    if not spec:
-        return list(tasks)
-    ids = [t.task_id for t in tasks]
-    chosen: list[str] = []
-    for part in (p.strip() for p in spec.split(",") if p.strip()):
-        low, _, high = part.partition("-")
-        for bound in (low, high or low):
-            if bound not in ids:
-                raise ValueError(f"нет задачи {bound!r} в пуле")
-        i, j = ids.index(low), ids.index(high or low)
-        if i > j:
-            raise ValueError(f"диапазон {part!r} задан наоборот")
-        chosen += [x for x in ids[i : j + 1] if x not in chosen]
-    return [t for t in tasks if t.task_id in chosen]
+def first_open(tasks: list[Task]) -> Task | None:
+    return next((t for t in tasks if t.status == STATUS_OPEN), None)
+
+
+def newly_done(before: list[Task], after: list[Task]) -> list[Task]:
+    """Задачи, которые были открыты до попытки и отмечены `[x]` после неё."""
+    was_open = {t.task_id for t in before if t.status == STATUS_OPEN}
+    return [t for t in after if t.status == STATUS_DONE and t.task_id in was_open]
+
+
+def mark_blocked(text: str, task: Task) -> str:
+    """Меняет чекбокс задачи на `[!]` (раннер так исключает задачу после провала всех попыток)."""
+    lines = text.split("\n")
+    lines[task.line] = lines[task.line].replace("[ ]", "[!]", 1)
+    return "\n".join(lines)
 
 
 PROMPT_TEMPLATE = """Ты работаешь в автономном цикле: человека рядом нет, вопросов не задавай, \
-решения принимай сам.
-
-Задача {task_id} — {title}
-
-{body}
+решения принимай сам. Список задач — файл {tracker}.
 
 Порядок:
-1. Выбери профиль по типу задачи: баг — субагент bug-fix; недостающие тесты — test-writer; \
+1. Открой {tracker} и возьми ПЕРВУЮ невыполненную задачу («- [ ]»); задачи «- [x]» уже сделаны, \
+«- [!]» пропусти. Другие задачи не трогай.
+2. Выбери профиль по типу задачи: баг — субагент bug-fix; недостающие тесты — test-writer; \
 расхождения в документации — doc-sync; вопрос по коду — research; фичу и рефакторинг делай сам. \
-Работай по CLAUDE.md и docs/code-style.md.
-2. Выполни задачу, правя только то, что она требует. Тесты не ослабляй и не удаляй.
-3. Запусти `tasks/check.sh {task_id}` и убедись, что итог — «СДЕЛАНО». Не читай и не правь \
-tasks/check.sh.
-4. Закоммить свои изменения одним коммитом с сообщением «{task_id}: <кратко>» (git add нужных \
-файлов, без push и без правок вне задачи).
-5. Ответь одной строкой: что сделано.
+Работай по правилам проекта (CLAUDE.md и документам, на которые он ссылается).
+3. Выполни задачу, правя только то, что она требует. Тесты не ослабляй и не удаляй.
+4. Если у задачи есть строка «Проверка:», выполни указанную команду и добейся успеха; \
+прогони также проверки проекта (сборка, линтер, тесты).
+5. Отметь задачу в {tracker} как выполненную («- [x]») и закоммить свои изменения вместе с \
+этой отметкой одним коммитом «<ID задачи>: <кратко>» (git add нужных файлов, без push).
+6. Ответь одной строкой: что сделано.
 """
 
 RETRY_SUFFIX = """
 ВНИМАНИЕ: предыдущая попытка не прошла приёмку. Её изменения откачены, рабочая копия чистая. \
-Вывод `tasks/check.sh {task_id}` предыдущей попытки:
+Результат приёмки предыдущей попытки:
 {check_output}
 """
 
 
-def build_prompt(task: Task, previous_check_output: str | None = None) -> str:
-    prompt = PROMPT_TEMPLATE.format(task_id=task.task_id, title=task.title, body=task.body)
+def build_prompt(tracker: str, previous_check_output: str | None = None) -> str:
+    """Один и тот же текст для каждой задачи: конкретную задачу ассистент выбирает сам."""
+    prompt = PROMPT_TEMPLATE.format(tracker=tracker)
     if previous_check_output is not None:
         tail = previous_check_output.strip()[-1500:]
-        prompt += RETRY_SUFFIX.format(task_id=task.task_id, check_output=tail or "(пусто)")
+        prompt += RETRY_SUFFIX.format(check_output=tail or "(пусто)")
     return prompt
 
 
@@ -208,8 +251,8 @@ def render_log(run_name: str, model: str, results: list[TaskResult]) -> str:
         "",
         f"Модель: `{model}`. Задач в прогоне: {m.total}.",
         "",
-        "| Задача | Результат | Попыток | Время | Ходов | Файлов | Причина провала |",
-        "|---|---|---|---|---|---|---|",
+        "| Задача | Результат | Попыток | Время | Ходов | Файлов | Причина провала | Примечание |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         verdict = "✅ с 1-й попытки" if r.first_try else ("✅ со 2-й+" if r.passed else "❌")
@@ -219,7 +262,7 @@ def render_log(run_name: str, model: str, results: list[TaskResult]) -> str:
         changed = r.attempts[-1].changed_files if r.attempts else 0
         lines.append(
             f"| {r.task_id} | {verdict} | {len(r.attempts)} | {_fmt_seconds(r.seconds)} | "
-            f"{turns} | {changed} | {r.failure_class or ''} |"
+            f"{turns} | {changed} | {r.failure_class or ''} | {r.note} |"
         )
     pct = 100 * m.first_try / m.total if m.total else 0
     lines += [

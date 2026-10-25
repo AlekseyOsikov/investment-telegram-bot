@@ -4,21 +4,20 @@
 import exec_loop_lib as lib
 import pytest
 
-BACKLOG = """# Пул
+TRACKER = """# Трекер
 
-шапка
+Вводный текст.
 
-## T01 — первая
-Симптом.
-**Проверка:** `tasks/check.sh T01`
+- [ ] T01 bug: первая
+  Симптом.
+  Проверка: `pytest tests/x.py -q` и `ruff check src/x.py`
+- [x] T02 test: вторая, уже сделана
+- [!] T03 docs: заблокирована раннером
+  Проверка: bash tasks/check.sh T03
 
----
-
-## T02 — вторая
-Тело второй.
-
-## T03 — третья
-Тело третьей.
+Пояснение после списка.
+- [ ] Задача без идентификатора
+- [ ] 2025-1 не id, а заголовок
 """
 
 
@@ -32,38 +31,19 @@ def result(task_id, *attempts, passed=True, by_runner=False):
     return lib.TaskResult(task_id, list(attempts), passed, by_runner)
 
 
-def test_parse_backlog_splits_tasks_and_strips_separator():
-    tasks = lib.parse_backlog(BACKLOG)
-    assert [t.task_id for t in tasks] == ["T01", "T02", "T03"]
-    assert tasks[0].title == "первая" and tasks[0].body.endswith("`tasks/check.sh T01`")
-    assert "---" not in tasks[0].body and tasks[1].body == "Тело второй."
 
 
-def test_select_tasks_single_range_list_and_all():
-    tasks = lib.parse_backlog(BACKLOG)
-    ids = lambda spec: [t.task_id for t in lib.select_tasks(tasks, spec)]  # noqa: E731
-    assert ids(None) == ids("") == ["T01", "T02", "T03"]
-    assert ids("T02") == ["T02"] and ids("T01-T02") == ["T01", "T02"]
-    assert ids("T03,T01") == ["T01", "T03"]
 
 
-@pytest.mark.parametrize("spec", ["T09", "T03-T01", "T01-T09"])
-def test_select_tasks_rejects_bad_spec(spec):
-    with pytest.raises(ValueError):
-        lib.select_tasks(lib.parse_backlog(BACKLOG), spec)
 
 
-def test_prompt_has_task_and_no_hint_on_first_attempt():
-    task = lib.parse_backlog(BACKLOG)[1]
-    prompt = lib.build_prompt(task)
-    assert "T02" in prompt and "Тело второй." in prompt and "tasks/check.sh T02" in prompt
-    assert "предыдущая попытка" not in prompt
 
 
-def test_retry_prompt_carries_only_check_output_tail():
-    task = lib.parse_backlog(BACKLOG)[0]
-    prompt = lib.build_prompt(task, "x" * 5000 + "КОНЕЦ")
-    assert "предыдущая попытка" in prompt and "КОНЕЦ" in prompt and prompt.count("x") <= 1500
+
+
+
+
+
 
 
 def test_failure_classes():
@@ -109,6 +89,7 @@ def test_render_log_has_rows_and_metrics():
     assert "| T01 | ✅ с 1-й попытки | 1 | 1 мин 15 с |" in text
     assert "| T02 | ❌ |" in text and "нерабочий код" in text
     assert "Подряд без паузы с начала пула: **1**" in text and "model-x" in text
+    assert "Примечание" in text
 
 
 def test_parse_claude_output_variants():
@@ -121,8 +102,52 @@ def test_parse_claude_output_variants():
     assert lib.parse_claude_output("[1, 2") == {}
 
 
-def test_parse_backlog_stops_at_next_pool_heading():
-    text = BACKLOG + "\n---\n\n# Новый пул\n\nтаблица\n\n## T04 — четвёртая\nТело.\n"
-    tasks = lib.parse_backlog(text)
-    assert [t.task_id for t in tasks] == ["T01", "T02", "T03", "T04"]
-    assert tasks[2].body == "Тело третьей."
+def test_parse_tracker_statuses_ids_titles_and_checks():
+    tasks = lib.parse_tracker(TRACKER)
+    assert [t.task_id for t in tasks] == ["T01", "T02", "T03", "№4", "№5"]
+    assert [t.status for t in tasks] == ["open", "done", "blocked", "open", "open"]
+    assert tasks[0].title == "bug: первая" and tasks[0].body.startswith("Симптом.")
+    assert tasks[0].checks == ("pytest tests/x.py -q", "ruff check src/x.py")
+    assert tasks[2].checks == ("bash tasks/check.sh T03",)
+    assert tasks[3].title == "Задача без идентификатора" and tasks[3].checks == ()
+    assert tasks[4].title == "2025-1 не id, а заголовок"
+
+
+def test_task_body_stops_at_unindented_line():
+    tasks = lib.parse_tracker(TRACKER)
+    assert "Пояснение" not in tasks[2].body and "Вводный" not in tasks[0].body
+
+
+def test_parse_tracker_empty_and_duplicate_ids():
+    assert lib.parse_tracker("просто текст") == []
+    with pytest.raises(ValueError, match="T01"):
+        lib.parse_tracker("- [ ] T01 а\n- [ ] T01 б\n")
+
+
+def test_first_open_and_newly_done():
+    before = lib.parse_tracker(TRACKER)
+    assert lib.first_open(before).task_id == "T01"
+    after_text = TRACKER.replace("- [ ] T01", "- [x] T01").replace("- [ ] Задача", "- [x] Задача")
+    done = lib.newly_done(before, lib.parse_tracker(after_text))
+    assert [t.task_id for t in done] == ["T01", "№4"]
+    assert lib.first_open(lib.parse_tracker("- [x] А\n- [!] Б\n")) is None
+    assert lib.newly_done(before, before) == []
+
+
+def test_mark_blocked_changes_only_that_checkbox():
+    tasks = lib.parse_tracker(TRACKER)
+    text = lib.mark_blocked(TRACKER, tasks[0])
+    assert "- [!] T01 bug: первая" in text and text.count("[!]") == 2
+    assert lib.first_open(lib.parse_tracker(text)).task_id == "№4"
+
+
+def test_prompt_is_the_same_for_every_task_and_names_tracker():
+    prompt = lib.build_prompt("tasks/tracker.md")
+    assert "tasks/tracker.md" in prompt and "ПЕРВУЮ невыполненную" in prompt
+    assert "предыдущая попытка" not in prompt and prompt == lib.build_prompt("tasks/tracker.md")
+
+
+def test_retry_prompt_carries_only_the_tail_of_check_output():
+    prompt = lib.build_prompt("t.md", "x" * 5000 + "КОНЕЦ")
+    assert "предыдущая попытка" in prompt and "КОНЕЦ" in prompt and prompt.count("x") <= 1500
+    assert "(пусто)" in lib.build_prompt("t.md", "  ")
