@@ -24,13 +24,12 @@ import glob
 import os
 import sys
 
+from config import RAG_FIXED_CHUNK_CHARS, RAG_FIXED_CHUNK_OVERLAP, RAG_INDEX_DIR
 from providers.embeddings_client import embed_texts
 from rag.chunking import chunk_fixed_size, chunk_structural
 from rag.extraction import clean_text, extract_text
 from rag.filenames import FileMetadata, parse_filename
 from rag.index_store import IndexRecord, build_index
-
-from config import RAG_FIXED_CHUNK_CHARS, RAG_FIXED_CHUNK_OVERLAP, RAG_INDEX_DIR
 
 SOURCE_PDF_DIR = "data/source/pdf"
 SOURCE_TXT_DIR = "data/source/txt"
@@ -77,7 +76,7 @@ def _build_strategy_index(strategy: str, pending: list[_PendingChunk]) -> int:
             text=text,
             embedding=vector,
         )
-        for (filename, metadata, chunk_index, text), vector in zip(pending, vectors)
+        for (filename, metadata, chunk_index, text), vector in zip(pending, vectors, strict=False)
     ]
     count = build_index(strategy, records, RAG_INDEX_DIR)
     print(f"[{strategy}] сохранено чанков: {count} -> {os.path.join(RAG_INDEX_DIR, strategy)}/")

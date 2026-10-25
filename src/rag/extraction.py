@@ -56,7 +56,7 @@ def extract_pdf_text(path: str) -> str:
 
 def extract_txt_text(path: str) -> str:
     """Читает txt-файл как есть, без очистки — её делает clean_text отдельно."""
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return f.read()
 
 
