@@ -565,3 +565,52 @@ def test_stop_scheduler_cancels_the_task_and_removes_both_keys():
         assert app.bot_data == {}
 
     asyncio.run(scenario())
+
+
+def test_bot_sender_sends_plain_text_without_parse_mode():
+    calls = []
+
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            calls.append(kwargs)
+
+    asyncio.run(_pw.bot_sender(FakeBot())(42, "Сводка"))
+    assert calls == [{"chat_id": 42, "text": "Сводка"}]
+
+
+def test_bot_sender_propagates_telegram_errors():
+    class FakeBot:
+        async def send_message(self, **kwargs):
+            raise Forbidden("blocked")
+
+    with pytest.raises(Forbidden):
+        asyncio.run(_pw.bot_sender(FakeBot())(42, "Сводка"))
+
+
+def test_start_scheduler_puts_scheduler_and_task_into_bot_data_and_runs_first_tick(
+    monkeypatch, caplog
+):
+    tools = []
+
+    async def fake_call(name, args=None):
+        tools.append(name)
+        await asyncio.sleep(3600)  # тик «висит» до отмены — реального сна нет
+
+    monkeypatch.setattr(_pw, "call_watch_tool", fake_call)
+
+    async def scenario():
+        app = SimpleNamespace(bot=object(), bot_data={})
+        with caplog.at_level(logging.INFO, logger=_pw.logger.name):
+            await _pw.start_scheduler(app)
+        assert isinstance(app.bot_data[_pw.SCHEDULER_KEY], WatchScheduler)
+        task = app.bot_data[_pw.TASK_KEY]
+        assert task.get_name() == "price-watch-scheduler"
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert tools == [TOOL_RUN_DUE]
+        await _pw.stop_scheduler(app)
+        assert task.cancelled()
+        assert app.bot_data == {}
+
+    asyncio.run(scenario())
+    assert "плановая выдача сводок запущена" in caplog.text
