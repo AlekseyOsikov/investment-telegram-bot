@@ -1,0 +1,17 @@
+# Что Continue не индексирует и не отдаёт модели (секреты, данные, окружение, артефакты)
+.env
+.env.*
+!.env.example
+data/
+reports/
+.venv/
+.git/
+.idea/
+.coverage
+.pytest_cache/
+.ruff_cache/
+__pycache__/
+*.sqlite
+*.db
+*.pem
+*.key

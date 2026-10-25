@@ -1,0 +1,47 @@
+# Конфиг Continue (IntelliJ IDEA) для локальных моделей Ollama.
+# Установка: cp scripts/ollama/continue-config.yaml ~/.continue/config.yaml и перезапустить IDE.
+# Правила проекта подхватываются из .continue/rules/*.md в корне репозитория (alwaysApply),
+# список файлов, закрытых от модели, — .continueignore.
+name: Investment bot (local)
+version: 1.0.0
+schema: v1
+
+models:
+  # Чат, правка и агентный режим. Низкая temperature: для кода нужен детерминизм.
+  - name: Qwen3-Coder 30B (chat)
+    provider: ollama
+    model: qwen3-coder:30b
+    apiBase: http://localhost:11434
+    roles: [chat, edit, apply]
+    capabilities: [tool_use]
+    defaultCompletionOptions:
+      contextLength: 16384
+      maxTokens: 8192
+      temperature: 0.2
+      topP: 0.9
+      keepAlive: 3600
+
+  # Автокомплит: маленькая быстрая модель, короткий контекст, temperature 0.
+  - name: Qwen2.5-Coder 3B (autocomplete)
+    provider: ollama
+    model: qwen2.5-coder:3b
+    apiBase: http://localhost:11434
+    roles: [autocomplete]
+    defaultCompletionOptions:
+      contextLength: 4096
+      maxTokens: 128
+      temperature: 0
+      topP: 0.9
+      keepAlive: 3600
+    autocompleteOptions:
+      debounceDelay: 300
+      maxPromptTokens: 1024
+      onlyMyCode: true
+
+
+context:
+  - provider: code
+  - provider: diff
+  - provider: problems
+  - provider: terminal
+  - provider: folder
