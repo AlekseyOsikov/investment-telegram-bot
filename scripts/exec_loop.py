@@ -263,7 +263,8 @@ def main() -> int:
         if args.stop_on_fail and not result.passed:
             break
     metrics = lib.compute_metrics(results)
-    print(f"Подряд без паузы: {metrics.streak}; выполнено {metrics.passed}/{metrics.total}")
+    print(f"Подряд без паузы: {metrics.streak} ({metrics.streak_minutes:.1f} мин); "
+          f"выполнено {metrics.passed}/{metrics.total}")
     print(f"Отчёт: {out_dir}/log.md" if results else "Невыполненных задач в трекере нет.")
     return 0
 

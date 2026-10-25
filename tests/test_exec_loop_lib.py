@@ -74,6 +74,7 @@ def test_metrics_streaks_and_first_failure():
     assert (m.streak, m.strict_streak) == (2, 1)
     assert (m.first_failure, m.first_failure_class) == ("T03", lib.FAIL_LOOP)
     assert m.mean_seconds == pytest.approx((10 + 30 + 10 + 10) / 4)
+    assert m.streak_minutes == pytest.approx((10 + 30) / 60)  # T01, T02; T03 прервала серию
     assert m.total_cost_usd == pytest.approx(0.5)
 
 
@@ -89,7 +90,7 @@ def test_render_log_has_rows_and_metrics():
     assert "| T01 | ✅ с 1-й попытки | 1 | 1 мин 15 с |" in text
     assert "| T02 | ❌ |" in text and "нерабочий код" in text
     assert "Подряд без паузы с начала пула: **1**" in text and "model-x" in text
-    assert "Примечание" in text
+    assert "Примечание" in text and "Время без пауз: **1.2 мин**" in text
 
 
 def test_parse_claude_output_variants():

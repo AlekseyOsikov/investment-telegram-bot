@@ -206,6 +206,7 @@ class Metrics:
     first_try: int
     streak: int  # подряд выполненных с начала пула (с любой попытки)
     strict_streak: int  # подряд с первой попытки
+    streak_minutes: float  # время работы ассистента в выполненных подряд задачах, минут
     first_failure: str | None
     first_failure_class: str | None
     mean_seconds: float
@@ -214,10 +215,12 @@ class Metrics:
 
 def compute_metrics(results: list[TaskResult]) -> Metrics:
     streak = strict = 0
+    streak_seconds = 0.0
     for r in results:
         if not r.passed:
             break
         streak += 1
+        streak_seconds += r.seconds
     for r in results:
         if not r.first_try:
             break
@@ -231,6 +234,7 @@ def compute_metrics(results: list[TaskResult]) -> Metrics:
         first_try=sum(r.first_try for r in results),
         streak=streak,
         strict_streak=strict,
+        streak_minutes=streak_seconds / 60,
         first_failure=failed.task_id if failed else None,
         first_failure_class=failed.failure_class if failed else None,
         mean_seconds=total_seconds / len(results) if results else 0.0,
@@ -271,6 +275,7 @@ def render_log(run_name: str, model: str, results: list[TaskResult]) -> str:
         "",
         f"- Выполнено задач: {m.passed} из {m.total}.",
         f"- Подряд без паузы с начала пула: **{m.streak}** (с первой попытки: {m.strict_streak}).",
+        f"- Время без пауз: **{m.streak_minutes:.1f} мин** (работа ассистента в задачах серии).",
         f"- Первый провал: {m.first_failure or 'нет'}"
         + (f" — {m.first_failure_class}" if m.first_failure_class else "")
         + ".",
