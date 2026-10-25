@@ -2,10 +2,11 @@
 подстановка рассуждений вместо пустого ответа, перевод ошибок OpenAI SDK в русские сообщения,
 запуск сценария с форматированием.
 
-Без сети, Telegram и модели. Не покрыто: build_cancel_handler (асинхронный обработчик /cancel
-работает с Telegram-объектами, проверяется вручную).
+Без сети, Telegram и модели; обработчик /cancel (build_cancel_handler) проверяется на заглушках
+update/context.
 """
 
+import asyncio
 from types import SimpleNamespace
 
 import httpx
@@ -17,6 +18,7 @@ from openai import (
     AuthenticationError,
     RateLimitError,
 )
+from telegram.ext import ConversationHandler
 
 from research import _shared as sh
 
@@ -237,3 +239,32 @@ def test_run_scenario_unexpected_error_gives_generic_message_and_logs(caplog):
     assert error == "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже."
     assert "внутренний сбой" not in error
     assert "внутренний сбой" in caplog.text
+
+
+# --- build_cancel_handler -----------------------------------------------------------------
+
+
+def _cancel_call(user_data: dict, key: str):
+    replies = []
+
+    async def reply_text(text):
+        replies.append(text)
+
+    update = SimpleNamespace(message=SimpleNamespace(reply_text=reply_text))
+    context = SimpleNamespace(user_data=user_data)
+    result = asyncio.run(sh.build_cancel_handler(key)(update, context))
+    return result, replies
+
+
+def test_cancel_clears_only_own_key_replies_and_ends_conversation():
+    user_data = {"reasoning_task": "x", "other": 1}
+    result, replies = _cancel_call(user_data, "reasoning_task")
+    assert result == ConversationHandler.END
+    assert user_data == {"other": 1}
+    assert replies == ["Исследование прервано. Возвращаюсь в обычный режим."]
+
+
+def test_cancel_without_stored_key_does_not_fail():
+    result, replies = _cancel_call({}, "missing")
+    assert result == ConversationHandler.END
+    assert len(replies) == 1
