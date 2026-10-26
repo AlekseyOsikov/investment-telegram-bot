@@ -16,6 +16,11 @@
 3. проверки проекта (`--gate`; по умолчанию сборка и тесты) не стали хуже: проверка, которая была
    красной ДО итерации, не учитывается.
 Не прошло — изменения откатываются, вторая попытка (`--attempts`) видит только вывод приёмки.
+Экономия токенов: до запуска модели раннер выполняет «Проверка:» задачи; если команда или файл не
+найдены (код 126/127), модель не запускается, а задача сразу `[!]` («некорректная приёмка»); то же
+после попытки — повтор не делается. Лимит стоимости одной попытки — `--budget-usd` (по умолчанию $1,
+`claude --max-budget-usd`); превышение — задача `[!]` без повтора. Ошибка самого `claude`
+(авторизация, 403, нет сети) останавливает цикл, трекер не трогается.
 Если все попытки провалены, задача помечается `[!]` (раннер коммитит отметку), и цикл идёт дальше.
 
 Итог — `reports/exec_loop/<ветка>/` (`log.md`, `results.json`, вывод каждой попытки; `reports/`
@@ -65,6 +70,10 @@ ALLOWED_TOOLS = [
 DENIED_TOOLS = ["Read(./.env)", "Bash(git push:*)"]
 
 
+class LoopAborted(Exception):
+    """Ассистент не смог работать (авторизация, API, запуск): цикл останавливается, трекер цел."""
+
+
 def git(*args: str, check: bool = True) -> str:
     done = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=check)
     return done.stdout.strip()
@@ -93,14 +102,14 @@ def run_process(cmd: list[str], env: dict[str, str], timeout: float) -> tuple[in
         return -9, out or "", True
 
 
-def run_shell(command: str, base: str) -> tuple[bool, str]:
-    """Команда приёмки через bash из корня репозитория; True — код выхода 0."""
+def run_shell(command: str, base: str) -> tuple[int, str]:
+    """Команда приёмки через bash из корня репозитория → (код выхода, вывод); таймаут — -9."""
     env = {**os.environ, **ENV_STUB, "TASK_BASE": base}
     for name in ("ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY"):
         env.pop(name, None)  # httpx не понимает схему socks:// из окружения разработчика
         env.pop(name.lower(), None)
-    code, out, timed_out = run_process(["bash", "-c", command], env, CHECK_TIMEOUT_SECONDS)
-    return code == 0 and not timed_out, out
+    code, out, _ = run_process(["bash", "-c", command], env, CHECK_TIMEOUT_SECONDS)
+    return code, out
 
 
 def read_tasks(tracker: Path) -> list[lib.Task]:
@@ -108,30 +117,48 @@ def read_tasks(tracker: Path) -> list[lib.Task]:
 
 
 def judge(before: list[lib.Task], tracker: Path, rel: str, base: str, gates_ok: dict[str, bool],
-          gates: list[str]) -> tuple[list[lib.Task], bool, str]:
-    """Приёмка попытки → (отмеченные задачи, прошла ли, вывод для лога и повтора)."""
+          gates: list[str]) -> tuple[list[lib.Task], bool, str, bool]:
+    """Приёмка попытки → (отмеченные задачи, прошла ли, вывод для лога и повтора, приёмка сломана).
+
+    «Приёмка сломана» — команда «Проверка:» не нашлась (код 126/127): вина не задачи, повтор
+    попытки ничего не изменит.
+    """
     try:
         done = lib.newly_done(before, read_tasks(tracker))
     except ValueError as error:
-        return [], False, f"Трекер {rel} не разбирается: {error}"
+        return [], False, f"Трекер {rel} не разбирается: {error}", False
     if not done:
-        return [], False, f"В {rel} ни одна открытая задача не отмечена как выполненная («- [x]»)."
-    report, passed = [], True
+        text = f"В {rel} ни одна открытая задача не отмечена как выполненная («- [x]»)."
+        return [], False, text, False
+    report, passed, broken = [], True, False
     for task in done:
         for command in task.checks:
-            ok, out = run_shell(command, base)
-            verdict = "ок" if ok else "ПРОВАЛ"
+            code, out = run_shell(command, base)
+            ok = code == 0
+            verdict = "ок" if ok else f"ПРОВАЛ (код {code})"
             report.append(f"[{task.task_id}] проверка `{command}`: {verdict}\n{out[-1500:]}")
             passed &= ok
+            broken |= lib.is_broken_check(code)
     for gate in gates:
         if not gates_ok.get(gate):
             report.append(f"проверка проекта `{gate}` была красной до итерации — пропущена")
             continue
-        ok, out = run_shell(gate, base)
-        verdict = "ок" if ok else "ПРОВАЛ"
+        code, out = run_shell(gate, base)
+        verdict = "ок" if code == 0 else f"ПРОВАЛ (код {code})"
         report.append(f"проверка проекта `{gate}`: {verdict}\n{out[-1500:]}")
-        passed &= ok
-    return done, passed, "\n".join(report)
+        passed &= code == 0
+    return done, passed, "\n".join(report), broken
+
+
+def preflight(target: lib.Task, base: str) -> str:
+    """Команды «Проверка:» задачи до запуска модели. Пусто — всё в порядке; иначе описание
+    сломанной приёмки (команда или файл не найдены, код 126/127). Обычный провал приёмки на
+    нетронутом коде (задача ещё не сделана) — норма и ошибкой не считается."""
+    for command in target.checks:
+        code, out = run_shell(command, base)
+        if lib.is_broken_check(code):
+            return f"`{command}`: код {code}, {out.strip()[-200:] or 'нет вывода'}"
+    return ""
 
 
 def run_attempt(number: int, previous: str | None, args, out_dir: Path, tag: str) -> lib.Attempt:
@@ -142,6 +169,8 @@ def run_attempt(number: int, previous: str | None, args, out_dir: Path, tag: str
         "--allowedTools", *ALLOWED_TOOLS, *args.allow,
         "--disallowedTools", *DENIED_TOOLS, *args.deny,
     ]
+    if args.budget_usd > 0:
+        cmd += ["--max-budget-usd", f"{args.budget_usd:g}"]
     if args.model:
         cmd += ["--model", args.model]
     env = {**os.environ, "TASK_BASE": base}
@@ -154,6 +183,8 @@ def run_attempt(number: int, previous: str | None, args, out_dir: Path, tag: str
     return lib.Attempt(
         seconds=seconds, returncode=code, timed_out=timed_out, turns=data.get("num_turns"),
         cost_usd=data.get("total_cost_usd"), changed_files=len(changed_paths(base, args.tracker)),
+        api_error=lib.api_error_text(data, code, out),
+        budget_exceeded=lib.is_budget_exceeded(data),
     )
 
 
@@ -175,13 +206,21 @@ def run_iteration(target: lib.Task, args, tracker: Path, gates: list[str],
                   out_dir: Path) -> lib.TaskResult:
     before = read_tasks(tracker)
     base = git("rev-parse", "HEAD")
-    gates_ok = {gate: run_shell(gate, base)[0] for gate in gates}
     result = lib.TaskResult(target.task_id)
+    problem = preflight(target, base)
+    if problem:  # модель не запускается: приёмку надо чинить в трекере, а не повторять попытки
+        result.skipped = lib.FAIL_BAD_CHECK
+        result.note = f"приёмка не запускается: {problem}"
+        return result
+    gates_ok = {gate: run_shell(gate, base)[0] == 0 for gate in gates}
     previous = None
     for number in range(1, args.attempts + 1):
         attempt = run_attempt(number, previous, args, out_dir, target.task_id)
-        done, passed, report = judge(before, tracker, args.tracker, base, gates_ok, gates)
-        attempt.check_passed, attempt.check_output = passed, report
+        if attempt.api_error:
+            rollback(base)
+            raise LoopAborted(f"claude не смог выполнить запрос: {attempt.api_error}")
+        done, passed, report, broken = judge(before, tracker, args.tracker, base, gates_ok, gates)
+        attempt.check_passed, attempt.check_output, attempt.broken_check = passed, report, broken
         (out_dir / f"check_{target.task_id}_{number}.txt").write_text(report, encoding="utf-8")
         result.attempts.append(attempt)
         if passed:
@@ -196,6 +235,8 @@ def run_iteration(target: lib.Task, args, tracker: Path, gates: list[str],
             return result
         previous = report
         rollback(base)
+        if broken or attempt.budget_exceeded:  # повтор потратит ещё столько же и не поможет
+            break
     return result
 
 
@@ -211,7 +252,8 @@ def settle_tracker(result: lib.TaskResult, target: lib.Task, args, tracker: Path
         note = f"exec_loop: {result.task_id} выполнена (ветка {result.branch})"
     else:
         text = lib.mark_blocked(text, target)
-        note = f"exec_loop: {target.task_id} заблокирована после {args.attempts} попыток"
+        note = (f"exec_loop: {target.task_id} заблокирована "
+                f"({result.failure_class}; попыток: {len(result.attempts)})")
     tracker.write_text(text, encoding="utf-8")
     git("add", args.tracker)
     git("commit", "-q", "-m", note)
@@ -226,8 +268,13 @@ def run_in_branch(target: lib.Task, args, tracker: Path, gates: list[str],
     git("switch", "-c", name)
     try:
         result = run_iteration(target, args, tracker, gates, out_dir)
-    finally:
+    except LoopAborted:
         git("switch", base_branch)
+        git("branch", "-D", name)
+        raise
+    finally:
+        if git("branch", "--show-current") != base_branch:
+            git("switch", base_branch)
     result.branch = name
     if not result.passed:
         git("branch", "-D", name)  # откатано до коммита старта: сохранять нечего
@@ -250,6 +297,9 @@ def main() -> int:
     parser.add_argument("--env", action="append", default=[], help="KEY=VALUE для процесса claude")
     parser.add_argument("--timeout", type=float, default=900, help="секунд на попытку")
     parser.add_argument("--attempts", type=int, default=2, help="попыток на задачу")
+    parser.add_argument("--budget-usd", type=float, default=1.0,
+                        help="лимит стоимости ОДНОЙ попытки в $ (claude --max-budget-usd; 0 — без "
+                             "лимита). Проверяется между ходами, небольшой перерасход возможен")
     parser.add_argument("--max-tasks", type=int, default=0, help="остановиться после N итераций")
     parser.add_argument("--stop-on-fail", action="store_true", help="стоп после первого провала")
     parser.add_argument("--commits", choices=lib.COMMIT_MODES, default=lib.COMMITS_SEQUENTIAL,
@@ -284,17 +334,24 @@ def main() -> int:
     out_dir = ROOT / "reports" / "exec_loop" / branch.replace("/", "_")
     out_dir.mkdir(parents=True, exist_ok=True)
     results: list[lib.TaskResult] = []
+    aborted = False
     while True:
         target = lib.first_open(read_tasks(tracker))
         if target is None or (args.max_tasks and len(results) >= args.max_tasks):
             break
         print(f"[{target.task_id}] {target.title} …", flush=True)
         run = run_in_branch if args.commits == lib.COMMITS_BRANCHES else run_iteration
-        result = run(target, args, tracker, gates, out_dir)
+        try:
+            result = run(target, args, tracker, gates, out_dir)
+        except LoopAborted as error:
+            print(f"[{target.task_id}] ПРЕРВАНО: {error}", flush=True)
+            print("Задача осталась открытой в трекере; проверьте `claude -p ok` и перезапустите.")
+            aborted = True
+            break
         settle_tracker(result, target, args, tracker)
         results.append(result)
         write_report(out_dir, branch, args.model or "по умолчанию", results)
-        verdict = "готово" if result.passed else "ПРОВАЛ"
+        verdict = "готово" if result.passed else f"ПРОВАЛ ({result.failure_class})"
         print(f"[{result.task_id}] {verdict} за {result.seconds:.0f} с", flush=True)
         if args.stop_on_fail and not result.passed:
             break
@@ -302,7 +359,7 @@ def main() -> int:
     print(f"Подряд без паузы: {metrics.streak} ({metrics.streak_minutes:.1f} мин); "
           f"выполнено {metrics.passed}/{metrics.total}")
     print(f"Отчёт: {out_dir}/log.md" if results else "Невыполненных задач в трекере нет.")
-    return 0
+    return 2 if aborted else 0
 
 
 if __name__ == "__main__":

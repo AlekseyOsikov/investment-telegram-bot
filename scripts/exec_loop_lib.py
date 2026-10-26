@@ -15,6 +15,12 @@ FAIL_NOT_UNDERSTOOD = "не понял контекст"
 FAIL_BROKEN_CODE = "нерабочий код"
 FAIL_LOOP = "зациклился / таймаут"
 FAIL_TOOLING = "сбой запуска ассистента"
+FAIL_BAD_CHECK = "некорректная приёмка"
+FAIL_BUDGET = "превышен бюджет попытки"
+
+# Коды bash: 126 — файл не исполняется, 127 — команда или файл не найдены.
+BROKEN_CHECK_CODES = (126, 127)
+BUDGET_SUBTYPE = "error_max_budget_usd"
 
 _TASK_LINE_RE = re.compile(r"^- \[( |x|X|!)\] +(.+?)\s*$")
 _ID_RE = re.compile(r"^([A-Za-zА-Яа-я]{1,8}-?\d+):?$")
@@ -51,6 +57,9 @@ class Attempt:
     changed_files: int = 0
     check_passed: bool = False
     check_output: str = ""
+    api_error: str = ""  # ассистент не смог начать работу: ошибка авторизации/API/запуска
+    broken_check: bool = False  # команда «Проверка:» не нашлась (код 126/127): повтор бессмыслен
+    budget_exceeded: bool = False  # claude остановлен лимитом --max-budget-usd
 
 
 @dataclass
@@ -59,6 +68,7 @@ class TaskResult:
     attempts: list[Attempt] = field(default_factory=list)
     passed: bool = False
     commit_by_runner: bool = False  # ассистент не закоммитил сам — коммит сделал раннер
+    skipped: str = ""  # причина, по которой модель не запускалась (например, FAIL_BAD_CHECK)
     note: str = ""  # аномалии: взял не ту задачу, отметил несколько и т. п.
     branch: str = ""  # ветка задачи (режим commits=branches)
 
@@ -72,7 +82,9 @@ class TaskResult:
 
     @property
     def failure_class(self) -> str | None:
-        return None if self.passed else classify_failure(self.attempts)
+        if self.passed:
+            return None
+        return self.skipped or classify_failure(self.attempts)
 
 
 def _split_id(head: str, position: int) -> tuple[str, str]:
@@ -216,11 +228,43 @@ def parse_claude_output(raw: str) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def is_broken_check(returncode: int) -> bool:
+    """Команда приёмки не запустилась (файл или команда не найдены): задача тут ни при чём."""
+    return returncode in BROKEN_CHECK_CODES
+
+
+def is_budget_exceeded(data: dict) -> bool:
+    """Итоговое событие `claude`: остановлен лимитом `--max-budget-usd`."""
+    return data.get("subtype") == BUDGET_SUBTYPE
+
+
+def api_error_text(data: dict, returncode: int, raw: str) -> str:
+    """Текст ошибки, если `claude` не смог начать работу (авторизация, 403/5xx, лимиты, нет вывода).
+
+    Признак: итоговое событие с `is_error` и не больше одного хода, либо код выхода ≠ 0 без
+    разобранного итога. Ошибка посреди работы (много ходов, таймаут, бюджет) — это не он, а
+    провал задачи.
+    """
+    if is_budget_exceeded(data):
+        return ""
+    if data.get("is_error") and (data.get("num_turns") or 0) <= 1:
+        return str(data.get("result") or "ошибка без текста")[:300]
+    if returncode not in (0, -9) and not data:
+        return raw.strip()[-300:] or f"код выхода {returncode}"
+    return ""
+
+
 def classify_failure(attempts: list[Attempt]) -> str:
     """Причина провала по последней попытке (эвристика; ручная проверка лога обязательна)."""
     if not attempts:
         return FAIL_TOOLING
     last = attempts[-1]
+    if last.api_error:
+        return FAIL_TOOLING
+    if last.broken_check:
+        return FAIL_BAD_CHECK
+    if last.budget_exceeded:
+        return FAIL_BUDGET
     if last.timed_out:
         return FAIL_LOOP
     if last.returncode != 0 and last.changed_files == 0 and last.turns is None:

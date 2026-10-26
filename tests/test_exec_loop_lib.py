@@ -179,3 +179,39 @@ def test_render_log_shows_branch_only_for_passed_tasks():
     failed.branch = "run-T02"
     text = lib.render_log("run", "m", [done, failed])
     assert "ветка `run-T01`" in text and "run-T02" not in text
+
+
+def test_broken_check_and_budget_signals():
+    assert lib.is_broken_check(127) and lib.is_broken_check(126)
+    assert not lib.is_broken_check(1) and not lib.is_broken_check(0) and not lib.is_broken_check(-9)
+    assert lib.is_budget_exceeded({"subtype": "error_max_budget_usd", "is_error": True})
+    assert not lib.is_budget_exceeded({"subtype": "success"}) and not lib.is_budget_exceeded({})
+
+
+def test_api_error_text_only_for_failures_to_start():
+    auth = {"is_error": True, "num_turns": 1, "result": "Failed to authenticate. API Error: 403"}
+    assert "403" in lib.api_error_text(auth, 1, "")
+    assert lib.api_error_text({"is_error": True, "num_turns": 1}, 1, "") == "ошибка без текста"
+    assert "boom" in lib.api_error_text({}, 2, "stack\nboom")
+    assert lib.api_error_text({}, 2, "") == "код выхода 2"
+    assert lib.api_error_text({"is_error": True, "num_turns": 20, "result": "x"}, 1, "") == ""
+    budget = {"subtype": "error_max_budget_usd", "is_error": True, "num_turns": 1}
+    assert lib.api_error_text(budget, 1, "") == ""
+    assert lib.api_error_text({"num_turns": 3, "result": "ок"}, 0, "") == ""
+    assert lib.api_error_text({}, -9, "") == ""
+
+
+def test_new_failure_classes():
+    assert lib.classify_failure([attempt(api_error="403")]) == lib.FAIL_TOOLING
+    assert lib.classify_failure([attempt(broken_check=True)]) == lib.FAIL_BAD_CHECK
+    assert lib.classify_failure([attempt(budget_exceeded=True)]) == lib.FAIL_BUDGET
+    assert lib.classify_failure([attempt(timed_out=True, budget_exceeded=True)]) == lib.FAIL_BUDGET
+
+
+def test_skipped_task_has_class_and_breaks_streak():
+    skipped = lib.TaskResult("T02", [], False, skipped=lib.FAIL_BAD_CHECK, note="нет файла")
+    assert skipped.failure_class == lib.FAIL_BAD_CHECK and not skipped.first_try
+    m = lib.compute_metrics([result("T01", attempt()), skipped, result("T03", attempt())])
+    assert (m.streak, m.first_failure, m.first_failure_class) == (1, "T02", lib.FAIL_BAD_CHECK)
+    text = lib.render_log("run", "m", [skipped])
+    assert "некорректная приёмка" in text and "нет файла" in text
