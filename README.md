@@ -675,6 +675,13 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 └── README.md
 ```
 
+## Fine-tuning локальных моделей
+
+`finetuning/` — отдельный подпроект для дообучения локальных моделей: LoRA,
+eval, слияние адаптера, GGUF и Ollama. Бот его не импортирует, зависимости
+и тяжёлые артефакты — отдельно. Начало: [`finetuning/README.md`](finetuning/README.md).
+Roleplay LoRA — [`finetuning/roleplay_lora/report.md`](finetuning/roleplay_lora/report.md).
+
 ## Установка и настройка
 
 ### 1. Клонируйте репозиторий и создайте виртуальное окружение

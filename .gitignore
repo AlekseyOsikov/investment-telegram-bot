@@ -50,3 +50,14 @@ docker/ai-review-runner/runner.env
 # Отчёты прогонов (make smoke, /qa-run)
 reports/
 qa-out/
+
+# Fine-tuning: тяжёлые артефакты и внешние инструменты не в git
+/finetuning/artifacts/*
+!/finetuning/artifacts/README.md
+/finetuning/**/merged/
+/finetuning/**/*.gguf
+/finetuning/**/adapter_model.safetensors
+/finetuning/**/model.safetensors
+/finetuning/**/.venv/
+/finetuning/**/llama.cpp/
+/finetuning/**/watch_results*/
