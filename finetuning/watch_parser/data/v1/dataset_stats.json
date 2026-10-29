@@ -1,0 +1,24 @@
+{
+  "seed": 42,
+  "total": 300,
+  "train": 270,
+  "valid": 30,
+  "by_category": {
+    "simple": 90,
+    "multi": 60,
+    "colloquial": 60,
+    "invalid": 60,
+    "correction": 30
+  },
+  "by_error": {
+    "ambiguous": 6,
+    "bad_interval": 8,
+    "bad_ticker": 7,
+    "empty": 1,
+    "missing_intervals": 8,
+    "missing_poll_interval": 8,
+    "missing_report_interval": 9,
+    "missing_tickers": 8,
+    "not_watch": 5
+  }
+}

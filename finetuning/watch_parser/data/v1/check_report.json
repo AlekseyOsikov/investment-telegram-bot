@@ -1,0 +1,113 @@
+{
+  "train": 270,
+  "valid": 30,
+  "eval": 60,
+  "train_balance": {
+    "by_category": {
+      "colloquial": 54,
+      "correction": 27,
+      "invalid": 54,
+      "multi": 54,
+      "simple": 81
+    },
+    "by_error": {
+      "ambiguous": 6,
+      "bad_interval": 7,
+      "bad_ticker": 6,
+      "empty": 1,
+      "missing_intervals": 7,
+      "missing_poll_interval": 6,
+      "missing_report_interval": 9,
+      "missing_tickers": 8,
+      "not_watch": 4
+    },
+    "tickers": {
+      "AFLT": 17,
+      "ALRS": 18,
+      "CHMF": 18,
+      "GAZP": 18,
+      "HYDR": 20,
+      "IRAO": 18,
+      "LKOH": 17,
+      "MGNT": 18,
+      "MOEX": 19,
+      "MTSS": 17,
+      "NVTK": 19,
+      "PHOR": 19,
+      "PLZL": 19,
+      "ROSN": 23,
+      "SBER": 18,
+      "SIBN": 20,
+      "SNGS": 17,
+      "TATN": 20,
+      "VTBR": 21,
+      "YDEX": 20
+    },
+    "poll_units": {
+      "h": 68,
+      "m": 148
+    },
+    "report_units": {
+      "d": 101,
+      "h": 77,
+      "m": 38
+    }
+  },
+  "eval_balance": {
+    "by_category": {
+      "colloquial": 15,
+      "correction": 5,
+      "invalid": 10,
+      "multi": 10,
+      "out_of_scope": 5,
+      "role_order": 5,
+      "simple": 10
+    },
+    "by_error": {
+      "ambiguous": 2,
+      "bad_interval": 1,
+      "bad_ticker": 2,
+      "empty": 2,
+      "missing_intervals": 1,
+      "missing_poll_interval": 1,
+      "missing_report_interval": 1,
+      "missing_tickers": 1,
+      "not_watch": 4
+    },
+    "tickers": {
+      "AFLT": 2,
+      "ALRS": 4,
+      "CHMF": 4,
+      "GAZP": 8,
+      "HYDR": 3,
+      "IRAO": 2,
+      "LKOH": 5,
+      "MGNT": 2,
+      "MOEX": 5,
+      "MTSS": 1,
+      "NVTK": 2,
+      "PHOR": 3,
+      "PLZL": 2,
+      "ROSN": 4,
+      "SBER": 9,
+      "SIBN": 2,
+      "SNGS": 2,
+      "TATN": 2,
+      "VTBR": 5,
+      "YDEX": 2
+    },
+    "poll_units": {
+      "h": 5,
+      "m": 40
+    },
+    "report_units": {
+      "d": 13,
+      "h": 29,
+      "m": 3
+    }
+  },
+  "near_duplicates_train_090": 0,
+  "eval_contamination_050": 4,
+  "eval_contamination_085": 0,
+  "eval_exact_contamination": 0
+}

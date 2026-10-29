@@ -15,6 +15,17 @@ artifacts/roleplay_lora/
 
 Модель в Ollama: `qwen25-roleplay`.
 
+## watch_parser
+
+```text
+artifacts/watch_parser/
+  adapter_v3/                # финальный LoRA-адаптер, ~82 МБ
+```
+
+`merged_v3/` и GGUF здесь не хранятся: они воспроизводятся из `adapter_v3`
+и базы командами из `watch_parser/README.md`. Готовая модель остаётся в
+Ollama как `qwen25-watch-v3` (blob-хранилище Docker).
+
 ## Правила
 
 - Не добавлять сюда `.venv`, `llama.cpp`, HF-кэш.

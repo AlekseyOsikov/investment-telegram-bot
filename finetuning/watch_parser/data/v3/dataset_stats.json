@@ -1,0 +1,28 @@
+{
+  "base_v2": 480,
+  "extra_success": 40,
+  "extra_period": 12,
+  "extra_invalid_defined": 74,
+  "extra_added": 126,
+  "total": 606,
+  "train": 544,
+  "valid": 62,
+  "by_category": {
+    "colloquial": 72,
+    "correction": 70,
+    "invalid": 314,
+    "multi": 60,
+    "simple": 90
+  },
+  "by_error": {
+    "ambiguous": 36,
+    "bad_interval": 40,
+    "bad_ticker": 47,
+    "empty": 2,
+    "missing_intervals": 40,
+    "missing_poll_interval": 40,
+    "missing_report_interval": 41,
+    "missing_tickers": 40,
+    "not_watch": 28
+  }
+}

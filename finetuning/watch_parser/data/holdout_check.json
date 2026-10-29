@@ -1,0 +1,105 @@
+{
+  "train": 544,
+  "valid": 62,
+  "eval": 30,
+  "train_balance": {
+    "by_category": {
+      "colloquial": 65,
+      "correction": 63,
+      "invalid": 281,
+      "multi": 54,
+      "simple": 81
+    },
+    "by_error": {
+      "ambiguous": 32,
+      "bad_interval": 36,
+      "bad_ticker": 42,
+      "empty": 1,
+      "missing_intervals": 36,
+      "missing_poll_interval": 36,
+      "missing_report_interval": 37,
+      "missing_tickers": 36,
+      "not_watch": 25
+    },
+    "tickers": {
+      "AFLT": 21,
+      "ALRS": 21,
+      "CHMF": 28,
+      "GAZP": 26,
+      "HYDR": 23,
+      "IRAO": 22,
+      "LKOH": 17,
+      "MGNT": 19,
+      "MOEX": 24,
+      "MTSS": 22,
+      "NVTK": 22,
+      "PHOR": 20,
+      "PLZL": 23,
+      "ROSN": 26,
+      "SBER": 21,
+      "SIBN": 20,
+      "SNGS": 21,
+      "TATN": 22,
+      "VTBR": 24,
+      "YDEX": 27
+    },
+    "poll_units": {
+      "h": 80,
+      "m": 183
+    },
+    "report_units": {
+      "d": 121,
+      "h": 89,
+      "m": 53
+    }
+  },
+  "eval_balance": {
+    "by_category": {
+      "colloquial": 6,
+      "correction": 2,
+      "invalid": 8,
+      "multi": 4,
+      "out_of_scope": 4,
+      "role_order": 2,
+      "simple": 4
+    },
+    "by_error": {
+      "ambiguous": 1,
+      "bad_interval": 1,
+      "bad_ticker": 2,
+      "empty": 2,
+      "missing_intervals": 1,
+      "missing_poll_interval": 1,
+      "missing_report_interval": 1,
+      "missing_tickers": 1,
+      "not_watch": 2
+    },
+    "tickers": {
+      "ALRS": 1,
+      "CHMF": 1,
+      "GAZP": 4,
+      "LKOH": 3,
+      "MOEX": 3,
+      "NVTK": 1,
+      "PLZL": 1,
+      "ROSN": 2,
+      "SBER": 4,
+      "SNGS": 1,
+      "TATN": 1,
+      "VTBR": 1,
+      "YDEX": 1
+    },
+    "poll_units": {
+      "h": 2,
+      "m": 16
+    },
+    "report_units": {
+      "d": 7,
+      "h": 11
+    }
+  },
+  "near_duplicates_train_090": 0,
+  "eval_contamination_050": 8,
+  "eval_contamination_085": 0,
+  "eval_exact_contamination": 0
+}

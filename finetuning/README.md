@@ -10,6 +10,7 @@
 | Проект | Назначение | Модель | Статус | Отчёт |
 |---|---|---|---|---|
 | `roleplay_lora` | Roleplay: стиль и границы роли | Qwen2.5-1.5B + LoRA | готово | [`roleplay_lora/report.md`](roleplay_lora/report.md) |
+| `watch_parser` | Свободная просьба → JSON `/watch` | Qwen2.5-1.5B + LoRA/guard | готово | [`watch_parser/report.md`](watch_parser/report.md) |
 
 Другие проекты добавляются по мере готовности.
 
@@ -27,15 +28,26 @@ finetuning/
     Modelfile
     results/
     scripts/
+  watch_parser/
+    README.md
+    report.md
+    data/
+    results/
+    scripts/
+    training/
+    Modelfile.watch-v3
   artifacts/                 # тяжёлые артефакты, в git не попадают
     README.md
     roleplay_lora/
       adapter_roleplay_ru/
+    watch_parser/
+      adapter_v3/
+      # merged_v3/ и gguf/ генерируются, не хранятся
 ```
 
 Общий код (train/eval/merge/Ollama) будет вынесен в `common/`, когда
-появится второй проект. Пока `roleplay_lora` самодостаточен: его скрипты
-лежат в `roleplay_lora/scripts/`.
+совпадений между проектами станет больше. Пока проекты самодостаточны:
+их скрипты лежат в `<project>/scripts/`.
 
 ## Артефакты и git
 
@@ -49,7 +61,7 @@ finetuning/
 - `.venv/`, локальные клоны `llama.cpp/`, HF-кэш.
 
 Правила — в корневом `.gitignore`. Для передачи тяжёлых артефактов
-использовать release assets, внешний диск или Git LFS (адаптеры ~80 МБ;
+использовать release assets, внешний диск или Git LFS (адаптеры ~80 МБ каждый;
 merged/GGUF — гигабайты, LFS для них нежелателен).
 
 ## Зависимости

@@ -681,6 +681,7 @@ Branching (чекпоинты и ветки диалога) и Summary. Отде
 eval, слияние адаптера, GGUF и Ollama. Бот его не импортирует, зависимости
 и тяжёлые артефакты — отдельно. Начало: [`finetuning/README.md`](finetuning/README.md).
 Roleplay LoRA — [`finetuning/roleplay_lora/report.md`](finetuning/roleplay_lora/report.md).
+Watch parser — [`finetuning/watch_parser/report.md`](finetuning/watch_parser/report.md).
 
 ## Установка и настройка
 

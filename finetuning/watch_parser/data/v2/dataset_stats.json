@@ -1,0 +1,38 @@
+{
+  "source_v1": 300,
+  "success": 240,
+  "invalid_original": 60,
+  "invalid_generated": 180,
+  "total": 480,
+  "train": 432,
+  "valid": 48,
+  "generated_by_code": {
+    "ambiguous": 20,
+    "bad_interval": 24,
+    "bad_ticker": 24,
+    "empty": 1,
+    "missing_intervals": 24,
+    "missing_poll_interval": 24,
+    "missing_report_interval": 24,
+    "missing_tickers": 24,
+    "not_watch": 15
+  },
+  "by_category": {
+    "colloquial": 60,
+    "correction": 30,
+    "invalid": 240,
+    "multi": 60,
+    "simple": 90
+  },
+  "by_error": {
+    "ambiguous": 26,
+    "bad_interval": 32,
+    "bad_ticker": 31,
+    "empty": 2,
+    "missing_intervals": 32,
+    "missing_poll_interval": 32,
+    "missing_report_interval": 33,
+    "missing_tickers": 32,
+    "not_watch": 20
+  }
+}
