@@ -1,0 +1,84 @@
+{
+  "cfg": {
+    "train": "data/v2/train.jsonl",
+    "valid": "data/v2/valid.jsonl",
+    "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "out": "/content/adapter_watch_json_v2",
+    "run_dir": "/content/run_watch_json_v2",
+    "seed": 42,
+    "max_len": 1024,
+    "epochs": 2.0,
+    "lr": 0.0002,
+    "batch": 2,
+    "grad_accum": 8,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "warmup_ratio": 0.03
+  },
+  "env": {
+    "gpu": "Tesla T4",
+    "vram_gb": 14.6,
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "transformers": "5.22.0",
+    "peft": "0.21.2"
+  },
+  "train_examples": 432,
+  "valid_examples": 48,
+  "train_seconds": 678,
+  "loss_first": 0.25588486194610593,
+  "loss_last": 0.01599687784910202,
+  "loss_history": [
+    [
+      5,
+      0.25588486194610593
+    ],
+    [
+      10,
+      0.1541285037994385
+    ],
+    [
+      15,
+      0.11892296075820923
+    ],
+    [
+      20,
+      0.09814281463623047
+    ],
+    [
+      25,
+      0.06016108989715576
+    ],
+    [
+      30,
+      0.0376302182674408
+    ],
+    [
+      35,
+      0.03874180614948273
+    ],
+    [
+      40,
+      0.039538446068763736
+    ],
+    [
+      45,
+      0.02581183612346649
+    ],
+    [
+      50,
+      0.01599687784910202
+    ]
+  ],
+  "eval_loss_history": [
+    [
+      27,
+      0.047713398933410645
+    ],
+    [
+      54,
+      0.01814463548362255
+    ]
+  ]
+}

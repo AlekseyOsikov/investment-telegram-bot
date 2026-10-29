@@ -40,6 +40,21 @@ def set_f1(expected: list[str], predicted: list[str]) -> float:
     return 2 * precision * recall / (precision + recall)
 
 
+def semantic_equal(expected: dict, output: dict | str) -> bool:
+    """Смысловое совпадение: набор тикеров без учёта порядка и те же периоды."""
+    parsed = output if isinstance(output, dict) else extract_json(output)
+    if parsed is None:
+        return False
+    if not expected.get("ok"):
+        return parsed.get("ok") is False and parsed.get("error") == expected.get("error")
+    return (
+        parsed.get("ok") is True
+        and set(parsed.get("secids", [])) == set(expected.get("secids", []))
+        and parsed.get("poll_interval") == expected.get("poll_interval")
+        and parsed.get("report_interval") == expected.get("report_interval")
+    )
+
+
 def score_row(expected: dict, raw: str) -> dict:
     try:
         strict_ok = isinstance(json.loads(raw.strip()), dict)
@@ -53,6 +68,7 @@ def score_row(expected: dict, raw: str) -> dict:
         "json_extractable": extracted is not None,
         "schema_ok": schema_ok,
         "exact": exact,
+        "semantic": semantic_equal(expected, extracted) if extracted is not None else False,
         "problems": validate_output(extracted) if extracted is not None else ["JSON не найден"],
     }
     if expected.get("ok"):

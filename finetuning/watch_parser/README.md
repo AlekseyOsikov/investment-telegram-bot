@@ -64,7 +64,7 @@ scripts/
   apply_guard_results.py     # guard поверх сохранённых ответов
   compare_*.py               # сводные таблицы
   merge_adapter.py           # adapter + base → merged HF
-  ollama_eval.py, ollama_ask.py
+  ollama_eval.py, ollama_ask.py, compare_ollama.py
 training/
   train_lora.py              # LoRA-дообучение под Colab T4
   colab_v1.ipynb, colab_v2.ipynb, colab_v3.ipynb
@@ -243,6 +243,56 @@ python scripts/compare_runs.py \
   --run "v3+guard=results/v3/tuned_prompt_guard.json" \
   --out results/compare/compare_all.md
 ```
+
+## Сравнение двух прогонов в консоли
+
+`scripts/compare_console.py` печатает эталон, ответ базы и ответ дообученной
+модели, а в конце — сводку «лучше / хуже / так же». Вердикты различают
+улучшение смысла и формата: например, тот же набор тикеров в другом порядке
+будет «лучше (только формат)».
+
+```bash
+# база с промптом vs финальная модель
+python scripts/compare_console.py
+
+# только плохие запросы
+python scripts/compare_console.py --category invalid --only-diff
+
+# сравнить с guard-версией
+python scripts/compare_console.py --tuned results/v3/tuned_prompt_guard.json
+
+# первые 10 запросов
+python scripts/compare_console.py --limit 10
+
+# выбранные номера
+python scripts/compare_console.py --only 14
+```
+
+### Живое сравнение через Ollama
+
+`scripts/compare_ollama.py` не читает готовые результаты, а сам обращается
+к Ollama: прогоняет каждый запрос через базовую и дообученную модель и
+печатает ответы парами.
+
+```bash
+# база qwen2.5:1.5b-instruct-fp16 vs qwen25-watch-v3
+python scripts/compare_ollama.py --limit 5
+
+# только invalid и только различающиеся ответы
+python scripts/compare_ollama.py --category invalid --only-diff
+
+# с guard на ответе дообученной модели
+python scripts/compare_ollama.py --guard --limit 3
+
+# holdout вместо dev-eval
+python scripts/compare_ollama.py --input data/holdout.jsonl --limit 3
+
+# выбранные номера
+python scripts/compare_ollama.py --only 1,13,17
+```
+
+Скрипт проверяет, что обе модели есть в Ollama, и сохраняет ответы в
+`results/v3/compare_ollama_live.json`.
 
 ## Локальная Ollama
 

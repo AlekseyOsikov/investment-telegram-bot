@@ -1,0 +1,1346 @@
+[
+  {
+    "n": 1,
+    "category": "simple",
+    "user": "Следи за SBER каждые 15 минут, сводку присылай раз в час.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "SBER"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 2,
+    "category": "simple",
+    "user": "GAZP: проверять цену каждые 30 минут, сводку присылать раз в 90 минут.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "GAZP"
+      ],
+      "poll_interval": "30m",
+      "report_interval": "90m"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 3,
+    "category": "simple",
+    "user": "Хочу получать сводки по LKOH раз в день, а цены проверять каждые 10 минут.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "LKOH"
+      ],
+      "poll_interval": "10m",
+      "report_interval": "1d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"1d\",\"report_interval\":\"10m\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"10m\",\"report_interval\":\"1d\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 4,
+    "category": "simple",
+    "user": "Мониторь ROSN с интервалом 45 минут, итоги присылай раз в 3 часа.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "ROSN"
+      ],
+      "poll_interval": "45m",
+      "report_interval": "3h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"45m\",\"report_interval\":\"3h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"45m\",\"report_interval\":\"3h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 5,
+    "category": "simple",
+    "user": "VTBR нужно проверять каждые 5 минут, а сводку присылать раз в 6 часов.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "VTBR"
+      ],
+      "poll_interval": "5m",
+      "report_interval": "6h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 6,
+    "category": "simple",
+    "user": "За MOEX наблюдай каждые 2 часа; сводка — раз в 12 часов.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "MOEX"
+      ],
+      "poll_interval": "2h",
+      "report_interval": "12h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 7,
+    "category": "simple",
+    "user": "Следи за ALRS. Опрос — 90 минут, сводка — 1 день.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "ALRS"
+      ],
+      "poll_interval": "90m",
+      "report_interval": "1d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"90m\",\"report_interval\":\"1d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"90m\",\"report_interval\":\"1d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 8,
+    "category": "simple",
+    "user": "По CHMF: каждые 15 минут смотри цены, раз в 2 дня присылай отчёт.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "CHMF"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "2d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"15m\",\"report_interval\":\"2d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"15m\",\"report_interval\":\"2d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 9,
+    "category": "simple",
+    "user": "Настрой /watch на HYDR: проверять каждые 60 минут, отчитываться раз в 7 дней.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "HYDR"
+      ],
+      "poll_interval": "60m",
+      "report_interval": "7d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"HYDR\"],\"poll_interval\":\"60m\",\"report_interval\":\"7d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"HYDR\"],\"poll_interval\":\"60m\",\"report_interval\":\"7d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 10,
+    "category": "simple",
+    "user": "Следи за PHOR каждые 2 часа, сводку присылай раз в 3 дня.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "PHOR"
+      ],
+      "poll_interval": "2h",
+      "report_interval": "3d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"PHOR\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"PHOR\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 11,
+    "category": "multi",
+    "user": "Следи за SBER и GAZP каждые 15 минут, сводку раз в час.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "GAZP",
+        "SBER"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"GAZP\",\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (только формат)"
+  },
+  {
+    "n": 12,
+    "category": "multi",
+    "user": "Мониторь LKOH, ROSN и VTBR каждые 30 минут, отчёт раз в 2 часа.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "LKOH",
+        "ROSN",
+        "VTBR"
+      ],
+      "poll_interval": "30m",
+      "report_interval": "2h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"LKOH\",\"ROSN\",\"VTBR\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"LKOH\",\"ROSN\",\"VTBR\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 13,
+    "category": "multi",
+    "user": "Добавь в отслеживание: Сбер, Газпром, Лукойл. Проверка каждые 10 минут, сводка раз в 3 часа.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "GAZP",
+        "LKOH",
+        "SBER"
+      ],
+      "poll_interval": "10m",
+      "report_interval": "3h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\",\"LKOH\"],\"poll_interval\":\"10m\",\"report_interval\":\"3h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"GAZP\",\"LKOH\",\"SBER\"],\"poll_interval\":\"10m\",\"report_interval\":\"3h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (только формат)"
+  },
+  {
+    "n": 14,
+    "category": "multi",
+    "user": "По SBER, GAZP и MOEX: опрос каждые 5 минут, сводка раз в 6 часов.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "GAZP",
+        "MOEX",
+        "SBER"
+      ],
+      "poll_interval": "5m",
+      "report_interval": "6h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\",\"MOEX\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"GAZP\",\"MOEX\",\"SBER\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (только формат)"
+  },
+  {
+    "n": 15,
+    "category": "multi",
+    "user": "Следи за ALRS и CHMF каждые 2 часа, итоги раз в 12 часов.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "ALRS",
+        "CHMF"
+      ],
+      "poll_interval": "2h",
+      "report_interval": "12h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"ALRS\",\"CHMF\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"ALRS\",\"CHMF\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 16,
+    "category": "multi",
+    "user": "Наблюдай за HYDR, PHOR, SIBN и SNGS: проверка 45 минут, сводка 1 день.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "HYDR",
+        "PHOR",
+        "SIBN",
+        "SNGS"
+      ],
+      "poll_interval": "45m",
+      "report_interval": "1d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"HYDR\",\"PHOR\",\"SIBN\",\"SNGS\"],\"poll_interval\":\"45m\",\"report_interval\":\"1d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"HYDR\",\"PHOR\",\"SIBN\",\"SNGS\"],\"poll_interval\":\"45m\",\"report_interval\":\"1d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 17,
+    "category": "multi",
+    "user": "SBER, SBER и GAZP — следи каждые 15 минут, сводку раз в час.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "GAZP",
+        "SBER"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "base_exact": false,
+    "tuned_exact": false,
+    "base_semantic": true,
+    "tuned_semantic": false,
+    "tuned_guard": false,
+    "verdict": "хуже (смысл)"
+  },
+  {
+    "n": 18,
+    "category": "multi",
+    "user": "Следи за TATN и MGNT каждые 30 минут, сводку раз в 90 минут.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "MGNT",
+        "TATN"
+      ],
+      "poll_interval": "30m",
+      "report_interval": "90m"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"TATN\",\"MGNT\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"MGNT\",\"TATN\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (только формат)"
+  },
+  {
+    "n": 19,
+    "category": "multi",
+    "user": "MOEX + VTBR: опрос 10 минут, отчёт 1 час.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "MOEX",
+        "VTBR"
+      ],
+      "poll_interval": "10m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"MOEX\",\"VTBR\"],\"poll_interval\":\"10m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"MOEX\",\"VTBR\"],\"poll_interval\":\"10m\",\"report_interval\":\"1h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 20,
+    "category": "multi",
+    "user": "За NVTK, PLZL, YDEX, AFLT и IRAO следи каждые 15 минут, сводка раз в 3 дня.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "AFLT",
+        "IRAO",
+        "NVTK",
+        "PLZL",
+        "YDEX"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "3d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"NVTK\",\"PLZL\",\"YDEX\",\"AFLT\",\"IRAO\"],\"poll_interval\":\"15m\",\"report_interval\":\"3d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"AFLT\",\"IRAO\",\"NVTK\",\"PLZL\",\"YDEX\"],\"poll_interval\":\"15m\",\"report_interval\":\"3d\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (только формат)"
+  },
+  {
+    "n": 21,
+    "category": "colloquial",
+    "user": "Следи за Сбером каждые четверть часа, сводку присылай раз в час.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "SBER"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"1h\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 22,
+    "category": "colloquial",
+    "user": "Газпром проверяй каждые полчаса, отчёт раз в два часа.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "GAZP"
+      ],
+      "poll_interval": "30m",
+      "report_interval": "2h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 23,
+    "category": "colloquial",
+    "user": "Лукойл — каждые 45 минут, сводка раз в 60 минут.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "LKOH"
+      ],
+      "poll_interval": "45m",
+      "report_interval": "60m"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"45m\",\"report_interval\":\"60m\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"45m\",\"report_interval\":\"60m\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 24,
+    "category": "colloquial",
+    "user": "Роснефть мониторь каждые 10 минут, итоги присылай дважды в сутки.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "ROSN"
+      ],
+      "poll_interval": "10m",
+      "report_interval": "12h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"10m\",\"report_interval\":\"2d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"10m\",\"report_interval\":\"12h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 25,
+    "category": "colloquial",
+    "user": "За ВТБ следи каждые полчаса, сводку — раз в шесть часов.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "VTBR"
+      ],
+      "poll_interval": "30m",
+      "report_interval": "6h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"30m\",\"report_interval\":\"6h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"30m\",\"report_interval\":\"6h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 26,
+    "category": "colloquial",
+    "user": "Мосбиржу проверяй каждые 3 часа, отчёт раз в 6 часов.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "MOEX"
+      ],
+      "poll_interval": "3h",
+      "report_interval": "6h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"3h\",\"report_interval\":\"6h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"3h\",\"report_interval\":\"6h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 27,
+    "category": "colloquial",
+    "user": "Алросу и Северсталь смотри каждые 20 минут, сводку раз в трое суток.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "ALRS",
+        "CHMF"
+      ],
+      "poll_interval": "20m",
+      "report_interval": "3d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"ALRS\",\"CHMF\"],\"poll_interval\":\"20m\",\"report_interval\":\"3d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"ALRS\",\"CHMF\"],\"poll_interval\":\"20m\",\"report_interval\":\"3d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 28,
+    "category": "colloquial",
+    "user": "РусГидро, ФосАгро и Сибур — опрос каждые четверть часа, сводка раз в 12 часов.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "HYDR",
+        "PHOR",
+        "SIBN"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "12h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"PHOR\",\"PLZL\",\"SIBN\"],\"poll_interval\":\"15m\",\"report_interval\":\"12h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"HYDR\",\"PHOR\",\"SIBN\"],\"poll_interval\":\"15m\",\"report_interval\":\"12h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 29,
+    "category": "colloquial",
+    "user": "Сургутнефтегаз проверяй каждые 30 минут, отчёт раз в два дня.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "SNGS"
+      ],
+      "poll_interval": "30m",
+      "report_interval": "2d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SNGS\"],\"poll_interval\":\"30m\",\"report_interval\":\"2d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"SNGS\"],\"poll_interval\":\"30m\",\"report_interval\":\"2d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 30,
+    "category": "colloquial",
+    "user": "Татнефть и Магнит — каждые 90 минут, сводка раз в 7 дней.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "MGNT",
+        "TATN"
+      ],
+      "poll_interval": "90m",
+      "report_interval": "7d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"TATN\",\"MGNT\"],\"poll_interval\":\"90m\",\"report_interval\":\"7d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"MTSS\",\"TATN\"],\"poll_interval\":\"90m\",\"report_interval\":\"7d\"}",
+    "base_exact": false,
+    "tuned_exact": false,
+    "base_semantic": true,
+    "tuned_semantic": false,
+    "tuned_guard": false,
+    "verdict": "хуже (смысл)"
+  },
+  {
+    "n": 31,
+    "category": "colloquial",
+    "user": "МТС мониторь каждые 15 минут, итоги раз в сутки.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "MTSS"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "1d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"MTSS\"],\"poll_interval\":\"15m\",\"report_interval\":\"1d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"MTSS\"],\"poll_interval\":\"15m\",\"report_interval\":\"1d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 32,
+    "category": "colloquial",
+    "user": "Новатэк — каждые 2 часа, сводка раз в 3 дня.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "NVTK"
+      ],
+      "poll_interval": "2h",
+      "report_interval": "3d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"NVTK\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"NVTK\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 33,
+    "category": "colloquial",
+    "user": "Полюс и Яндекс проверяй каждые 30 минут, отчёт раз в 12 часов.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "PLZL",
+        "YDEX"
+      ],
+      "poll_interval": "30m",
+      "report_interval": "12h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"PLZL\",\"VTBR\"],\"poll_interval\":\"30m\",\"report_interval\":\"12h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"PLZL\",\"YDEX\"],\"poll_interval\":\"30m\",\"report_interval\":\"12h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 34,
+    "category": "colloquial",
+    "user": "Аэрофлот — каждые 45 минут, сводку раз в два часа.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "AFLT"
+      ],
+      "poll_interval": "45m",
+      "report_interval": "2h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"AFLT\"],\"poll_interval\":\"45m\",\"report_interval\":\"2h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"AFLT\"],\"poll_interval\":\"45m\",\"report_interval\":\"2h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 35,
+    "category": "colloquial",
+    "user": "Интер РАО мониторь каждые 5 минут, сводка раз в час.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "IRAO"
+      ],
+      "poll_interval": "5m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"IRAO\"],\"poll_interval\":\"5m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"IRAO\"],\"poll_interval\":\"5m\",\"report_interval\":\"1h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 36,
+    "category": "invalid",
+    "user": "Следи каждые 15 минут, сводку раз в час.",
+    "expected": {
+      "ok": false,
+      "error": "missing_tickers"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "base_exact": false,
+    "tuned_exact": false,
+    "base_semantic": false,
+    "tuned_semantic": false,
+    "tuned_guard": false,
+    "verdict": "оба неверны"
+  },
+  {
+    "n": 37,
+    "category": "invalid",
+    "user": "Следи за SBER и GAZP.",
+    "expected": {
+      "ok": false,
+      "error": "missing_intervals"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\"],\"poll_interval\":\"10m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":false,\"error\":\"missing_intervals\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 38,
+    "category": "invalid",
+    "user": "Следи за SBER, сводку присылай раз в час.",
+    "expected": {
+      "ok": false,
+      "error": "missing_poll_interval"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"1h\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"1h\",\"report_interval\":\"1h\"}",
+    "base_exact": false,
+    "tuned_exact": false,
+    "base_semantic": false,
+    "tuned_semantic": false,
+    "tuned_guard": false,
+    "verdict": "оба неверны"
+  },
+  {
+    "n": 39,
+    "category": "invalid",
+    "user": "Следи за SBER каждые 15 минут.",
+    "expected": {
+      "ok": false,
+      "error": "missing_report_interval"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\"}",
+    "base_exact": false,
+    "tuned_exact": false,
+    "base_semantic": false,
+    "tuned_semantic": false,
+    "tuned_guard": false,
+    "verdict": "оба неверны"
+  },
+  {
+    "n": 40,
+    "category": "invalid",
+    "user": "Следи за SBER каждые 30 секунд, сводку раз в час.",
+    "expected": {
+      "ok": false,
+      "error": "bad_interval"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"30s\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":false,\"error\":\"bad_interval\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 41,
+    "category": "invalid",
+    "user": "Следи за Ромашкой каждые 15 минут, сводку раз в час.",
+    "expected": {
+      "ok": false,
+      "error": "bad_ticker"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"PLZL\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"ROSH\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "base_exact": false,
+    "tuned_exact": false,
+    "base_semantic": false,
+    "tuned_semantic": false,
+    "tuned_guard": false,
+    "verdict": "оба неверны"
+  },
+  {
+    "n": 42,
+    "category": "invalid",
+    "user": "Следи за SBER и Ромашкой каждые 15 минут, сводку раз в час.",
+    "expected": {
+      "ok": false,
+      "error": "bad_ticker"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\",\"PLZL\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":false,\"error\":\"bad_ticker\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 43,
+    "category": "invalid",
+    "user": "Следи за SBER каждые 15 минут, 30 минут и сводку раз в час.",
+    "expected": {
+      "ok": false,
+      "error": "ambiguous"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":false,\"error\":\"ambiguous\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 44,
+    "category": "invalid",
+    "user": "Следи за SBER: опрос 15 минут и 30 минут, сводка раз в час.",
+    "expected": {
+      "ok": false,
+      "error": "ambiguous"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":false,\"error\":\"ambiguous\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 45,
+    "category": "invalid",
+    "user": "Какая погода в Москве?",
+    "expected": {
+      "ok": false,
+      "error": "not_watch"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":false,\"error\":\"not_watch\"}",
+    "tuned": "{\"ok\":false,\"error\":\"not_watch\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 46,
+    "category": "correction",
+    "user": "Следи за SBER каждые 15 минут, сводку раз в час. Нет, не 15, а 30 минут.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "SBER"
+      ],
+      "poll_interval": "30m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"30m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"30m\",\"report_interval\":\"1h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 47,
+    "category": "correction",
+    "user": "По GAZP: сводка раз в час, опрос каждые 15 минут. Хотя нет, сводку лучше раз в 2 часа.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "GAZP"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "2h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"1h\",\"report_interval\":\"2h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"2h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 48,
+    "category": "correction",
+    "user": "Следи за sber, GAZP и sber каждые 15 минут, сводку раз в час.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "GAZP",
+        "SBER"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"GAZP\",\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (только формат)"
+  },
+  {
+    "n": 49,
+    "category": "correction",
+    "user": "Следи за SBER и SBER каждые 15 минут, сводку раз в час.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "SBER"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"SBER\",\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":false,\"error\":\"ambiguous\"}",
+    "base_exact": false,
+    "tuned_exact": false,
+    "base_semantic": true,
+    "tuned_semantic": false,
+    "tuned_guard": false,
+    "verdict": "хуже (смысл)"
+  },
+  {
+    "n": 50,
+    "category": "correction",
+    "user": "Сводка по LKOH раз в час, опрос каждые 15 минут.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "LKOH"
+      ],
+      "poll_interval": "15m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 51,
+    "category": "role_order",
+    "user": "По ROSN: сводку присылай раз в 2 часа, цены проверяй каждые 30 минут.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "ROSN"
+      ],
+      "poll_interval": "30m",
+      "report_interval": "2h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"2h\",\"report_interval\":\"30m\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 52,
+    "category": "role_order",
+    "user": "Раз в час присылай сводку по VTBR, а каждые 10 минут проверяй цену.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "VTBR"
+      ],
+      "poll_interval": "10m",
+      "report_interval": "1h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"1h\",\"report_interval\":\"10m\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"10m\",\"report_interval\":\"1h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 53,
+    "category": "role_order",
+    "user": "Каждые 20 минут смотри MOEX, раз в 6 часов присылай отчёт.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "MOEX"
+      ],
+      "poll_interval": "20m",
+      "report_interval": "6h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"20m\",\"report_interval\":\"6h\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"20m\",\"report_interval\":\"6h\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 54,
+    "category": "role_order",
+    "user": "Отчёт по ALRS раз в день, опрос каждые 45 минут.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "ALRS"
+      ],
+      "poll_interval": "45m",
+      "report_interval": "1d"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"45m\",\"report_interval\":\"1d\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"45m\",\"report_interval\":\"1d\"}",
+    "base_exact": true,
+    "tuned_exact": true,
+    "base_semantic": true,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "так же"
+  },
+  {
+    "n": 55,
+    "category": "role_order",
+    "user": "Сводка по CHMF раз в 12 часов, проверка каждые 5 минут.",
+    "expected": {
+      "ok": true,
+      "secids": [
+        "CHMF"
+      ],
+      "poll_interval": "5m",
+      "report_interval": "12h"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"12h\",\"report_interval\":\"5m\"}",
+    "tuned": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"5m\",\"report_interval\":\"12h\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 56,
+    "category": "out_of_scope",
+    "user": "",
+    "expected": {
+      "ok": false,
+      "error": "empty"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"HYDR\"],\"poll_interval\":\"1h\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":false,\"error\":\"missing_report_interval\"}",
+    "base_exact": false,
+    "tuned_exact": false,
+    "base_semantic": false,
+    "tuned_semantic": false,
+    "tuned_guard": false,
+    "verdict": "оба неверны"
+  },
+  {
+    "n": 57,
+    "category": "out_of_scope",
+    "user": "   ",
+    "expected": {
+      "ok": false,
+      "error": "empty"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":false,\"error\":\"missing_report_interval\"}",
+    "tuned": "{\"ok\":false,\"error\":\"missing_tickers\"}",
+    "base_exact": false,
+    "tuned_exact": false,
+    "base_semantic": false,
+    "tuned_semantic": false,
+    "tuned_guard": false,
+    "verdict": "оба неверны"
+  },
+  {
+    "n": 58,
+    "category": "out_of_scope",
+    "user": "Привет, как настроение?",
+    "expected": {
+      "ok": false,
+      "error": "not_watch"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"1h\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":false,\"error\":\"not_watch\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 59,
+    "category": "out_of_scope",
+    "user": "Сколько стоит доллар?",
+    "expected": {
+      "ok": false,
+      "error": "not_watch"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":false,\"error\":\"missing_poll_interval\"}",
+    "tuned": "{\"ok\":false,\"error\":\"not_watch\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  },
+  {
+    "n": 60,
+    "category": "out_of_scope",
+    "user": "Расскажи, что такое облигация.",
+    "expected": {
+      "ok": false,
+      "error": "not_watch"
+    },
+    "base_model": "qwen2.5:1.5b-instruct-fp16",
+    "tuned_model": "qwen25-watch-v3",
+    "base": "{\"ok\":true,\"secids\":[\"ALRS\",\"CHMF\",\"HYDR\",\"IRAO\",\"LKOH\",\"MOEX\",\"MTSS\",\"NVTK\",\"PHOR\",\"PLZL\",\"ROSN\",\"SIBN\",\"SNGS\",\"VTBR\",\"YDEX\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+    "tuned": "{\"ok\":false,\"error\":\"not_watch\"}",
+    "base_exact": false,
+    "tuned_exact": true,
+    "base_semantic": false,
+    "tuned_semantic": true,
+    "tuned_guard": false,
+    "verdict": "лучше (смысл)"
+  }
+]

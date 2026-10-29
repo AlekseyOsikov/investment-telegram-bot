@@ -1,0 +1,696 @@
+{
+  "config": {
+    "eval": "data/holdout.jsonl",
+    "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "adapter": "watch_results_v3/adapter_watch_json_v3",
+    "tokenizer": null,
+    "prompt_mode": "fewshot",
+    "max_new_tokens": 128,
+    "limit": null,
+    "guard": false,
+    "out": "results/holdout_v3.json"
+  },
+  "overall": {
+    "count": 30,
+    "exact": 0.7666666666666667,
+    "schema_ok": 0.9333333333333333,
+    "json_strict": 1.0,
+    "json_extractable": 1.0,
+    "ticker_f1": 1.0,
+    "poll_acc": 0.9444444444444444,
+    "report_acc": 1.0,
+    "error_acc": 0.5833333333333334
+  },
+  "by_category": {
+    "colloquial": {
+      "count": 6,
+      "exact": 1.0,
+      "schema_ok": 1.0,
+      "json_strict": 1.0,
+      "ticker_f1": 1.0,
+      "poll_acc": 1.0,
+      "report_acc": 1.0,
+      "error_acc": null
+    },
+    "correction": {
+      "count": 2,
+      "exact": 0.5,
+      "schema_ok": 1.0,
+      "json_strict": 1.0,
+      "ticker_f1": 1.0,
+      "poll_acc": 0.5,
+      "report_acc": 1.0,
+      "error_acc": null
+    },
+    "invalid": {
+      "count": 8,
+      "exact": 0.75,
+      "schema_ok": 0.875,
+      "json_strict": 1.0,
+      "ticker_f1": null,
+      "poll_acc": null,
+      "report_acc": null,
+      "error_acc": 0.75
+    },
+    "multi": {
+      "count": 4,
+      "exact": 0.75,
+      "schema_ok": 0.75,
+      "json_strict": 1.0,
+      "ticker_f1": 1.0,
+      "poll_acc": 1.0,
+      "report_acc": 1.0,
+      "error_acc": null
+    },
+    "out_of_scope": {
+      "count": 4,
+      "exact": 0.25,
+      "schema_ok": 1.0,
+      "json_strict": 1.0,
+      "ticker_f1": null,
+      "poll_acc": null,
+      "report_acc": null,
+      "error_acc": 0.25
+    },
+    "role_order": {
+      "count": 2,
+      "exact": 1.0,
+      "schema_ok": 1.0,
+      "json_strict": 1.0,
+      "ticker_f1": 1.0,
+      "poll_acc": 1.0,
+      "report_acc": 1.0,
+      "error_acc": null
+    },
+    "simple": {
+      "count": 4,
+      "exact": 1.0,
+      "schema_ok": 1.0,
+      "json_strict": 1.0,
+      "ticker_f1": 1.0,
+      "poll_acc": 1.0,
+      "report_acc": 1.0,
+      "error_acc": null
+    }
+  },
+  "results": [
+    {
+      "n": 1,
+      "category": "simple",
+      "user": "Следи за GAZP каждые 20 минут, сводку присылай раз в 4 часа.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP"
+        ],
+        "poll_interval": "20m",
+        "report_interval": "4h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"20m\",\"report_interval\":\"4h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 2,
+      "category": "simple",
+      "user": "По LKOH: проверка каждые 15 минут, отчёт раз в 12 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "LKOH"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"15m\",\"report_interval\":\"12h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 3,
+      "category": "multi",
+      "user": "Мониторь SBER и ROSN каждые 10 минут, итоги раз в 6 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ROSN",
+          "SBER"
+        ],
+        "poll_interval": "10m",
+        "report_interval": "6h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\",\"ROSN\"],\"poll_interval\":\"10m\",\"report_interval\":\"6h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": false,
+      "exact": false,
+      "problems": [
+        "secids не отсортированы"
+      ],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 4,
+      "category": "simple",
+      "user": "Хочу получать сводки по VTBR раз в 2 дня, а цены проверять каждые 30 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "VTBR"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "2d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"30m\",\"report_interval\":\"2d\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 5,
+      "category": "multi",
+      "user": "За MOEX, ALRS и CHMF наблюдай каждые 45 минут, сводка раз в 3 дня.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ALRS",
+          "CHMF",
+          "MOEX"
+        ],
+        "poll_interval": "45m",
+        "report_interval": "3d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ALRS\",\"CHMF\",\"MOEX\"],\"poll_interval\":\"45m\",\"report_interval\":\"3d\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 6,
+      "category": "multi",
+      "user": "Добавь в отслеживание: Сбер, Газпром. Проверка каждые 5 минут, отчёт раз в час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP",
+          "SBER"
+        ],
+        "poll_interval": "5m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"GAZP\",\"SBER\"],\"poll_interval\":\"5m\",\"report_interval\":\"1h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 7,
+      "category": "simple",
+      "user": "NVTK — каждые 2 часа, сводку присылай раз в 7 дней.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "NVTK"
+        ],
+        "poll_interval": "2h",
+        "report_interval": "7d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"NVTK\"],\"poll_interval\":\"2h\",\"report_interval\":\"7d\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 8,
+      "category": "multi",
+      "user": "По PLZL и YDEX: опрос каждые 90 минут, сводка раз в сутки.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "PLZL",
+          "YDEX"
+        ],
+        "poll_interval": "90m",
+        "report_interval": "1d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"PLZL\",\"YDEX\"],\"poll_interval\":\"90m\",\"report_interval\":\"1d\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 9,
+      "category": "colloquial",
+      "user": "Следи за Сбером каждые полчаса, сводку присылай раз в два часа.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "SBER"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "2h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 10,
+      "category": "colloquial",
+      "user": "Газпром проверяй каждые четверть часа, отчёт раз в 12 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"12h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 11,
+      "category": "colloquial",
+      "user": "Лукойл мониторь каждые 45 минут, итоги присылай дважды в сутки.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "LKOH"
+        ],
+        "poll_interval": "45m",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"45m\",\"report_interval\":\"12h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 12,
+      "category": "colloquial",
+      "user": "Роснефть и Татнефть — каждые 10 минут, сводка раз в трое суток.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ROSN",
+          "TATN"
+        ],
+        "poll_interval": "10m",
+        "report_interval": "3d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ROSN\",\"TATN\"],\"poll_interval\":\"10m\",\"report_interval\":\"3d\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 13,
+      "category": "colloquial",
+      "user": "Мосбиржу проверяй каждые 3 часа, отчёт раз в неделю.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MOEX"
+        ],
+        "poll_interval": "3h",
+        "report_interval": "7d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"3h\",\"report_interval\":\"7d\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 14,
+      "category": "colloquial",
+      "user": "Сургутнефтегаз — каждые 90 минут, сводку раз в полсуток.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "SNGS"
+        ],
+        "poll_interval": "90m",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SNGS\"],\"poll_interval\":\"90m\",\"report_interval\":\"12h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 15,
+      "category": "invalid",
+      "user": "Следи каждые 30 минут, сводку раз в 2 часа.",
+      "expected": {
+        "ok": false,
+        "error": "missing_tickers"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": false,
+      "problems": [],
+      "error_acc": false
+    },
+    {
+      "n": 16,
+      "category": "invalid",
+      "user": "Следи за SBER и GAZP каждые 15 минут.",
+      "expected": {
+        "ok": false,
+        "error": "missing_report_interval"
+      },
+      "output": "{\"ok\":false,\"error\":\"missing_report_interval\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "error_acc": true
+    },
+    {
+      "n": 17,
+      "category": "invalid",
+      "user": "По LKOH: сводку присылай раз в 3 часа.",
+      "expected": {
+        "ok": false,
+        "error": "missing_poll_interval"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"3h\",\"report_interval\":\"?\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": false,
+      "exact": false,
+      "problems": [
+        "report_interval не период"
+      ],
+      "error_acc": false
+    },
+    {
+      "n": 18,
+      "category": "invalid",
+      "user": "Следи за ROSN.",
+      "expected": {
+        "ok": false,
+        "error": "missing_intervals"
+      },
+      "output": "{\"ok\":false,\"error\":\"missing_intervals\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "error_acc": true
+    },
+    {
+      "n": 19,
+      "category": "invalid",
+      "user": "Следи за SBER каждые 90 секунд, сводку раз в час.",
+      "expected": {
+        "ok": false,
+        "error": "bad_interval"
+      },
+      "output": "{\"ok\":false,\"error\":\"bad_interval\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "error_acc": true
+    },
+    {
+      "n": 20,
+      "category": "invalid",
+      "user": "Следи за Апельсином каждые 20 минут, сводку раз в 2 часа.",
+      "expected": {
+        "ok": false,
+        "error": "bad_ticker"
+      },
+      "output": "{\"ok\":false,\"error\":\"bad_ticker\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "error_acc": true
+    },
+    {
+      "n": 21,
+      "category": "invalid",
+      "user": "Следи за GAZP и Бананом каждые 10 минут, сводку раз в 3 часа.",
+      "expected": {
+        "ok": false,
+        "error": "bad_ticker"
+      },
+      "output": "{\"ok\":false,\"error\":\"bad_ticker\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "error_acc": true
+    },
+    {
+      "n": 22,
+      "category": "invalid",
+      "user": "Следи за SBER: опрос 20 минут и 40 минут, сводка раз в 2 часа.",
+      "expected": {
+        "ok": false,
+        "error": "ambiguous"
+      },
+      "output": "{\"ok\":false,\"error\":\"ambiguous\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "error_acc": true
+    },
+    {
+      "n": 23,
+      "category": "correction",
+      "user": "Следи за SBER каждые 10 минут, сводку раз в час. Нет, не 10, а 20 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "SBER"
+        ],
+        "poll_interval": "20m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"20m\",\"report_interval\":\"1h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 24,
+      "category": "correction",
+      "user": "По GAZP: сводка раз в 3 часа, опрос каждые 30 минут. Хотя нет, сводку лучше раз в 6 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "6h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"3h\",\"report_interval\":\"6h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": false,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": false,
+      "report_acc": true
+    },
+    {
+      "n": 25,
+      "category": "role_order",
+      "user": "Сводка по LKOH раз в 2 часа, проверка каждые 15 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "LKOH"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "2h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"15m\",\"report_interval\":\"2h\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 26,
+      "category": "role_order",
+      "user": "Отчёт по MOEX раз в сутки, опрос каждые 45 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MOEX"
+        ],
+        "poll_interval": "45m",
+        "report_interval": "1d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"45m\",\"report_interval\":\"1d\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true
+    },
+    {
+      "n": 27,
+      "category": "out_of_scope",
+      "user": "",
+      "expected": {
+        "ok": false,
+        "error": "empty"
+      },
+      "output": "{\"ok\":false,\"error\":\"missing_report_interval\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": false,
+      "problems": [],
+      "error_acc": false
+    },
+    {
+      "n": 28,
+      "category": "out_of_scope",
+      "user": "   ",
+      "expected": {
+        "ok": false,
+        "error": "empty"
+      },
+      "output": "{\"ok\":false,\"error\":\"missing_tickers\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": false,
+      "problems": [],
+      "error_acc": false
+    },
+    {
+      "n": 29,
+      "category": "out_of_scope",
+      "user": "Что такое дивидендная доходность?",
+      "expected": {
+        "ok": false,
+        "error": "not_watch"
+      },
+      "output": "{\"ok\":false,\"error\":\"not_watch\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": true,
+      "problems": [],
+      "error_acc": true
+    },
+    {
+      "n": 30,
+      "category": "out_of_scope",
+      "user": "Что выбрать: Сбер или ВТБ?",
+      "expected": {
+        "ok": false,
+        "error": "not_watch"
+      },
+      "output": "{\"ok\":false,\"error\":\"missing_intervals\"}",
+      "json_strict": true,
+      "json_extractable": true,
+      "schema_ok": true,
+      "exact": false,
+      "problems": [],
+      "error_acc": false
+    }
+  ]
+}
