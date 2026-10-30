@@ -26,6 +26,16 @@ artifacts/watch_parser/
 и базы командами из `watch_parser/README.md`. Готовая модель остаётся в
 Ollama как `qwen25-watch-v3` (blob-хранилище Docker).
 
+## boundaries
+
+```text
+artifacts/boundaries/
+  adapter_facts/              # LoRA-адаптер фактов (появится после Colab)
+```
+
+`merged_facts/` и GGUF воспроизводятся из `adapter_facts` и базы командами из
+`boundaries/README.md`. Готовая модель в Ollama — `qwen25-facts-v1`.
+
 ## Правила
 
 - Не добавлять сюда `.venv`, `llama.cpp`, HF-кэш.

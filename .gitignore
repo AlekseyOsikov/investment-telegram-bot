@@ -58,6 +58,8 @@ qa-out/
 /finetuning/**/*.gguf
 /finetuning/**/adapter_model.safetensors
 /finetuning/**/model.safetensors
-/finetuning/**/.venv/
+/finetuning/**/.venv*/
 /finetuning/**/llama.cpp/
 /finetuning/**/watch_results*/
+# ZIP-архив проекта для загрузки в Colab (собирается локально, не коммитится)
+/finetuning/**/*.zip
