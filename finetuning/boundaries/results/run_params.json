@@ -1,0 +1,93 @@
+{
+  "cfg": {
+    "train": "/content/finetuning/boundaries/data/train.jsonl",
+    "valid": "/content/finetuning/boundaries/data/valid.jsonl",
+    "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "out": "/content/adapter_facts",
+    "run_dir": "/content/run_facts",
+    "seed": 42,
+    "max_len": 1024,
+    "epochs": 10.0,
+    "lr": 0.0002,
+    "batch": 2,
+    "grad_accum": 4,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "warmup_ratio": 0.03,
+    "eval_steps": 5,
+    "save_strategy": "epoch",
+    "save_steps": 50
+  },
+  "env": {
+    "gpu": "Tesla T4",
+    "vram_gb": 14.6,
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "transformers": "5.22.1",
+    "peft": "0.21.2"
+  },
+  "train_examples": 22,
+  "valid_examples": 11,
+  "train_seconds": 63,
+  "loss_first": 1.1814807891845702,
+  "loss_last": 0.0521645188331604,
+  "eval_loss_first": 1.2142349481582642,
+  "eval_loss_last": 0.8435242176055908,
+  "eval_loss_min_step": [
+    15,
+    0.7775668501853943
+  ],
+  "loss_history": [
+    [
+      5,
+      1.1814807891845702
+    ],
+    [
+      10,
+      0.6290513038635254
+    ],
+    [
+      15,
+      0.2909111022949219
+    ],
+    [
+      20,
+      0.11870353221893311
+    ],
+    [
+      25,
+      0.07487042546272278
+    ],
+    [
+      30,
+      0.0521645188331604
+    ]
+  ],
+  "eval_loss_history": [
+    [
+      5,
+      1.2142349481582642
+    ],
+    [
+      10,
+      0.8752743005752563
+    ],
+    [
+      15,
+      0.7775668501853943
+    ],
+    [
+      20,
+      0.810141921043396
+    ],
+    [
+      25,
+      0.8422775864601135
+    ],
+    [
+      30,
+      0.8435242176055908
+    ]
+  ]
+}

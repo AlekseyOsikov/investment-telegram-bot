@@ -47,6 +47,7 @@ boundaries/
     eval_out_of_domain.py
     eval_style.py
     compare_three.py    # сводная таблица трёх типов
+    compare_console.py  # консольное сравнение: ответы моделей по трём типам
     merge_adapter.py    # adapter + base → merged HF
   training/
     train_facts.py      # LoRA с eval по шагам и чекпоинтами по эпохам
@@ -78,6 +79,27 @@ make style-tuned
 
 # сводная таблица трёх типов
 make compare
+```
+
+## Консольное сравнение моделей
+
+`scripts/compare_console.py` печатает проверочные вопросы и ответы двух моделей
+рядом по трём типам задач (как `watch_parser/scripts/compare_ollama.py`) и
+выносит вердикт по каждому:
+
+- **формат** — база + few-shot vs `qwen25-watch-v3` (точное совпадение JSON);
+- **стиль** — база + ролевой промпт vs `qwen25-roleplay` (краткость; с
+  `--judge` — покрытие критериев);
+- **факты** — база + факт в промпте vs `qwen25-facts-v1` (ключевые значения;
+  с `--judge` — покрытие фактов).
+
+```bash
+python scripts/compare_console.py                  # компактно: по 2 на группу
+python scripts/compare_console.py --all            # весь набор (формат — 60)
+python scripts/compare_console.py --task facts --per-group 1
+python scripts/compare_console.py --task style --judge
+python scripts/compare_console.py --only-diff --max-chars 200
+python scripts/compare_console.py --show-system --limit 1
 ```
 
 ## Colab T4: обучение фактов и переобучение

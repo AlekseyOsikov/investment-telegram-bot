@@ -1,0 +1,318 @@
+{
+  "config": {
+    "model": "qwen25-watch-v3",
+    "seconds": 35
+  },
+  "overall": 0.8461538461538461,
+  "by_category": {
+    "code": {
+      "n": 5,
+      "accuracy": 0.8
+    },
+    "general": {
+      "n": 6,
+      "accuracy": 0.6666666666666666
+    },
+    "logic": {
+      "n": 4,
+      "accuracy": 0.75
+    },
+    "math": {
+      "n": 6,
+      "accuracy": 1.0
+    },
+    "translation": {
+      "n": 5,
+      "accuracy": 1.0
+    }
+  },
+  "results": [
+    {
+      "n": 1,
+      "id": "math_01",
+      "category": "math",
+      "prompt": "Сколько будет 17 умножить на 23?",
+      "answer": "17 умножить на 23 равно 391.",
+      "ok": true,
+      "keywords": [
+        "391"
+      ]
+    },
+    {
+      "n": 2,
+      "id": "math_02",
+      "category": "math",
+      "prompt": "Сколько будет 144 разделить на 12?",
+      "answer": "144 разделить на 12 равно 12.",
+      "ok": true,
+      "keywords": [
+        "12"
+      ]
+    },
+    {
+      "n": 3,
+      "id": "math_03",
+      "category": "math",
+      "prompt": "Сколько будет 15% от 200?",
+      "answer": "15% от 200 равен 30.",
+      "ok": true,
+      "keywords": [
+        "30"
+      ]
+    },
+    {
+      "n": 4,
+      "id": "math_04",
+      "category": "math",
+      "prompt": "Чему равен квадрат числа 13?",
+      "answer": "Квадрат числа 13 равен 169.",
+      "ok": true,
+      "keywords": [
+        "169"
+      ]
+    },
+    {
+      "n": 5,
+      "id": "math_05",
+      "category": "math",
+      "prompt": "Сколько будет 25 умножить на 4?",
+      "answer": "25 умножить на 4 равно 100.",
+      "ok": true,
+      "keywords": [
+        "100"
+      ]
+    },
+    {
+      "n": 6,
+      "id": "math_06",
+      "category": "math",
+      "prompt": "Сколько будет 1000 минус 357?",
+      "answer": "1000 минус 357 равно 643.",
+      "ok": true,
+      "keywords": [
+        "643"
+      ]
+    },
+    {
+      "n": 7,
+      "id": "trans_01",
+      "category": "translation",
+      "prompt": "Переведи на английский: «Доброе утро».",
+      "answer": "\"Good morning.\"",
+      "ok": true,
+      "keywords": [
+        "good morning"
+      ]
+    },
+    {
+      "n": 8,
+      "id": "trans_02",
+      "category": "translation",
+      "prompt": "Переведи на английский слово «спасибо».",
+      "answer": "\"Thank you.\"",
+      "ok": true,
+      "keywords": [
+        "thank"
+      ]
+    },
+    {
+      "n": 9,
+      "id": "trans_03",
+      "category": "translation",
+      "prompt": "Переведи на английский слово «кошка».",
+      "answer": "The word \"кошка\" translates to \"cat\" in English.",
+      "ok": true,
+      "keywords": [
+        "cat"
+      ]
+    },
+    {
+      "n": 10,
+      "id": "trans_04",
+      "category": "translation",
+      "prompt": "Переведи на английский слово «яблоко».",
+      "answer": "Apple.",
+      "ok": true,
+      "keywords": [
+        "apple"
+      ]
+    },
+    {
+      "n": 11,
+      "id": "trans_05",
+      "category": "translation",
+      "prompt": "Переведи на английский слово «река».",
+      "answer": "River.",
+      "ok": true,
+      "keywords": [
+        "river"
+      ]
+    },
+    {
+      "n": 12,
+      "id": "gen_01",
+      "category": "general",
+      "prompt": "Назови столицу Японии.",
+      "answer": "Токио.",
+      "ok": true,
+      "keywords": [
+        "токио"
+      ]
+    },
+    {
+      "n": 13,
+      "id": "gen_02",
+      "category": "general",
+      "prompt": "Назови столицу Великобритании.",
+      "answer": "Столица Великобритании - Лондон.",
+      "ok": true,
+      "keywords": [
+        "лондон"
+      ]
+    },
+    {
+      "n": 14,
+      "id": "gen_03",
+      "category": "general",
+      "prompt": "Кто написал роман «Война и мир»?",
+      "answer": "Роман \"Война и мир\" написал писатель Фёдор Достоевский.",
+      "ok": false,
+      "keywords": [
+        "толстой"
+      ]
+    },
+    {
+      "n": 15,
+      "id": "gen_04",
+      "category": "general",
+      "prompt": "Какая самая большая планета Солнечной системы?",
+      "answer": "Самая большая планета Солнечной системы - Юпитер.",
+      "ok": true,
+      "keywords": [
+        "юпитер"
+      ]
+    },
+    {
+      "n": 16,
+      "id": "gen_05",
+      "category": "general",
+      "prompt": "Кто написал «Евгения Онегина»?",
+      "answer": "«Евгения Онегина» написал А.С. Пушкин.",
+      "ok": true,
+      "keywords": [
+        "пушкин"
+      ]
+    },
+    {
+      "n": 17,
+      "id": "gen_06",
+      "category": "general",
+      "prompt": "Назови столицу Австралии.",
+      "answer": "Санкт-Петербург.",
+      "ok": false,
+      "keywords": [
+        "канберра"
+      ]
+    },
+    {
+      "n": 18,
+      "id": "logic_01",
+      "category": "logic",
+      "prompt": "У Маши 3 яблока, она отдала 1. Сколько осталось?",
+      "answer": "У Маши осталось 2 яблока.",
+      "ok": true,
+      "keywords": [
+        "2"
+      ]
+    },
+    {
+      "n": 19,
+      "id": "logic_02",
+      "category": "logic",
+      "prompt": "Сегодня вторник. Какой день недели был вчера?",
+      "answer": "Вчера был понедельник.",
+      "ok": true,
+      "keywords": [
+        "понедельник"
+      ]
+    },
+    {
+      "n": 20,
+      "id": "logic_03",
+      "category": "logic",
+      "prompt": "Сколько лап у трёх собак?",
+      "answer": "Трёх собак у них будет три лапы.",
+      "ok": false,
+      "keywords": [
+        "12"
+      ]
+    },
+    {
+      "n": 21,
+      "id": "logic_04",
+      "category": "logic",
+      "prompt": "Если сейчас 14:00, сколько будет через 3 часа?",
+      "answer": "через 3 часа будет 17:00.",
+      "ok": true,
+      "keywords": [
+        "17"
+      ]
+    },
+    {
+      "n": 22,
+      "id": "code_01",
+      "category": "code",
+      "prompt": "Напиши на Python функцию, которая возвращает квадрат числа.",
+      "answer": "Конечно! Вот пример функции, которая принимает число и возвращает его квадрат:\n\n```python\ndef square_number(num):\n    return num ** 2\n\n# Пример использования\nresult = square_number(5)\nprint(result)  # Выведет 25\n```\n\nЭта функция принимает один аргумент `num`, который является числом, и возвращает его квадрат.",
+      "ok": true,
+      "keywords": [
+        "def",
+        "return"
+      ]
+    },
+    {
+      "n": 23,
+      "id": "code_02",
+      "category": "code",
+      "prompt": "Напиши на Python команду, которая выводит строку на экран.",
+      "answer": "```python\nprint(\"Привет, мир!\")\n```",
+      "ok": true,
+      "keywords": [
+        "print"
+      ]
+    },
+    {
+      "n": 24,
+      "id": "code_03",
+      "category": "code",
+      "prompt": "Напиши на Python цикл по числам от 0 до 9.",
+      "answer": "```python\nfor i in range(10):\n    print(i)\n```",
+      "ok": true,
+      "keywords": [
+        "range"
+      ]
+    },
+    {
+      "n": 25,
+      "id": "code_04",
+      "category": "code",
+      "prompt": "Напиши на Python условие: если x больше нуля.",
+      "answer": "```python\nx > 0\n```",
+      "ok": false,
+      "keywords": [
+        "if"
+      ]
+    },
+    {
+      "n": 26,
+      "id": "code_05",
+      "category": "code",
+      "prompt": "Как в Python открыть файл для чтения?",
+      "answer": "Чтобы открыть файл для чтения в Python, можно использовать метод `open()` с аргументом `mode='r'`. Например:\n\n```python\nwith open('filename.txt', 'r') as file:\n    content = file.read()\n```\n\nЭтот код открывает файл `filename.txt` в режиме чтения (`'r'`) и сохраняет его содержимое в переменную `content`.",
+      "ok": true,
+      "keywords": [
+        "open"
+      ]
+    }
+  ]
+}

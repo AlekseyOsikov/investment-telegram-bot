@@ -8,7 +8,7 @@ WATCH := qwen25-watch-v3
 
 PY := python3
 
-.PHONY: data facts-none facts-prompt facts-tuned ood-base ood-tuned style-none style-prompt style-tuned compare zip clean
+.PHONY: data facts-none facts-prompt facts-tuned ood-base ood-tuned style-none style-prompt style-tuned compare console zip clean
 
 data: ## собрать train/valid/eval фактов + наборы вне домена и стиля
 	$(PY) data/build_facts.py
@@ -43,6 +43,9 @@ compare: ## сводная таблица трёх типов задач
 	$(PY) scripts/compare_three.py \
 		--facts results/facts/base_none.json results/facts/base_facts.json results/facts/tuned.json \
 		--style results/style/base_none.json results/style/base_prompt.json results/style/tuned.json
+
+console: ## консольное сравнение трёх типов (ответы моделей)
+	$(PY) scripts/compare_console.py
 
 zip: ## архив для Colab: содержит пути finetuning/boundaries/...
 	cd ../.. && rm -f finetuning/boundaries.zip
