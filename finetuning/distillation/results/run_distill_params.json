@@ -1,0 +1,78 @@
+{
+  "variant": "distill",
+  "cfg": {
+    "variant": "distill",
+    "train": null,
+    "valid": null,
+    "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "out": "/content/adapter_distill",
+    "run_dir": "/content/run_distill",
+    "seed": 42,
+    "max_len": 1024,
+    "epochs": 2.0,
+    "lr": 0.0002,
+    "batch": 2,
+    "grad_accum": 8,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "warmup_ratio": 0.03
+  },
+  "env": {
+    "gpu": "Tesla T4",
+    "vram_gb": 14.6,
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "transformers": "5.22.1",
+    "peft": "0.21.2"
+  },
+  "train_examples": 312,
+  "valid_examples": 35,
+  "train_seconds": 418,
+  "loss_first": 0.17138062715530394,
+  "loss_last": 0.03644016683101654,
+  "loss_history": [
+    [
+      5,
+      0.17138062715530394
+    ],
+    [
+      10,
+      0.09507813453674316
+    ],
+    [
+      15,
+      0.09293807744979858
+    ],
+    [
+      20,
+      0.05946733951568604
+    ],
+    [
+      25,
+      0.03995582461357117
+    ],
+    [
+      30,
+      0.03975626826286316
+    ],
+    [
+      35,
+      0.04711268544197082
+    ],
+    [
+      40,
+      0.03644016683101654
+    ]
+  ],
+  "eval_loss_history": [
+    [
+      20,
+      0.07186100631952286
+    ],
+    [
+      40,
+      0.07108943909406662
+    ]
+  ]
+}

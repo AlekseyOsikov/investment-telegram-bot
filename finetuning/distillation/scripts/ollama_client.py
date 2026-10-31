@@ -25,6 +25,7 @@ def chat(
     model: str,
     messages: list[dict],
     *,
+    url: str = OLLAMA_CHAT_URL,
     num_predict: int = 256,
     num_ctx: int = 4096,
     temperature: float = 0.0,
@@ -47,7 +48,7 @@ def chat(
         },
     }
     request = urllib.request.Request(
-        OLLAMA_CHAT_URL,
+        url,
         json.dumps(body).encode(),
         {"Content-Type": "application/json"},
     )

@@ -44,6 +44,7 @@ distillation/
     filter_labels.py      # проверка ответов учителя и сборка train/valid
     eval_three.py         # прогон базы/учителя/дистиллированной на тесте
     compare.py            # сводная таблица + анализ «зон замены»
+    compare_ollama.py     # живое сравнение ответов в консоли (качество/скорость/стоимость)
   training/
     train_lora.py         # LoRA под Colab T4 (--variant distill|golden)
     colab_distill.ipynb   # ноутбук Colab: оба обучения + упаковка
@@ -117,6 +118,21 @@ docker exec ollama ollama create qwen25-golden-v1 -f /root/.ollama/Modelfile.gol
 make eval-all    # eval_three.py --variants base,teacher,distilled,golden
 make compare     # compare.py -> results/compare.md
 ```
+
+### Живое сравнение в консоли
+
+Печатает ответы каждой модели на проверочные вопросы и итог «качество / скорость /
+стоимость запроса». Модели прогоняются по очереди целиком, поэтому скорость
+сопоставима с `results/compare.md`:
+
+```bash
+make compare-live
+python3 scripts/compare_ollama.py --limit 10
+python3 scripts/compare_ollama.py --variants base,distilled,teacher
+python3 scripts/compare_ollama.py --category invalid --only-diff
+```
+
+Результат попутно пишется в `results/compare_live.json`.
 
 ## Метрики
 

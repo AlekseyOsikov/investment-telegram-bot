@@ -1,0 +1,66 @@
+{
+  "variant": "golden",
+  "cfg": {
+    "variant": "golden",
+    "train": null,
+    "valid": null,
+    "base_model": "Qwen/Qwen2.5-1.5B-Instruct",
+    "out": "/content/adapter_golden",
+    "run_dir": "/content/run_golden",
+    "seed": 42,
+    "max_len": 1024,
+    "epochs": 2.0,
+    "lr": 0.0002,
+    "batch": 2,
+    "grad_accum": 8,
+    "lora_r": 16,
+    "lora_alpha": 32,
+    "lora_dropout": 0.05,
+    "warmup_ratio": 0.03
+  },
+  "env": {
+    "gpu": "Tesla T4",
+    "vram_gb": 14.6,
+    "python": "3.13.16",
+    "torch": "2.11.0+cu130",
+    "transformers": "5.22.1",
+    "peft": "0.21.2"
+  },
+  "train_examples": 211,
+  "valid_examples": 24,
+  "train_seconds": 282,
+  "loss_first": 0.12047672271728516,
+  "loss_last": 0.018883247673511506,
+  "loss_history": [
+    [
+      5,
+      0.12047672271728516
+    ],
+    [
+      10,
+      0.05982508659362793
+    ],
+    [
+      15,
+      0.033965909481048585
+    ],
+    [
+      20,
+      0.013965383172035217
+    ],
+    [
+      25,
+      0.018883247673511506
+    ]
+  ],
+  "eval_loss_history": [
+    [
+      14,
+      0.034157563000917435
+    ],
+    [
+      28,
+      0.02752918191254139
+    ]
+  ]
+}

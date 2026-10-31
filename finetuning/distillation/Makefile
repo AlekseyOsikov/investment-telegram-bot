@@ -8,7 +8,7 @@ GOLDEN := qwen25-golden-v1
 
 PY := python3
 
-.PHONY: corpus label filter eval eval-all compare zip clean
+.PHONY: corpus label filter eval eval-all compare compare-live zip clean
 
 corpus: ## неразмеченный корпус
 	$(PY) data/make_inputs.py
@@ -27,6 +27,9 @@ eval-all: ## замер всех вариантов (дистиллирован�
 
 compare: ## сводная таблица и анализ «зон замены»
 	$(PY) scripts/compare.py
+
+compare-live: ## живое сравнение ответов/качества/скорости/стоимости в консоли
+	$(PY) scripts/compare_ollama.py
 
 zip: ## архив для Colab
 	cd ../.. && rm -f finetuning/distillation.zip

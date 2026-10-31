@@ -1,0 +1,286 @@
+{
+  "variants": [
+    {
+      "variant": "base",
+      "model": "qwen2.5:1.5b-instruct-fp16",
+      "quality": {
+        "count": 90,
+        "exact": 0.422,
+        "schema_ok": 0.722,
+        "ticker_f1": 0.987,
+        "poll_acc": 0.857,
+        "report_acc": 0.857,
+        "error_acc": 0.037
+      },
+      "speed": {
+        "requests": 90,
+        "median_latency_s": 1.283,
+        "mean_tokens_per_sec": 23.54,
+        "total_prompt_tokens": 72931,
+        "total_output_tokens": 2357
+      },
+      "cost": {
+        "cost_usd_per_request": 8.4e-05,
+        "output_usd_per_1m": 0.1,
+        "input_usd_per_1m": 0.1
+      }
+    },
+    {
+      "variant": "distilled",
+      "model": "qwen25-distill-v1",
+      "quality": {
+        "count": 90,
+        "exact": 0.522,
+        "schema_ok": 0.822,
+        "ticker_f1": 0.978,
+        "poll_acc": 0.968,
+        "report_acc": 0.889,
+        "error_acc": 0.074
+      },
+      "speed": {
+        "requests": 90,
+        "median_latency_s": 1.269,
+        "mean_tokens_per_sec": 23.79,
+        "total_prompt_tokens": 72931,
+        "total_output_tokens": 2228
+      },
+      "cost": {
+        "cost_usd_per_request": 8.4e-05,
+        "output_usd_per_1m": 0.1,
+        "input_usd_per_1m": 0.1
+      }
+    },
+    {
+      "variant": "golden",
+      "model": "qwen25-golden-v1",
+      "quality": {
+        "count": 90,
+        "exact": 0.622,
+        "schema_ok": 0.8,
+        "ticker_f1": 0.995,
+        "poll_acc": 0.937,
+        "report_acc": 0.968,
+        "error_acc": 0.259
+      },
+      "speed": {
+        "requests": 90,
+        "median_latency_s": 1.261,
+        "mean_tokens_per_sec": 24.02,
+        "total_prompt_tokens": 72931,
+        "total_output_tokens": 2225
+      },
+      "cost": {
+        "cost_usd_per_request": 8.4e-05,
+        "output_usd_per_1m": 0.1,
+        "input_usd_per_1m": 0.1
+      }
+    },
+    {
+      "variant": "teacher",
+      "model": "qwen2.5:7b",
+      "quality": {
+        "count": 90,
+        "exact": 0.722,
+        "schema_ok": 0.856,
+        "ticker_f1": 1.0,
+        "poll_acc": 0.984,
+        "report_acc": 0.921,
+        "error_acc": 0.481
+      },
+      "speed": {
+        "requests": 90,
+        "median_latency_s": 2.045,
+        "mean_tokens_per_sec": 15.63,
+        "total_prompt_tokens": 72931,
+        "total_output_tokens": 2123
+      },
+      "cost": {
+        "cost_usd_per_request": 0.00012,
+        "output_usd_per_1m": 0.28,
+        "input_usd_per_1m": 0.14
+      }
+    }
+  ],
+  "pairwise_vs_teacher": {
+    "base": {
+      "total": 90,
+      "buckets": {
+        "replace": 33,
+        "student_err": 30,
+        "both_err": 22,
+        "student_better": 5
+      },
+      "by_category": {
+        "simple": {
+          "count": 14,
+          "replace": 11,
+          "student_err": 2,
+          "both_err": 0,
+          "student_better": 1
+        },
+        "multi": {
+          "count": 14,
+          "replace": 5,
+          "student_err": 6,
+          "both_err": 3,
+          "student_better": 0
+        },
+        "colloquial": {
+          "count": 21,
+          "replace": 10,
+          "student_err": 5,
+          "both_err": 2,
+          "student_better": 4
+        },
+        "invalid": {
+          "count": 18,
+          "replace": 1,
+          "student_err": 7,
+          "both_err": 10,
+          "student_better": 0
+        },
+        "correction": {
+          "count": 7,
+          "replace": 3,
+          "student_err": 3,
+          "both_err": 1,
+          "student_better": 0
+        },
+        "role_order": {
+          "count": 7,
+          "replace": 3,
+          "student_err": 4,
+          "both_err": 0,
+          "student_better": 0
+        },
+        "out_of_scope": {
+          "count": 9,
+          "replace": 0,
+          "student_err": 3,
+          "both_err": 6,
+          "student_better": 0
+        }
+      }
+    },
+    "distilled": {
+      "total": 90,
+      "buckets": {
+        "replace": 44,
+        "student_err": 19,
+        "both_err": 24,
+        "student_better": 3
+      },
+      "by_category": {
+        "simple": {
+          "count": 14,
+          "replace": 13,
+          "student_err": 0,
+          "both_err": 1,
+          "student_better": 0
+        },
+        "multi": {
+          "count": 14,
+          "replace": 7,
+          "student_err": 4,
+          "both_err": 3,
+          "student_better": 0
+        },
+        "colloquial": {
+          "count": 21,
+          "replace": 11,
+          "student_err": 4,
+          "both_err": 4,
+          "student_better": 2
+        },
+        "invalid": {
+          "count": 18,
+          "replace": 0,
+          "student_err": 8,
+          "both_err": 9,
+          "student_better": 1
+        },
+        "correction": {
+          "count": 7,
+          "replace": 6,
+          "student_err": 0,
+          "both_err": 1,
+          "student_better": 0
+        },
+        "role_order": {
+          "count": 7,
+          "replace": 6,
+          "student_err": 1,
+          "both_err": 0,
+          "student_better": 0
+        },
+        "out_of_scope": {
+          "count": 9,
+          "replace": 1,
+          "student_err": 2,
+          "both_err": 6,
+          "student_better": 0
+        }
+      }
+    },
+    "golden": {
+      "total": 90,
+      "buckets": {
+        "replace": 47,
+        "student_err": 16,
+        "both_err": 18,
+        "student_better": 9
+      },
+      "by_category": {
+        "simple": {
+          "count": 14,
+          "replace": 13,
+          "student_err": 0,
+          "both_err": 0,
+          "student_better": 1
+        },
+        "multi": {
+          "count": 14,
+          "replace": 7,
+          "student_err": 4,
+          "both_err": 2,
+          "student_better": 1
+        },
+        "colloquial": {
+          "count": 21,
+          "replace": 10,
+          "student_err": 5,
+          "both_err": 1,
+          "student_better": 5
+        },
+        "invalid": {
+          "count": 18,
+          "replace": 2,
+          "student_err": 6,
+          "both_err": 9,
+          "student_better": 1
+        },
+        "correction": {
+          "count": 7,
+          "replace": 5,
+          "student_err": 1,
+          "both_err": 1,
+          "student_better": 0
+        },
+        "role_order": {
+          "count": 7,
+          "replace": 7,
+          "student_err": 0,
+          "both_err": 0,
+          "student_better": 0
+        },
+        "out_of_scope": {
+          "count": 9,
+          "replace": 3,
+          "student_err": 0,
+          "both_err": 5,
+          "student_better": 1
+        }
+      }
+    }
+  }
+}

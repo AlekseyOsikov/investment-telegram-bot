@@ -1,0 +1,630 @@
+{
+  "variants": [
+    "base",
+    "distilled",
+    "golden",
+    "teacher"
+  ],
+  "models": {
+    "base": "qwen2.5:1.5b-instruct-fp16",
+    "distilled": "qwen25-distill-v1",
+    "golden": "qwen25-golden-v1",
+    "teacher": "qwen2.5:7b"
+  },
+  "summary": {
+    "base": {
+      "exact": 0.9,
+      "schema_ok": 1.0,
+      "error_acc": null,
+      "median_latency_s": 1.153,
+      "mean_tokens_per_sec": 24.113999999999997,
+      "cost_usd_per_request": 8.389000000000001e-05
+    },
+    "distilled": {
+      "exact": 0.9,
+      "schema_ok": 1.0,
+      "error_acc": null,
+      "median_latency_s": 1.151,
+      "mean_tokens_per_sec": 24.061,
+      "cost_usd_per_request": 8.388000000000002e-05
+    },
+    "golden": {
+      "exact": 1.0,
+      "schema_ok": 1.0,
+      "error_acc": null,
+      "median_latency_s": 1.15,
+      "mean_tokens_per_sec": 24.136000000000003,
+      "cost_usd_per_request": 8.389000000000001e-05
+    },
+    "teacher": {
+      "exact": 0.9,
+      "schema_ok": 1.0,
+      "error_acc": null,
+      "median_latency_s": 1.785,
+      "mean_tokens_per_sec": 16.712,
+      "cost_usd_per_request": 0.000120918
+    }
+  },
+  "results": [
+    {
+      "n": 1,
+      "split": "eval",
+      "category": "simple",
+      "user": "Следи за SBER каждые 15 минут, сводку присылай раз в час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "SBER"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "1h"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.85,
+        "tokens_per_sec": 24.04,
+        "prompt_tokens": 813,
+        "output_tokens": 25,
+        "cost_usd": 8.380000000000002e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.841,
+        "tokens_per_sec": 23.87,
+        "prompt_tokens": 813,
+        "output_tokens": 25,
+        "cost_usd": 8.380000000000002e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.152,
+        "tokens_per_sec": 24.1,
+        "prompt_tokens": 813,
+        "output_tokens": 25,
+        "cost_usd": 8.380000000000002e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.785,
+        "tokens_per_sec": 16.7,
+        "prompt_tokens": 813,
+        "output_tokens": 25,
+        "cost_usd": 0.00012082000000000001
+      }
+    },
+    {
+      "n": 2,
+      "split": "eval",
+      "category": "simple",
+      "user": "GAZP: проверять цену каждые 30 минут, сводку присылать раз в 90 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "90m"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.269,
+        "tokens_per_sec": 24.07,
+        "prompt_tokens": 817,
+        "output_tokens": 27,
+        "cost_usd": 8.44e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.266,
+        "tokens_per_sec": 24.09,
+        "prompt_tokens": 817,
+        "output_tokens": 27,
+        "cost_usd": 8.44e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.271,
+        "tokens_per_sec": 24.06,
+        "prompt_tokens": 817,
+        "output_tokens": 27,
+        "cost_usd": 8.44e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.968,
+        "tokens_per_sec": 16.61,
+        "prompt_tokens": 817,
+        "output_tokens": 27,
+        "cost_usd": 0.00012194000000000001
+      }
+    },
+    {
+      "n": 3,
+      "split": "eval",
+      "category": "simple",
+      "user": "Хочу получать сводки по LKOH раз в день, а цены проверять каждые 10 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "LKOH"
+        ],
+        "poll_interval": "10m",
+        "report_interval": "1d"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"1d\",\"report_interval\":\"10m\"}",
+        "exact": false,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.151,
+        "tokens_per_sec": 24.11,
+        "prompt_tokens": 814,
+        "output_tokens": 25,
+        "cost_usd": 8.39e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"10m\",\"report_interval\":\"1d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.151,
+        "tokens_per_sec": 24.12,
+        "prompt_tokens": 814,
+        "output_tokens": 25,
+        "cost_usd": 8.39e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"10m\",\"report_interval\":\"1d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.149,
+        "tokens_per_sec": 24.15,
+        "prompt_tokens": 814,
+        "output_tokens": 25,
+        "cost_usd": 8.39e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"10m\",\"report_interval\":\"1d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.785,
+        "tokens_per_sec": 16.71,
+        "prompt_tokens": 814,
+        "output_tokens": 25,
+        "cost_usd": 0.00012096000000000001
+      }
+    },
+    {
+      "n": 4,
+      "split": "eval",
+      "category": "simple",
+      "user": "Мониторь ROSN с интервалом 45 минут, итоги присылай раз в 3 часа.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ROSN"
+        ],
+        "poll_interval": "45m",
+        "report_interval": "3h"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"45m\",\"report_interval\":\"3h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.181,
+        "tokens_per_sec": 24.12,
+        "prompt_tokens": 818,
+        "output_tokens": 25,
+        "cost_usd": 8.430000000000002e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"45m\",\"report_interval\":\"3h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.199,
+        "tokens_per_sec": 23.75,
+        "prompt_tokens": 818,
+        "output_tokens": 25,
+        "cost_usd": 8.430000000000002e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"45m\",\"report_interval\":\"3h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.181,
+        "tokens_per_sec": 24.14,
+        "prompt_tokens": 818,
+        "output_tokens": 25,
+        "cost_usd": 8.430000000000002e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"45m\",\"report_interval\":\"3h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.843,
+        "tokens_per_sec": 16.7,
+        "prompt_tokens": 818,
+        "output_tokens": 25,
+        "cost_usd": 0.00012152000000000002
+      }
+    },
+    {
+      "n": 5,
+      "split": "eval",
+      "category": "simple",
+      "user": "VTBR нужно проверять каждые 5 минут, а сводку присылать раз в 6 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "VTBR"
+        ],
+        "poll_interval": "5m",
+        "report_interval": "6h"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.109,
+        "tokens_per_sec": 24.16,
+        "prompt_tokens": 813,
+        "output_tokens": 24,
+        "cost_usd": 8.370000000000002e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.115,
+        "tokens_per_sec": 23.96,
+        "prompt_tokens": 813,
+        "output_tokens": 24,
+        "cost_usd": 8.370000000000002e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.11,
+        "tokens_per_sec": 24.12,
+        "prompt_tokens": 813,
+        "output_tokens": 24,
+        "cost_usd": 8.370000000000002e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.724,
+        "tokens_per_sec": 16.72,
+        "prompt_tokens": 813,
+        "output_tokens": 24,
+        "cost_usd": 0.00012054000000000001
+      }
+    },
+    {
+      "n": 6,
+      "split": "eval",
+      "category": "simple",
+      "user": "За MOEX наблюдай каждые 2 часа; сводка — раз в 12 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MOEX"
+        ],
+        "poll_interval": "2h",
+        "report_interval": "12h"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.153,
+        "tokens_per_sec": 24.07,
+        "prompt_tokens": 810,
+        "output_tokens": 25,
+        "cost_usd": 8.35e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.151,
+        "tokens_per_sec": 24.13,
+        "prompt_tokens": 810,
+        "output_tokens": 25,
+        "cost_usd": 8.35e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.147,
+        "tokens_per_sec": 24.17,
+        "prompt_tokens": 810,
+        "output_tokens": 25,
+        "cost_usd": 8.35e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.788,
+        "tokens_per_sec": 16.7,
+        "prompt_tokens": 810,
+        "output_tokens": 25,
+        "cost_usd": 0.0001204
+      }
+    },
+    {
+      "n": 7,
+      "split": "eval",
+      "category": "simple",
+      "user": "Следи за ALRS. Опрос — 90 минут, сводка — 1 день.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ALRS"
+        ],
+        "poll_interval": "90m",
+        "report_interval": "1d"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"90m\",\"report_interval\":\"1d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.147,
+        "tokens_per_sec": 24.18,
+        "prompt_tokens": 811,
+        "output_tokens": 25,
+        "cost_usd": 8.360000000000001e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"90m\",\"report_interval\":\"1d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.151,
+        "tokens_per_sec": 24.13,
+        "prompt_tokens": 811,
+        "output_tokens": 25,
+        "cost_usd": 8.360000000000001e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"90m\",\"report_interval\":\"1d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.15,
+        "tokens_per_sec": 24.1,
+        "prompt_tokens": 811,
+        "output_tokens": 25,
+        "cost_usd": 8.360000000000001e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"90m\",\"report_interval\":\"1d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.782,
+        "tokens_per_sec": 16.72,
+        "prompt_tokens": 811,
+        "output_tokens": 25,
+        "cost_usd": 0.00012054000000000001
+      }
+    },
+    {
+      "n": 8,
+      "split": "eval",
+      "category": "simple",
+      "user": "По CHMF: каждые 15 минут смотри цены, раз в 2 дня присылай отчёт.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "CHMF"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "2d"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"15m\",\"report_interval\":\"2d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.189,
+        "tokens_per_sec": 23.99,
+        "prompt_tokens": 815,
+        "output_tokens": 25,
+        "cost_usd": 8.4e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"15m\",\"report_interval\":\"2d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.179,
+        "tokens_per_sec": 24.2,
+        "prompt_tokens": 815,
+        "output_tokens": 25,
+        "cost_usd": 8.4e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"15m\",\"report_interval\":\"2d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.181,
+        "tokens_per_sec": 24.1,
+        "prompt_tokens": 815,
+        "output_tokens": 25,
+        "cost_usd": 8.4e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"15m\",\"report_interval\":\"2d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.835,
+        "tokens_per_sec": 16.73,
+        "prompt_tokens": 815,
+        "output_tokens": 25,
+        "cost_usd": 0.0001211
+      }
+    },
+    {
+      "n": 9,
+      "split": "eval",
+      "category": "simple",
+      "user": "Настрой /watch на HYDR: проверять каждые 60 минут, отчитываться раз в 7 дней.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "HYDR"
+        ],
+        "poll_interval": "60m",
+        "report_interval": "7d"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"HYDR\"],\"poll_interval\":\"60m\",\"report_interval\":\"7d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.148,
+        "tokens_per_sec": 24.17,
+        "prompt_tokens": 814,
+        "output_tokens": 25,
+        "cost_usd": 8.39e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"HYDR\"],\"poll_interval\":\"1h\",\"report_interval\":\"7d\"}",
+        "exact": false,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.108,
+        "tokens_per_sec": 24.14,
+        "prompt_tokens": 814,
+        "output_tokens": 24,
+        "cost_usd": 8.380000000000002e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"HYDR\"],\"poll_interval\":\"60m\",\"report_interval\":\"7d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.148,
+        "tokens_per_sec": 24.18,
+        "prompt_tokens": 814,
+        "output_tokens": 25,
+        "cost_usd": 8.39e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"HYDR\"],\"poll_interval\":\"1h\",\"report_interval\":\"7d\"}",
+        "exact": false,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.72,
+        "tokens_per_sec": 16.76,
+        "prompt_tokens": 814,
+        "output_tokens": 24,
+        "cost_usd": 0.00012068
+      }
+    },
+    {
+      "n": 10,
+      "split": "eval",
+      "category": "simple",
+      "user": "Следи за PHOR каждые 2 часа, сводку присылай раз в 3 дня.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "PHOR"
+        ],
+        "poll_interval": "2h",
+        "report_interval": "3d"
+      },
+      "base": {
+        "output": "{\"ok\":true,\"secids\":[\"PHOR\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.105,
+        "tokens_per_sec": 24.23,
+        "prompt_tokens": 814,
+        "output_tokens": 24,
+        "cost_usd": 8.380000000000002e-05
+      },
+      "distilled": {
+        "output": "{\"ok\":true,\"secids\":[\"PHOR\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.106,
+        "tokens_per_sec": 24.22,
+        "prompt_tokens": 814,
+        "output_tokens": 24,
+        "cost_usd": 8.380000000000002e-05
+      },
+      "golden": {
+        "output": "{\"ok\":true,\"secids\":[\"PHOR\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.105,
+        "tokens_per_sec": 24.24,
+        "prompt_tokens": 814,
+        "output_tokens": 24,
+        "cost_usd": 8.380000000000002e-05
+      },
+      "teacher": {
+        "output": "{\"ok\":true,\"secids\":[\"PHOR\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+        "exact": true,
+        "schema_ok": true,
+        "error_acc": null,
+        "latency_s": 1.721,
+        "tokens_per_sec": 16.77,
+        "prompt_tokens": 814,
+        "output_tokens": 24,
+        "cost_usd": 0.00012068
+      }
+    }
+  ]
+}

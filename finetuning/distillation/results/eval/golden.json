@@ -1,0 +1,1524 @@
+{
+  "variant": "golden",
+  "split": "eval",
+  "model": "qwen25-golden-v1",
+  "prompt_mode": "fewshot",
+  "num_predict": 128,
+  "num_ctx": 4096,
+  "quality": {
+    "count": 60,
+    "exact": 0.65,
+    "schema_ok": 0.7833333333333333,
+    "json_strict": 1.0,
+    "json_extractable": 1.0,
+    "ticker_f1": 0.9925925925925926,
+    "poll_acc": 0.9555555555555556,
+    "report_acc": 0.9777777777777777,
+    "error_acc": 0.26666666666666666
+  },
+  "by_category": {
+    "colloquial": {
+      "count": 15,
+      "exact": 0.7333333333333333,
+      "ticker_f1": 0.9777777777777777,
+      "poll_acc": 0.8666666666666667,
+      "report_acc": 0.9333333333333333,
+      "error_acc": null
+    },
+    "correction": {
+      "count": 5,
+      "exact": 0.8,
+      "ticker_f1": 1.0,
+      "poll_acc": 1.0,
+      "report_acc": 1.0,
+      "error_acc": null
+    },
+    "invalid": {
+      "count": 10,
+      "exact": 0.1,
+      "ticker_f1": null,
+      "poll_acc": null,
+      "report_acc": null,
+      "error_acc": 0.1
+    },
+    "multi": {
+      "count": 10,
+      "exact": 0.5,
+      "ticker_f1": 1.0,
+      "poll_acc": 1.0,
+      "report_acc": 1.0,
+      "error_acc": null
+    },
+    "out_of_scope": {
+      "count": 5,
+      "exact": 0.6,
+      "ticker_f1": null,
+      "poll_acc": null,
+      "report_acc": null,
+      "error_acc": 0.6
+    },
+    "role_order": {
+      "count": 5,
+      "exact": 1.0,
+      "ticker_f1": 1.0,
+      "poll_acc": 1.0,
+      "report_acc": 1.0,
+      "error_acc": null
+    },
+    "simple": {
+      "count": 10,
+      "exact": 1.0,
+      "ticker_f1": 1.0,
+      "poll_acc": 1.0,
+      "report_acc": 1.0,
+      "error_acc": null
+    }
+  },
+  "speed": {
+    "requests": 60,
+    "total_seconds": 80.53,
+    "mean_latency_s": 1.342,
+    "median_latency_s": 1.256,
+    "mean_tokens_per_sec": 24.06,
+    "total_prompt_tokens": 48643,
+    "total_output_tokens": 1508,
+    "mean_prompt_tokens": 810.7,
+    "mean_output_tokens": 25.1
+  },
+  "results": [
+    {
+      "n": 1,
+      "category": "simple",
+      "user": "Следи за SBER каждые 15 минут, сводку присылай раз в час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "SBER"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 7.192,
+      "tokens_per_sec": 24.13,
+      "prompt_tokens": 813,
+      "output_tokens": 25
+    },
+    {
+      "n": 2,
+      "category": "simple",
+      "user": "GAZP: проверять цену каждые 30 минут, сводку присылать раз в 90 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "90m"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.345,
+      "tokens_per_sec": 23.98,
+      "prompt_tokens": 817,
+      "output_tokens": 27
+    },
+    {
+      "n": 3,
+      "category": "simple",
+      "user": "Хочу получать сводки по LKOH раз в день, а цены проверять каждые 10 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "LKOH"
+        ],
+        "poll_interval": "10m",
+        "report_interval": "1d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"10m\",\"report_interval\":\"1d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.243,
+      "tokens_per_sec": 23.74,
+      "prompt_tokens": 814,
+      "output_tokens": 25
+    },
+    {
+      "n": 4,
+      "category": "simple",
+      "user": "Мониторь ROSN с интервалом 45 минут, итоги присылай раз в 3 часа.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ROSN"
+        ],
+        "poll_interval": "45m",
+        "report_interval": "3h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"45m\",\"report_interval\":\"3h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.261,
+      "tokens_per_sec": 23.98,
+      "prompt_tokens": 818,
+      "output_tokens": 25
+    },
+    {
+      "n": 5,
+      "category": "simple",
+      "user": "VTBR нужно проверять каждые 5 минут, а сводку присылать раз в 6 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "VTBR"
+        ],
+        "poll_interval": "5m",
+        "report_interval": "6h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.259,
+      "tokens_per_sec": 22.47,
+      "prompt_tokens": 813,
+      "output_tokens": 24
+    },
+    {
+      "n": 6,
+      "category": "simple",
+      "user": "За MOEX наблюдай каждые 2 часа; сводка — раз в 12 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MOEX"
+        ],
+        "poll_interval": "2h",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.225,
+      "tokens_per_sec": 24.04,
+      "prompt_tokens": 810,
+      "output_tokens": 25
+    },
+    {
+      "n": 7,
+      "category": "simple",
+      "user": "Следи за ALRS. Опрос — 90 минут, сводка — 1 день.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ALRS"
+        ],
+        "poll_interval": "90m",
+        "report_interval": "1d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"90m\",\"report_interval\":\"1d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.225,
+      "tokens_per_sec": 24.14,
+      "prompt_tokens": 811,
+      "output_tokens": 25
+    },
+    {
+      "n": 8,
+      "category": "simple",
+      "user": "По CHMF: каждые 15 минут смотри цены, раз в 2 дня присылай отчёт.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "CHMF"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "2d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"15m\",\"report_interval\":\"2d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.254,
+      "tokens_per_sec": 24.19,
+      "prompt_tokens": 815,
+      "output_tokens": 25
+    },
+    {
+      "n": 9,
+      "category": "simple",
+      "user": "Настрой /watch на HYDR: проверять каждые 60 минут, отчитываться раз в 7 дней.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "HYDR"
+        ],
+        "poll_interval": "60m",
+        "report_interval": "7d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"HYDR\"],\"poll_interval\":\"60m\",\"report_interval\":\"7d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.224,
+      "tokens_per_sec": 24.16,
+      "prompt_tokens": 814,
+      "output_tokens": 25
+    },
+    {
+      "n": 10,
+      "category": "simple",
+      "user": "Следи за PHOR каждые 2 часа, сводку присылай раз в 3 дня.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "PHOR"
+        ],
+        "poll_interval": "2h",
+        "report_interval": "3d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"PHOR\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.182,
+      "tokens_per_sec": 24.1,
+      "prompt_tokens": 814,
+      "output_tokens": 24
+    },
+    {
+      "n": 11,
+      "category": "multi",
+      "user": "Следи за SBER и GAZP каждые 15 минут, сводку раз в час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP",
+          "SBER"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.394,
+      "tokens_per_sec": 24.01,
+      "prompt_tokens": 812,
+      "output_tokens": 29
+    },
+    {
+      "n": 12,
+      "category": "multi",
+      "user": "Мониторь LKOH, ROSN и VTBR каждые 30 минут, отчёт раз в 2 часа.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "LKOH",
+          "ROSN",
+          "VTBR"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "2h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"LKOH\",\"ROSN\",\"VTBR\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.511,
+      "tokens_per_sec": 23.96,
+      "prompt_tokens": 816,
+      "output_tokens": 31
+    },
+    {
+      "n": 13,
+      "category": "multi",
+      "user": "Добавь в отслеживание: Сбер, Газпром, Лукойл. Проверка каждые 10 минут, сводка раз в 3 часа.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP",
+          "LKOH",
+          "SBER"
+        ],
+        "poll_interval": "10m",
+        "report_interval": "3h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\",\"LKOH\"],\"poll_interval\":\"10m\",\"report_interval\":\"3h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.555,
+      "tokens_per_sec": 23.94,
+      "prompt_tokens": 826,
+      "output_tokens": 32
+    },
+    {
+      "n": 14,
+      "category": "multi",
+      "user": "По SBER, GAZP и MOEX: опрос каждые 5 минут, сводка раз в 6 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP",
+          "MOEX",
+          "SBER"
+        ],
+        "poll_interval": "5m",
+        "report_interval": "6h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\",\"MOEX\"],\"poll_interval\":\"5m\",\"report_interval\":\"6h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.514,
+      "tokens_per_sec": 23.92,
+      "prompt_tokens": 815,
+      "output_tokens": 31
+    },
+    {
+      "n": 15,
+      "category": "multi",
+      "user": "Следи за ALRS и CHMF каждые 2 часа, итоги раз в 12 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ALRS",
+          "CHMF"
+        ],
+        "poll_interval": "2h",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ALRS\",\"CHMF\"],\"poll_interval\":\"2h\",\"report_interval\":\"12h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.351,
+      "tokens_per_sec": 24.05,
+      "prompt_tokens": 814,
+      "output_tokens": 28
+    },
+    {
+      "n": 16,
+      "category": "multi",
+      "user": "Наблюдай за HYDR, PHOR, SIBN и SNGS: проверка 45 минут, сводка 1 день.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "HYDR",
+          "PHOR",
+          "SIBN",
+          "SNGS"
+        ],
+        "poll_interval": "45m",
+        "report_interval": "1d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"HYDR\",\"PHOR\",\"SIBN\",\"SNGS\"],\"poll_interval\":\"45m\",\"report_interval\":\"1d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.729,
+      "tokens_per_sec": 23.89,
+      "prompt_tokens": 820,
+      "output_tokens": 36
+    },
+    {
+      "n": 17,
+      "category": "multi",
+      "user": "SBER, SBER и GAZP — следи каждые 15 минут, сводку раз в час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP",
+          "SBER"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.396,
+      "tokens_per_sec": 23.98,
+      "prompt_tokens": 813,
+      "output_tokens": 29
+    },
+    {
+      "n": 18,
+      "category": "multi",
+      "user": "Следи за TATN и MGNT каждые 30 минут, сводку раз в 90 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MGNT",
+          "TATN"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "90m"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"TATN\",\"MGNT\"],\"poll_interval\":\"30m\",\"report_interval\":\"90m\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.474,
+      "tokens_per_sec": 23.93,
+      "prompt_tokens": 815,
+      "output_tokens": 30
+    },
+    {
+      "n": 19,
+      "category": "multi",
+      "user": "MOEX + VTBR: опрос 10 минут, отчёт 1 час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MOEX",
+          "VTBR"
+        ],
+        "poll_interval": "10m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"MOEX\",\"VTBR\"],\"poll_interval\":\"10m\",\"report_interval\":\"1h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.352,
+      "tokens_per_sec": 23.97,
+      "prompt_tokens": 806,
+      "output_tokens": 28
+    },
+    {
+      "n": 20,
+      "category": "multi",
+      "user": "За NVTK, PLZL, YDEX, AFLT и IRAO следи каждые 15 минут, сводка раз в 3 дня.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "AFLT",
+          "IRAO",
+          "NVTK",
+          "PLZL",
+          "YDEX"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "3d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"AFLT\",\"IRAO\",\"NVTK\",\"PLZL\",\"YDEX\"],\"poll_interval\":\"15m\",\"report_interval\":\"3d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.812,
+      "tokens_per_sec": 23.86,
+      "prompt_tokens": 821,
+      "output_tokens": 38
+    },
+    {
+      "n": 21,
+      "category": "colloquial",
+      "user": "Следи за Сбером каждые четверть часа, сводку присылай раз в час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "SBER"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"1h\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": false,
+      "report_acc": true,
+      "latency_s": 1.18,
+      "tokens_per_sec": 24.17,
+      "prompt_tokens": 814,
+      "output_tokens": 24
+    },
+    {
+      "n": 22,
+      "category": "colloquial",
+      "user": "Газпром проверяй каждые полчаса, отчёт раз в два часа.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "2h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.27,
+      "tokens_per_sec": 23.96,
+      "prompt_tokens": 806,
+      "output_tokens": 26
+    },
+    {
+      "n": 23,
+      "category": "colloquial",
+      "user": "Лукойл — каждые 45 минут, сводка раз в 60 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "LKOH"
+        ],
+        "poll_interval": "45m",
+        "report_interval": "60m"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"45m\",\"report_interval\":\"60m\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.263,
+      "tokens_per_sec": 24.12,
+      "prompt_tokens": 809,
+      "output_tokens": 26
+    },
+    {
+      "n": 24,
+      "category": "colloquial",
+      "user": "Роснефть мониторь каждые 10 минут, итоги присылай дважды в сутки.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ROSN"
+        ],
+        "poll_interval": "10m",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"10m\",\"report_interval\":\"2d\"}",
+      "exact": false,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": false,
+      "latency_s": 1.253,
+      "tokens_per_sec": 24.17,
+      "prompt_tokens": 821,
+      "output_tokens": 25
+    },
+    {
+      "n": 25,
+      "category": "colloquial",
+      "user": "За ВТБ следи каждые полчаса, сводку — раз в шесть часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "VTBR"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "6h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"30m\",\"report_interval\":\"6h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.225,
+      "tokens_per_sec": 24.09,
+      "prompt_tokens": 809,
+      "output_tokens": 25
+    },
+    {
+      "n": 26,
+      "category": "colloquial",
+      "user": "Мосбиржу проверяй каждые 3 часа, отчёт раз в 6 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MOEX"
+        ],
+        "poll_interval": "3h",
+        "report_interval": "6h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"3h\",\"report_interval\":\"6h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.189,
+      "tokens_per_sec": 23.96,
+      "prompt_tokens": 808,
+      "output_tokens": 24
+    },
+    {
+      "n": 27,
+      "category": "colloquial",
+      "user": "Алросу и Северсталь смотри каждые 20 минут, сводку раз в трое суток.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ALRS",
+          "CHMF"
+        ],
+        "poll_interval": "20m",
+        "report_interval": "3d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ALRS\",\"CHMF\"],\"poll_interval\":\"20m\",\"report_interval\":\"3d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.425,
+      "tokens_per_sec": 23.23,
+      "prompt_tokens": 818,
+      "output_tokens": 28
+    },
+    {
+      "n": 28,
+      "category": "colloquial",
+      "user": "РусГидро, ФосАгро и Сибур — опрос каждые четверть часа, сводка раз в 12 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "HYDR",
+          "PHOR",
+          "SIBN"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"PHOR\",\"MTSS\",\"SIBN\"],\"poll_interval\":\"1.5h\",\"report_interval\":\"12h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 0.6666666666666666,
+      "poll_acc": false,
+      "report_acc": true,
+      "latency_s": 1.643,
+      "tokens_per_sec": 23.9,
+      "prompt_tokens": 822,
+      "output_tokens": 34
+    },
+    {
+      "n": 29,
+      "category": "colloquial",
+      "user": "Сургутнефтегаз проверяй каждые 30 минут, отчёт раз в два дня.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "SNGS"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "2d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SNGS\"],\"poll_interval\":\"30m\",\"report_interval\":\"2d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.261,
+      "tokens_per_sec": 24.17,
+      "prompt_tokens": 812,
+      "output_tokens": 26
+    },
+    {
+      "n": 30,
+      "category": "colloquial",
+      "user": "Татнефть и Магнит — каждые 90 минут, сводка раз в 7 дней.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MGNT",
+          "TATN"
+        ],
+        "poll_interval": "90m",
+        "report_interval": "7d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"TATN\",\"MGNT\"],\"poll_interval\":\"90m\",\"report_interval\":\"7d\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.395,
+      "tokens_per_sec": 23.97,
+      "prompt_tokens": 814,
+      "output_tokens": 29
+    },
+    {
+      "n": 31,
+      "category": "colloquial",
+      "user": "МТС мониторь каждые 15 минут, итоги раз в сутки.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MTSS"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "1d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"MTSS\"],\"poll_interval\":\"15m\",\"report_interval\":\"1d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.228,
+      "tokens_per_sec": 24.01,
+      "prompt_tokens": 812,
+      "output_tokens": 25
+    },
+    {
+      "n": 32,
+      "category": "colloquial",
+      "user": "Новатэк — каждые 2 часа, сводка раз в 3 дня.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "NVTK"
+        ],
+        "poll_interval": "2h",
+        "report_interval": "3d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"NVTK\"],\"poll_interval\":\"2h\",\"report_interval\":\"3d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.186,
+      "tokens_per_sec": 24.01,
+      "prompt_tokens": 807,
+      "output_tokens": 24
+    },
+    {
+      "n": 33,
+      "category": "colloquial",
+      "user": "Полюс и Яндекс проверяй каждые 30 минут, отчёт раз в 12 часов.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "PLZL",
+          "YDEX"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"PLZL\",\"YDEX\"],\"poll_interval\":\"30m\",\"report_interval\":\"12h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.445,
+      "tokens_per_sec": 23.9,
+      "prompt_tokens": 813,
+      "output_tokens": 30
+    },
+    {
+      "n": 34,
+      "category": "colloquial",
+      "user": "Аэрофлот — каждые 45 минут, сводку раз в два часа.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "AFLT"
+        ],
+        "poll_interval": "45m",
+        "report_interval": "2h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"AFLT\"],\"poll_interval\":\"45m\",\"report_interval\":\"2h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.22,
+      "tokens_per_sec": 24.15,
+      "prompt_tokens": 808,
+      "output_tokens": 25
+    },
+    {
+      "n": 35,
+      "category": "colloquial",
+      "user": "Интер РАО мониторь каждые 5 минут, сводка раз в час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "IRAO"
+        ],
+        "poll_interval": "5m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"IRAO\"],\"poll_interval\":\"5m\",\"report_interval\":\"1h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.177,
+      "tokens_per_sec": 24.22,
+      "prompt_tokens": 809,
+      "output_tokens": 24
+    },
+    {
+      "n": 36,
+      "category": "invalid",
+      "user": "Следи каждые 15 минут, сводку раз в час.",
+      "expected": {
+        "ok": false,
+        "error": "missing_tickers"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 1.263,
+      "tokens_per_sec": 24.09,
+      "prompt_tokens": 805,
+      "output_tokens": 26
+    },
+    {
+      "n": 37,
+      "category": "invalid",
+      "user": "Следи за SBER и GAZP.",
+      "expected": {
+        "ok": false,
+        "error": "missing_intervals"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\"],\"poll_interval\":\"30m\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 1.389,
+      "tokens_per_sec": 24.03,
+      "prompt_tokens": 799,
+      "output_tokens": 29
+    },
+    {
+      "n": 38,
+      "category": "invalid",
+      "user": "Следи за SBER, сводку присылай раз в час.",
+      "expected": {
+        "ok": false,
+        "error": "missing_poll_interval"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"1h\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 1.176,
+      "tokens_per_sec": 24.21,
+      "prompt_tokens": 807,
+      "output_tokens": 24
+    },
+    {
+      "n": 39,
+      "category": "invalid",
+      "user": "Следи за SBER каждые 15 минут.",
+      "expected": {
+        "ok": false,
+        "error": "missing_report_interval"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 0.958,
+      "tokens_per_sec": 24.5,
+      "prompt_tokens": 801,
+      "output_tokens": 19
+    },
+    {
+      "n": 40,
+      "category": "invalid",
+      "user": "Следи за SBER каждые 30 секунд, сводку раз в час.",
+      "expected": {
+        "ok": false,
+        "error": "bad_interval"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"30s\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 1.219,
+      "tokens_per_sec": 24.11,
+      "prompt_tokens": 810,
+      "output_tokens": 25
+    },
+    {
+      "n": 41,
+      "category": "invalid",
+      "user": "Следи за Ромашкой каждые 15 минут, сводку раз в час.",
+      "expected": {
+        "ok": false,
+        "error": "bad_ticker"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 1.219,
+      "tokens_per_sec": 24.19,
+      "prompt_tokens": 810,
+      "output_tokens": 25
+    },
+    {
+      "n": 42,
+      "category": "invalid",
+      "user": "Следи за SBER и Ромашкой каждые 15 минут, сводку раз в час.",
+      "expected": {
+        "ok": false,
+        "error": "bad_ticker"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\",\"ROSN\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 1.362,
+      "tokens_per_sec": 23.82,
+      "prompt_tokens": 813,
+      "output_tokens": 28
+    },
+    {
+      "n": 43,
+      "category": "invalid",
+      "user": "Следи за SBER каждые 15 минут, 30 минут и сводку раз в час.",
+      "expected": {
+        "ok": false,
+        "error": "ambiguous"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 1.251,
+      "tokens_per_sec": 23.5,
+      "prompt_tokens": 813,
+      "output_tokens": 25
+    },
+    {
+      "n": 44,
+      "category": "invalid",
+      "user": "Следи за SBER: опрос 15 минут и 30 минут, сводка раз в час.",
+      "expected": {
+        "ok": false,
+        "error": "ambiguous"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m,30m\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 1.403,
+      "tokens_per_sec": 23.89,
+      "prompt_tokens": 814,
+      "output_tokens": 29
+    },
+    {
+      "n": 45,
+      "category": "invalid",
+      "user": "Какая погода в Москве?",
+      "expected": {
+        "ok": false,
+        "error": "not_watch"
+      },
+      "output": "{\"ok\":false,\"error\":\"not_watch\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": true,
+      "latency_s": 0.623,
+      "tokens_per_sec": 25.03,
+      "prompt_tokens": 795,
+      "output_tokens": 11
+    },
+    {
+      "n": 46,
+      "category": "correction",
+      "user": "Следи за SBER каждые 15 минут, сводку раз в час. Нет, не 15, а 30 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "SBER"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"30m\",\"report_interval\":\"1h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.26,
+      "tokens_per_sec": 24.01,
+      "prompt_tokens": 822,
+      "output_tokens": 25
+    },
+    {
+      "n": 47,
+      "category": "correction",
+      "user": "По GAZP: сводка раз в час, опрос каждые 15 минут. Хотя нет, сводку лучше раз в 2 часа.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "2h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"2h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.309,
+      "tokens_per_sec": 23.83,
+      "prompt_tokens": 821,
+      "output_tokens": 26
+    },
+    {
+      "n": 48,
+      "category": "correction",
+      "user": "Следи за sber, GAZP и sber каждые 15 минут, сводку раз в час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "GAZP",
+          "SBER"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\",\"GAZP\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": false,
+      "schema_ok": false,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.438,
+      "tokens_per_sec": 23.82,
+      "prompt_tokens": 815,
+      "output_tokens": 29
+    },
+    {
+      "n": 49,
+      "category": "correction",
+      "user": "Следи за SBER и SBER каждые 15 минут, сводку раз в час.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "SBER"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"SBER\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.231,
+      "tokens_per_sec": 23.93,
+      "prompt_tokens": 811,
+      "output_tokens": 25
+    },
+    {
+      "n": 50,
+      "category": "correction",
+      "user": "Сводка по LKOH раз в час, опрос каждые 15 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "LKOH"
+        ],
+        "poll_interval": "15m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"LKOH\"],\"poll_interval\":\"15m\",\"report_interval\":\"1h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.232,
+      "tokens_per_sec": 23.91,
+      "prompt_tokens": 807,
+      "output_tokens": 25
+    },
+    {
+      "n": 51,
+      "category": "role_order",
+      "user": "По ROSN: сводку присылай раз в 2 часа, цены проверяй каждые 30 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ROSN"
+        ],
+        "poll_interval": "30m",
+        "report_interval": "2h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ROSN\"],\"poll_interval\":\"30m\",\"report_interval\":\"2h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.316,
+      "tokens_per_sec": 22.84,
+      "prompt_tokens": 816,
+      "output_tokens": 25
+    },
+    {
+      "n": 52,
+      "category": "role_order",
+      "user": "Раз в час присылай сводку по VTBR, а каждые 10 минут проверяй цену.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "VTBR"
+        ],
+        "poll_interval": "10m",
+        "report_interval": "1h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"VTBR\"],\"poll_interval\":\"10m\",\"report_interval\":\"1h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.29,
+      "tokens_per_sec": 23.62,
+      "prompt_tokens": 816,
+      "output_tokens": 25
+    },
+    {
+      "n": 53,
+      "category": "role_order",
+      "user": "Каждые 20 минут смотри MOEX, раз в 6 часов присылай отчёт.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "MOEX"
+        ],
+        "poll_interval": "20m",
+        "report_interval": "6h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"MOEX\"],\"poll_interval\":\"20m\",\"report_interval\":\"6h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.233,
+      "tokens_per_sec": 23.97,
+      "prompt_tokens": 813,
+      "output_tokens": 25
+    },
+    {
+      "n": 54,
+      "category": "role_order",
+      "user": "Отчёт по ALRS раз в день, опрос каждые 45 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "ALRS"
+        ],
+        "poll_interval": "45m",
+        "report_interval": "1d"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"ALRS\"],\"poll_interval\":\"45m\",\"report_interval\":\"1d\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.241,
+      "tokens_per_sec": 23.76,
+      "prompt_tokens": 805,
+      "output_tokens": 25
+    },
+    {
+      "n": 55,
+      "category": "role_order",
+      "user": "Сводка по CHMF раз в 12 часов, проверка каждые 5 минут.",
+      "expected": {
+        "ok": true,
+        "secids": [
+          "CHMF"
+        ],
+        "poll_interval": "5m",
+        "report_interval": "12h"
+      },
+      "output": "{\"ok\":true,\"secids\":[\"CHMF\"],\"poll_interval\":\"5m\",\"report_interval\":\"12h\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "ticker_f1": 1.0,
+      "poll_acc": true,
+      "report_acc": true,
+      "latency_s": 1.227,
+      "tokens_per_sec": 24.01,
+      "prompt_tokens": 808,
+      "output_tokens": 25
+    },
+    {
+      "n": 56,
+      "category": "out_of_scope",
+      "user": "",
+      "expected": {
+        "ok": false,
+        "error": "empty"
+      },
+      "output": "{\"ok\":false,\"error\":\"missing_report_interval\"}",
+      "exact": false,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 0.634,
+      "tokens_per_sec": 24.95,
+      "prompt_tokens": 787,
+      "output_tokens": 12
+    },
+    {
+      "n": 57,
+      "category": "out_of_scope",
+      "user": "   ",
+      "expected": {
+        "ok": false,
+        "error": "empty"
+      },
+      "output": "{\"ok\":false,\"error\":\"ambiguous\"}",
+      "exact": false,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": false,
+      "latency_s": 0.545,
+      "tokens_per_sec": 25.5,
+      "prompt_tokens": 788,
+      "output_tokens": 10
+    },
+    {
+      "n": 58,
+      "category": "out_of_scope",
+      "user": "Привет, как настроение?",
+      "expected": {
+        "ok": false,
+        "error": "not_watch"
+      },
+      "output": "{\"ok\":false,\"error\":\"not_watch\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": true,
+      "latency_s": 0.62,
+      "tokens_per_sec": 25.15,
+      "prompt_tokens": 796,
+      "output_tokens": 11
+    },
+    {
+      "n": 59,
+      "category": "out_of_scope",
+      "user": "Сколько стоит доллар?",
+      "expected": {
+        "ok": false,
+        "error": "not_watch"
+      },
+      "output": "{\"ok\":false,\"error\":\"not_watch\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": true,
+      "latency_s": 0.613,
+      "tokens_per_sec": 25.27,
+      "prompt_tokens": 793,
+      "output_tokens": 11
+    },
+    {
+      "n": 60,
+      "category": "out_of_scope",
+      "user": "Расскажи, что такое облигация.",
+      "expected": {
+        "ok": false,
+        "error": "not_watch"
+      },
+      "output": "{\"ok\":false,\"error\":\"not_watch\"}",
+      "exact": true,
+      "schema_ok": true,
+      "json_strict": true,
+      "json_extractable": true,
+      "error_acc": true,
+      "latency_s": 0.618,
+      "tokens_per_sec": 25.21,
+      "prompt_tokens": 799,
+      "output_tokens": 11
+    }
+  ]
+}
