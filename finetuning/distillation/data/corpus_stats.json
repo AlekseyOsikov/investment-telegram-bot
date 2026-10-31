@@ -1,0 +1,24 @@
+{
+  "seed": 4242,
+  "generated": 540,
+  "corpus": 511,
+  "skipped_exact_or_prior": 23,
+  "skipped_near_test": 6,
+  "by_category": {
+    "colloquial": 92,
+    "correction": 90,
+    "invalid": 136,
+    "multi": 78,
+    "simple": 115
+  },
+  "by_error": {
+    "ambiguous": 10,
+    "bad_interval": 20,
+    "bad_ticker": 27,
+    "empty": 1,
+    "missing_intervals": 19,
+    "missing_poll_interval": 20,
+    "missing_report_interval": 20,
+    "missing_tickers": 19
+  }
+}

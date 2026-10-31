@@ -12,6 +12,7 @@
 | `roleplay_lora` | Roleplay: стиль и границы роли | Qwen2.5-1.5B + LoRA | готово | [`roleplay_lora/report.md`](roleplay_lora/report.md) |
 | `watch_parser` | Свободная просьба → JSON `/watch` | Qwen2.5-1.5B + LoRA/guard | готово | [`watch_parser/report.md`](watch_parser/report.md) |
 | `boundaries` | Границы файнтюнинга: знания / потери / переобучение | Qwen2.5-1.5B + LoRA | в работе | [`boundaries/report.md`](boundaries/report.md) |
+| `distillation` | Дистилляция: ученик 1.5B учится на ответах учителя 7B | Qwen2.5-1.5B + LoRA | готово | [`distillation/report.md`](distillation/report.md) |
 
 Другие проекты добавляются по мере готовности.
 

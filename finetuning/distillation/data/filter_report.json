@@ -1,0 +1,23 @@
+{
+  "corpus": 511,
+  "labeled": 511,
+  "format_ok": 347,
+  "semantic_ok": 235,
+  "teacher_error_rate": 0.5401174168297456,
+  "distill": {
+    "train": 312,
+    "valid": 35
+  },
+  "golden": {
+    "train": 211,
+    "valid": 24
+  },
+  "teacher_mistakes": 112,
+  "by_category": {
+    "colloquial": 64,
+    "correction": 66,
+    "invalid": 71,
+    "multi": 33,
+    "simple": 113
+  }
+}
