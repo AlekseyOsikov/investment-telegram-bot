@@ -19,6 +19,7 @@ FileNotFoundError (нет `uv`), TimeoutError, ошибка самого инс�
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 
@@ -26,20 +27,29 @@ from telegram import Update
 from telegram.constants import ChatAction
 from telegram.ext import CommandHandler, ContextTypes, filters
 
+from config import OLLAMA_BASE_URL, WATCH_PARSER_MODEL, WATCH_PARSER_TIMEOUT_SECONDS
 from mcp_integration.watch_session import WatchToolError, call_watch_tool
 
-from .parse import ParseError, parse_watch_args
+from .nl_parse import parse_free_text
+from .parse import ParseError, WatchRequest, parse_watch_args
 from .scheduler import SCHEDULER_KEY, WatchScheduler, split_message
 from .texts import (
     NO_WATCH_TEXT,
     USAGE_TEXT,
     friendly_tool_error,
+    parser_error_text,
     watch_set_text,
     watch_status_text,
     watch_stop_text,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _command_tail(text: str) -> str:
+    """Свободный текст после команды `/watch` (или `/watch@botname`) — как ввёл пользователь."""
+    parts = text.split(maxsplit=1)
+    return parts[1] if len(parts) > 1 else ""
 
 
 async def _call_or_report(
@@ -100,13 +110,52 @@ def _earliest(*moments: str | None) -> datetime | None:
     return min(parsed) if parsed else None
 
 
+async def _resolve_request(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, error: ParseError
+) -> WatchRequest | None:
+    """При неудачном строгом разборе — свободный текст через модель-парсер.
+
+    Возвращает `WatchRequest` при успехе разбора или `None`, если пользователю уже
+    отвечено (пустая команда, ошибка разбора, модель не задана или недоступна).
+    """
+    if error.reason is None:
+        # Пустая команда — сразу подсказка, без вызова модели.
+        await update.message.reply_text(USAGE_TEXT)
+        return None
+
+    if not WATCH_PARSER_MODEL:
+        await update.message.reply_text(f"⚠️ {error.reason}\n\n{USAGE_TEXT}")
+        return None
+
+    text = _command_tail(update.effective_message.text or "")
+    if not text.strip():
+        await update.message.reply_text(USAGE_TEXT)
+        return None
+
+    parsed = await asyncio.to_thread(
+        parse_free_text,
+        text,
+        model=WATCH_PARSER_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        timeout=WATCH_PARSER_TIMEOUT_SECONDS,
+    )
+    if parsed is None:
+        # Модель недоступна или ответ не разобрать — как при выключенной функции.
+        await update.message.reply_text(USAGE_TEXT)
+        return None
+    if isinstance(parsed, WatchRequest):
+        return parsed
+    await update.message.reply_text(parser_error_text(parsed))
+    return None
+
+
 async def watch_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """/watch <тикеры> <период опроса> <период сводки> — задать или заменить опрос."""
+    """/watch — задать или заменить опрос: строгим синтаксисом или свободным текстом."""
     request = parse_watch_args(list(context.args or []))
     if isinstance(request, ParseError):
-        text = USAGE_TEXT if request.reason is None else f"⚠️ {request.reason}\n\n{USAGE_TEXT}"
-        await update.message.reply_text(text)
-        return
+        request = await _resolve_request(update, context, request)
+        if request is None:
+            return
 
     result = await _call_or_report(
         update,

@@ -10,9 +10,13 @@
 оставить smart-агенту данные биржи, но не включать бота, который пишет сам), `PRICE_WATCH_DB`
 (файл SQLite сервера, путь абсолютный), `PRICE_WATCH_TIMEOUT_SECONDS` (90, >0; больше
 `MCP_TIMEOUT_SECONDS`, потому что плановый вызов опрашивает биржу по всем чатам разом).
+Разбор свободного текста `/watch` — `WATCH_PARSER_MODEL` (имя модели в Ollama; пусто — выключено)
+и `WATCH_PARSER_TIMEOUT_SECONDS` (>0).
 
 Команды: `/watch <тикеры> <период опроса> <период сводки>` (пример `/watch SBER GAZP 15m 1h`),
-`/watch_status`, `/watch_report`, `/watch_stop`. Модель (LLM) в них не участвует.
+`/watch_status`, `/watch_report`, `/watch_stop`. При строгом синтаксисе LLM не участвует; при
+заданном `WATCH_PARSER_MODEL` свободный текст `/watch` разбирает локальная модель-парсер
+(`nl_parse.py`), но подготовка сводки по-прежнему без LLM (её собирает сервер).
 
 ## Разделение ответственности
 
@@ -32,6 +36,10 @@ WatchScheduler: ждёт next_due_at (не дольше часа) -> тик:
 - `parse.py` — чистый разбор аргументов: тикеры (пробелы/запятые), два последних слова —
   периоды (`m/h/d` или `м/ч/д`). Проверяет только ФОРМУ; границы, число тикеров и существование
   бумаги — на сервере.
+- `nl_parse.py` — разбор свободного текста `/watch` локальной моделью-парсером: самодостаточная
+  копия промпта/guard из `finetuning/watch_parser/` (без импорта `finetuning/`), чистые функции
+  (промпт, guard, `extract_json`, `to_watch_request`) + тонкий нативный вызов `/api/chat` с
+  жадными параметрами eval. `src/` не зависит от `finetuning/` — правки там переносятся сюда вручную.
 - `texts.py` — чистые тексты по ответам сервера, `friendly_tool_error` (сырой дамп валидатора
   схемы → русская фраза). Текст СВОДКИ собирает сервер.
 - `scheduler.py` — `run_tick()` (вызов сервера и отправка внедряются) и `WatchScheduler`
@@ -63,6 +71,6 @@ WatchScheduler: ждёт next_due_at (не дольше часа) -> тик:
 
 ## Тесты
 
-`tests/test_price_watch_parse.py`, `test_price_watch_texts.py`, `test_watch_session.py`,
-`test_price_watch_scheduler.py` — на фейках, без сети, процессов и сна. Обработчики команд и обмен
+`tests/test_price_watch_parse.py`, `test_price_watch_texts.py`, `test_price_watch_nl_parse.py`,
+`test_watch_session.py`, `test_price_watch_scheduler.py` — на фейках, без сети, процессов и сна. Обработчики команд и обмен
 с живым сервером проверяются вручную.

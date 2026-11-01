@@ -476,6 +476,16 @@ PRICE_WATCH_DB = os.path.abspath(
 PRICE_WATCH_TIMEOUT_SECONDS = float(os.getenv("PRICE_WATCH_TIMEOUT_SECONDS", "90"))
 PRICE_WATCH_ACTIVE = PRICE_WATCH and bool(MCP_MOEX_DIR)
 
+# Разбор свободного текста команды /watch локальной моделью-парсером (price_watch/nl_parse.py,
+# design.md изменения add-watch-free-text-parser). Настройки ОПЕРАТОРА: пользователь чата модель
+# не выбирает. WATCH_PARSER_MODEL — имя модели в Ollama (например, qwen25-watch-v3); пусто —
+# разбор свободного текста выключен, /watch работает только строгим синтаксисом и подсказкой.
+# Модель только локальная (адрес — OLLAMA_BASE_URL), поэтому свободный текст команды не покидает
+# машину. WATCH_PARSER_TIMEOUT_SECONDS — предел ожидания одного вызова разбора; при сбое или
+# тайм-ауте бот показывает подсказку, как при выключенной функции.
+WATCH_PARSER_MODEL = os.getenv("WATCH_PARSER_MODEL", "").strip()
+WATCH_PARSER_TIMEOUT_SECONDS = float(os.getenv("WATCH_PARSER_TIMEOUT_SECONDS", "30"))
+
 # --- Индексация документов и эмбеддинги (rag/, providers/embeddings_client.py) ---
 # Офлайн-пайплайн (rag/cli.py, `make index`) разбивает локальный корпус документов
 # (data/source/pdf/, data/source/txt/) на чанки двумя независимыми стратегиями и
@@ -994,6 +1004,13 @@ def _validate_config() -> None:
         logger.error(
             "Недопустимое значение PRICE_WATCH_TIMEOUT_SECONDS=%r: нужно число больше 0.",
             PRICE_WATCH_TIMEOUT_SECONDS,
+        )
+        sys.exit(1)
+
+    if WATCH_PARSER_TIMEOUT_SECONDS <= 0:
+        logger.error(
+            "Недопустимое значение WATCH_PARSER_TIMEOUT_SECONDS=%r: нужно число больше 0.",
+            WATCH_PARSER_TIMEOUT_SECONDS,
         )
         sys.exit(1)
 
