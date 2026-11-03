@@ -48,7 +48,8 @@ docker/ai-review-runner/runner.env
 .claude/worktrees/
 
 # Отчёты прогонов (make smoke, /qa-run)
-reports/
+reports/*
+!reports/prompt-injection/
 qa-out/
 
 # Fine-tuning: тяжёлые артефакты и внешние инструменты не в git
