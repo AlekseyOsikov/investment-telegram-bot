@@ -114,14 +114,16 @@ ATTACKS = [
 ]
 
 
-def ask(system: str, user: str, model: str, timeout: float) -> dict:
-    """Один запрос к Ollama через OpenAI-совместимый эндпоинт (как у бота)."""
+def ask(system: str | None, user: str, model: str, timeout: float) -> dict:
+    """Один запрос к Ollama через OpenAI-совместимый эндпоинт (как у бота).
+
+    `system=None` — запрос без системного сообщения (базовый уровень модели)."""
+    messages = [{"role": "user", "content": user}]
+    if system:
+        messages.insert(0, {"role": "system", "content": system})
     payload = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
+        "messages": messages,
         "stream": False,
         "temperature": 0,
         "options": {"num_predict": 2000},
@@ -140,7 +142,7 @@ def ask(system: str, user: str, model: str, timeout: float) -> dict:
     }
 
 
-def run(prompt_name: str, system: str, model: str, timeout: float, out_dir: Path) -> None:
+def run(prompt_name: str, system: str | None, model: str, timeout: float, out_dir: Path) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     results = {
         "model": model,
@@ -187,9 +189,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Тест prompt injection против промпта бота.")
     parser.add_argument(
         "--prompt",
-        choices=["original", "hardened"],
+        choices=["original", "hardened", "none"],
         default="original",
-        help="какой системный промпт атаковать (по умолчанию original)",
+        help="какой системный промпт атаковать: original/hardened/none (без промпта)",
     )
     parser.add_argument(
         "--model",
@@ -204,7 +206,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    system = SYSTEM_PROMPT if args.prompt == "original" else HARDENED_SYSTEM_PROMPT
+    if args.prompt == "original":
+        system = SYSTEM_PROMPT
+    elif args.prompt == "hardened":
+        system = HARDENED_SYSTEM_PROMPT
+    else:
+        system = None  # «none» — без системного промпта: базовый уровень модели
     print(f"Модель: {args.model}")
     print(f"Промпт: {args.prompt}")
     run(args.prompt, system, args.model, args.timeout, args.out)
