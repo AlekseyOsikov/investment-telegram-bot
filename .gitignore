@@ -50,6 +50,7 @@ docker/ai-review-runner/runner.env
 # Отчёты прогонов (make smoke, /qa-run)
 reports/*
 !reports/prompt-injection/
+!reports/indirect-prompt-injection
 qa-out/
 
 # Fine-tuning: тяжёлые артефакты и внешние инструменты не в git
