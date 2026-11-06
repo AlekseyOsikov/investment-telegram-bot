@@ -51,6 +51,7 @@ docker/ai-review-runner/runner.env
 reports/*
 !reports/prompt-injection/
 !reports/indirect-prompt-injection
+!reports/llm-gateway/
 qa-out/
 
 # Fine-tuning: тяжёлые артефакты и внешние инструменты не в git
