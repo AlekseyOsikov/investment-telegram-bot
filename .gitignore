@@ -52,6 +52,7 @@ reports/*
 !reports/prompt-injection/
 !reports/indirect-prompt-injection
 !reports/llm-gateway/
+reports/llm-gateway/audit-demo.jsonl
 qa-out/
 
 # Fine-tuning: тяжёлые артефакты и внешние инструменты не в git

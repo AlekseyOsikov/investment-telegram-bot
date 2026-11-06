@@ -25,6 +25,7 @@ OpenAI-совместимом формате `POST /v1/chat/completions`; гей
 
 - `scripts/llm_gateway/` — пакет гейтвея;
 - `scripts/llm_gateway_demo.py` — демо-прогон и генерация `results.json`/`audit.jsonl`;
+- `scripts/llm_gateway_compare.py` — консольное сравнение «без гейтвея vs с гейтвеем»;
 - `tests/test_llm_gateway.py` — 34 pytest-теста;
 - `reports/llm-gateway/results.json` — сырые результаты прогона;
 - `reports/llm-gateway/audit.jsonl` — аудит-лог (все записи с замаскированными секретами).
@@ -358,6 +359,43 @@ cost:        prompt=1000, completion=500, cost_usd=0.00045000 (gpt-4o-mini)
 }
 ```
 
+### 6.5. Консольная демонстрация «без гейтвея vs с гейтвеем»
+
+`scripts/llm_gateway_compare.py` — скрипт для наглядного сравнения: задаёте
+промпт, он делает два запроса (напрямую в Ollama и через гейтвей) и печатает оба
+ответа, находки, токены, стоимость и последнюю запись аудита.
+
+```bash
+# один промпт (block-режим)
+.venv/bin/python scripts/llm_gateway_compare.py "Мой ключ sk-proj-abc1234567890"
+
+# маскирование вместо блокировки
+.venv/bin/python scripts/llm_gateway_compare.py --guard-mode mask "Мой ключ sk-proj-abc1234567890"
+
+# не отправлять секрет напрямую в модель
+.venv/bin/python scripts/llm_gateway_compare.py --no-direct "..."
+
+# встроенные примеры: AWS, карта, Base64, разбитый ключ, чистый промпт
+.venv/bin/python scripts/llm_gateway_compare.py --examples
+
+# против уже запущенного сервера
+.venv/bin/python scripts/llm_gateway_compare.py --gateway-url http://127.0.0.1:8000 "..."
+```
+
+Пример вывода для промпта с ключом (block):
+
+```
+=== 1. БЕЗ гейтвея (напрямую в Ollama) ===
+HTTP 200
+⚠️  В промпте был секрет: openai_api_key — он ушёл в модель как есть.
+...
+=== 2. С гейтвеем (guard_mode=block) ===
+HTTP 400
+Сработал guard: input
+Ошибка: input_guard_blocked: ... В LLM ничего не отправлено.
+  - openai_api_key -> [REDACTED_API_KEY] (preview=sk-***90)
+```
+
 ---
 
 ## 7. Выводы
@@ -386,6 +424,7 @@ cost:        prompt=1000, completion=500, cost_usd=0.00045000 (gpt-4o-mini)
   `pricing.py`, `ratelimit.py`, `audit.py`, `providers.py`, `settings.py`,
   `__main__.py`, `requirements.txt`.
 - `scripts/llm_gateway_demo.py` — демо-прогон.
+- `scripts/llm_gateway_compare.py` — консольное сравнение «без гейтвея vs с гейтвеем».
 - `tests/test_llm_gateway.py` — 34 теста.
 - `reports/llm-gateway/results.json` — результаты live + детерминированных кейсов.
 - `reports/llm-gateway/audit.jsonl` — аудит-лог перехваченных секретов.
@@ -399,6 +438,11 @@ cost:        prompt=1000, completion=500, cost_usd=0.00045000 (gpt-4o-mini)
 
 # только детерминированная часть, без вызовов модели
 .venv/bin/python scripts/llm_gateway_demo.py --no-live
+
+# консольное сравнение «без гейтвея vs с гейтвеем»
+.venv/bin/python scripts/llm_gateway_compare.py "Мой ключ sk-proj-abc1234567890"
+.venv/bin/python scripts/llm_gateway_compare.py --guard-mode mask "..."
+.venv/bin/python scripts/llm_gateway_compare.py --examples
 
 # сервер
 PYTHONPATH=scripts .venv/bin/python -m llm_gateway --port 8000
