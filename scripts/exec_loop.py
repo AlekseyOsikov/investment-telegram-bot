@@ -1,13 +1,15 @@
 """Execution loop (День 5): ассистент берёт задачу из трекера → выполняет → коммитит → следующая.
 
-    python scripts/exec_loop.py --tracker tasks/tracker.md --branch exec-loop-run1 --model sonnet
+    python scripts/exec_loop.py --tracker tasks/tracker.md --branch exec-loop-run1 \
+        --model provider/model
 
 Оснастка вне бота (`src/` её не импортирует). Трекер — обычный Markdown-файл со списком
 `- [ ] ID заголовок` (формат — `tasks/tracker.example.md`), который ведёт пользователь. Раннер на
-каждой итерации запускает НОВУЮ сессию `claude -p` с одним и тем же промптом
+каждой итерации запускает НОВУЮ сессию `opencode run --standalone` с одним и тем же промптом
 (`exec_loop_lib.PROMPT_TEMPLATE`): ассистент сам открывает трекер, берёт первую невыполненную
-задачу, выбирает профиль, выполняет, отмечает `[x]` и коммитит. Человек между задачами ничего не
-подсказывает. Раннер только запускает сессии, проверяет результат и ведёт лог.
+задачу, выбирает профиль (субагента из `.opencode/agents/`), выполняет, отмечает `[x]` и коммитит.
+Человек между задачами ничего не подсказывает. Раннер только запускает сессии, проверяет результат
+и ведёт лог.
 
 Приёмка (раннер делает её сам, не доверяя словам ассистента):
 1. в трекере появилась хотя бы одна новая отметка `[x]` у задачи, которая была открыта;
@@ -18,15 +20,15 @@
 Не прошло — изменения откатываются, вторая попытка (`--attempts`) видит только вывод приёмки.
 Экономия токенов: до запуска модели раннер выполняет «Проверка:» задачи; если команда или файл не
 найдены (код 126/127), модель не запускается, а задача сразу `[!]` («некорректная приёмка»); то же
-после попытки — повтор не делается. Лимит стоимости одной попытки — `--budget-usd` (по умолчанию $1,
-`claude --max-budget-usd`); превышение — задача `[!]` без повтора. Ошибка самого `claude`
-(авторизация, 403, нет сети) останавливает цикл, трекер не трогается.
+после попытки — повтор не делается. Ошибка самого `opencode run` (авторизация, нет сети, неверная
+модель) останавливает цикл, трекер не трогается. Стоимость попытки считается из событий
+`step_finish` и пишется в лог; жёсткого лимита бюджета на попытку у opencode нет.
 Если все попытки провалены, задача помечается `[!]` (раннер коммитит отметку), и цикл идёт дальше.
 
 Итог — `reports/exec_loop/<ветка>/` (`log.md`, `results.json`, вывод каждой попытки; `reports/`
 не коммитится). Чистые правила — `exec_loop_lib.py`, тесты — `tests/test_exec_loop_lib.py`.
 
-Ограничения: ассистент работает в ЭТОМ репозитории с правами из `ALLOWED_TOOLS` (+ `--allow`), без
+Ограничения: ассистент работает в ЭТОМ репозитории с правами из `.opencode/opencode.json`, без
 `push`; команды «Проверка:» из трекера выполняются раннером с вашими правами — трекер ведёте вы.
 Запускайте на отдельной ветке прогона, не на основной.
 """
@@ -57,17 +59,6 @@ DEFAULT_GATES = [
     ".venv/bin/python -m compileall -q src",
     ".venv/bin/pytest tests -q",
 ]
-
-ALLOWED_TOOLS = [
-    "Read", "Edit", "Write", "Grep", "Glob", "Task", "Agent",
-    "Bash(.venv/bin/pytest:*)", "Bash(.venv/bin/ruff:*)", "Bash(.venv/bin/python:*)",
-    "Bash(TELEGRAM_BOT_TOKEN=x DEEPSEEK_API_KEY=x .venv/bin/pytest:*)",
-    "Bash(bash tasks/check.sh:*)", "Bash(tasks/check.sh:*)",
-    "Bash(git status:*)", "Bash(git diff:*)", "Bash(git log:*)",
-    "Bash(git add:*)", "Bash(git commit:*)",
-    "Bash(grep:*)", "Bash(ls:*)", "Bash(wc:*)",
-]
-DENIED_TOOLS = ["Read(./.env)", "Bash(git push:*)"]
 
 
 class LoopAborted(Exception):
@@ -163,28 +154,21 @@ def preflight(target: lib.Task, base: str) -> str:
 
 def run_attempt(number: int, previous: str | None, args, out_dir: Path, tag: str) -> lib.Attempt:
     base = git("rev-parse", "HEAD")
-    cmd = [
-        "claude", "-p", lib.build_prompt(args.tracker, previous), "--output-format", "json",
-        "--permission-mode", "acceptEdits", "--no-session-persistence",
-        "--allowedTools", *ALLOWED_TOOLS, *args.allow,
-        "--disallowedTools", *DENIED_TOOLS, *args.deny,
-    ]
-    if args.budget_usd > 0:
-        cmd += ["--max-budget-usd", f"{args.budget_usd:g}"]
+    cmd = ["opencode", "run", "--standalone", "--format", "json", "--auto"]
     if args.model:
         cmd += ["--model", args.model]
+    cmd += [lib.build_prompt(args.tracker, previous)]
     env = {**os.environ, "TASK_BASE": base}
     env.update(dict(item.split("=", 1) for item in args.env))
     started = time.monotonic()
     code, out, timed_out = run_process(cmd, env, args.timeout)
     seconds = time.monotonic() - started
     (out_dir / f"attempt_{tag}_{number}.json").write_text(out, encoding="utf-8")
-    data = lib.parse_claude_output(out)
+    data = lib.parse_opencode_output(out)
     return lib.Attempt(
-        seconds=seconds, returncode=code, timed_out=timed_out, turns=data.get("num_turns"),
-        cost_usd=data.get("total_cost_usd"), changed_files=len(changed_paths(base, args.tracker)),
+        seconds=seconds, returncode=code, timed_out=timed_out, turns=data.get("turns"),
+        cost_usd=data.get("cost_usd"), changed_files=len(changed_paths(base, args.tracker)),
         api_error=lib.api_error_text(data, code, out),
-        budget_exceeded=lib.is_budget_exceeded(data),
     )
 
 
@@ -218,7 +202,7 @@ def run_iteration(target: lib.Task, args, tracker: Path, gates: list[str],
         attempt = run_attempt(number, previous, args, out_dir, target.task_id)
         if attempt.api_error:
             rollback(base)
-            raise LoopAborted(f"claude не смог выполнить запрос: {attempt.api_error}")
+            raise LoopAborted(f"opencode не смог выполнить запрос: {attempt.api_error}")
         done, passed, report, broken = judge(before, tracker, args.tracker, base, gates_ok, gates)
         attempt.check_passed, attempt.check_output, attempt.broken_check = passed, report, broken
         (out_dir / f"check_{target.task_id}_{number}.txt").write_text(report, encoding="utf-8")
@@ -235,7 +219,7 @@ def run_iteration(target: lib.Task, args, tracker: Path, gates: list[str],
             return result
         previous = report
         rollback(base)
-        if broken or attempt.budget_exceeded:  # повтор потратит ещё столько же и не поможет
+        if broken:  # приёмку чинить в трекере, повтор попытки ничего не изменит
             break
     return result
 
@@ -293,13 +277,11 @@ def main() -> int:
     parser.add_argument("--tracker", default=DEFAULT_TRACKER, help=f"трекер ({DEFAULT_TRACKER})")
     parser.add_argument("--branch", help="создать ветку прогона и перейти в неё")
     parser.add_argument("--from", dest="start", default="HEAD", help="откуда создать ветку (HEAD)")
-    parser.add_argument("--model", help="модель для claude --model")
-    parser.add_argument("--env", action="append", default=[], help="KEY=VALUE для процесса claude")
+    parser.add_argument("--model", help="модель для opencode run (формат provider/model#variant)")
+    parser.add_argument("--env", action="append", default=[],
+                        help="KEY=VALUE для процесса opencode")
     parser.add_argument("--timeout", type=float, default=900, help="секунд на попытку")
     parser.add_argument("--attempts", type=int, default=2, help="попыток на задачу")
-    parser.add_argument("--budget-usd", type=float, default=1.0,
-                        help="лимит стоимости ОДНОЙ попытки в $ (claude --max-budget-usd; 0 — без "
-                             "лимита). Проверяется между ходами, небольшой перерасход возможен")
     parser.add_argument("--max-tasks", type=int, default=0, help="остановиться после N итераций")
     parser.add_argument("--stop-on-fail", action="store_true", help="стоп после первого провала")
     parser.add_argument("--commits", choices=lib.COMMIT_MODES, default=lib.COMMITS_SEQUENTIAL,
@@ -308,8 +290,6 @@ def main() -> int:
     parser.add_argument("--gate", action="append", default=None,
                         help="проверка проекта (повторяемая; по умолчанию сборка и тесты)")
     parser.add_argument("--no-gates", action="store_true", help="не запускать проверки проекта")
-    parser.add_argument("--allow", action="append", default=[], help="доп. разрешённый инструмент")
-    parser.add_argument("--deny", action="append", default=[], help="доп. запрещённый инструмент")
     parser.add_argument("--dry-run", action="store_true", help="показать задачи и промпт")
     args = parser.parse_args()
 
@@ -345,7 +325,8 @@ def main() -> int:
             result = run(target, args, tracker, gates, out_dir)
         except LoopAborted as error:
             print(f"[{target.task_id}] ПРЕРВАНО: {error}", flush=True)
-            print("Задача осталась открытой в трекере; проверьте `claude -p ok` и перезапустите.")
+            print("Задача осталась открытой в трекере; проверьте `opencode run \"ок\"` "
+                  "и перезапустите.")
             aborted = True
             break
         settle_tracker(result, target, args, tracker)

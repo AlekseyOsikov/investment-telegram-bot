@@ -16,11 +16,9 @@ FAIL_BROKEN_CODE = "нерабочий код"
 FAIL_LOOP = "зациклился / таймаут"
 FAIL_TOOLING = "сбой запуска ассистента"
 FAIL_BAD_CHECK = "некорректная приёмка"
-FAIL_BUDGET = "превышен бюджет попытки"
 
 # Коды bash: 126 — файл не исполняется, 127 — команда или файл не найдены.
 BROKEN_CHECK_CODES = (126, 127)
-BUDGET_SUBTYPE = "error_max_budget_usd"
 
 _TASK_LINE_RE = re.compile(r"^- \[( |x|X|!)\] +(.+?)\s*$")
 _ID_RE = re.compile(r"^([A-Za-zА-Яа-я]{1,8}-?\d+):?$")
@@ -52,14 +50,13 @@ class Attempt:
     seconds: float
     returncode: int
     timed_out: bool = False
-    turns: int | None = None
+    turns: int | None = None  # число шагов модели (событий step_finish)
     cost_usd: float | None = None
     changed_files: int = 0
     check_passed: bool = False
     check_output: str = ""
     api_error: str = ""  # ассистент не смог начать работу: ошибка авторизации/API/запуска
     broken_check: bool = False  # команда «Проверка:» не нашлась (код 126/127): повтор бессмыслен
-    budget_exceeded: bool = False  # claude остановлен лимитом --max-budget-usd
 
 
 @dataclass
@@ -184,9 +181,10 @@ PROMPT_TEMPLATE = """Ты работаешь в автономном цикле:
 Порядок:
 1. Открой {tracker} и возьми ПЕРВУЮ невыполненную задачу («- [ ]»); задачи «- [x]» уже сделаны, \
 «- [!]» пропусти. Другие задачи не трогай.
-2. Выбери профиль по типу задачи: баг — субагент bug-fix; недостающие тесты — test-writer; \
-расхождения в документации — doc-sync; вопрос по коду — research; фичу и рефакторинг делай сам. \
-Работай по правилам проекта (CLAUDE.md и документам, на которые он ссылается).
+2. Выбери профиль по типу задачи и запусти субагента из `.opencode/agents/`: баг — bug-fix; \
+недостающие тесты — test-writer; расхождения в документации — doc-sync; вопрос по коду — \
+research; фичу и рефакторинг делай сам. Работай по правилам проекта (CLAUDE.md и документам, \
+на которые он ссылается).
 3. Выполни задачу, правя только то, что она требует. Тесты не ослабляй и не удаляй.
 4. Если у задачи есть строка «Проверка:», выполни указанную команду и добейся успеха; \
 прогони также проверки проекта (сборка, линтер, тесты).
@@ -211,21 +209,51 @@ def build_prompt(tracker: str, previous_check_output: str | None = None) -> str:
     return prompt
 
 
-def parse_claude_output(raw: str) -> dict:
-    """Итоговое событие `claude -p --output-format json`: словарь или список событий (тогда —
-    последнее с `type == "result"`); перед JSON допускается постороннее предупреждение. Не
-    разобралось — пустой словарь."""
-    starts = [i for i in (raw.find("["), raw.find("{")) if i != -1]
-    if not starts:
-        return {}
-    try:
-        data = json.loads(raw[min(starts) :])
-    except ValueError:
-        return {}
-    if isinstance(data, list):
-        events = (e for e in reversed(data) if isinstance(e, dict) and e.get("type") == "result")
-        data = next(events, {})
-    return data if isinstance(data, dict) else {}
+def parse_opencode_output(raw: str) -> dict:
+    """NDJSON-вывод `opencode run --format json` → сводка для метрик и детекта ошибок.
+
+    События: `step_start`, `text`, `step_finish` (в `part`: `text`, `reason`, `cost`, `tokens`).
+    Возвращает: `text` (склейка текстовых частей ответа), `turns` (число шагов модели = число
+    `step_finish`; None, если модель не сделала ни шага), `cost_usd` (сумма `cost` по шагам),
+    `reason` (финальный step_finish.reason), `error_text` (текст события ошибки, если было).
+    Не разобралось — словарь с `turns=None`."""
+    text_parts: list[str] = []
+    turns = 0
+    cost = 0.0
+    reason = ""
+    error_text = ""
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        part = event.get("part") if isinstance(event.get("part"), dict) else {}
+        etype = event.get("type")
+        if etype == "text":
+            text_parts.append(part.get("text") or "")
+        elif etype == "step_finish":
+            turns += 1
+            cost += part.get("cost") or 0.0
+            reason = part.get("reason") or ""
+        elif etype in ("error", "fatal"):
+            err = event.get("error")
+            if isinstance(err, dict):
+                msg = err.get("message") or err.get("type") or ""
+            else:
+                msg = err or event.get("message") or ""
+            error_text = str(msg)[:300]
+    return {
+        "text": "".join(text_parts).strip(),
+        "turns": turns or None,
+        "cost_usd": cost,
+        "reason": reason,
+        "error_text": error_text,
+    }
 
 
 def is_broken_check(returncode: int) -> bool:
@@ -233,23 +261,17 @@ def is_broken_check(returncode: int) -> bool:
     return returncode in BROKEN_CHECK_CODES
 
 
-def is_budget_exceeded(data: dict) -> bool:
-    """Итоговое событие `claude`: остановлен лимитом `--max-budget-usd`."""
-    return data.get("subtype") == BUDGET_SUBTYPE
-
-
 def api_error_text(data: dict, returncode: int, raw: str) -> str:
-    """Текст ошибки, если `claude` не смог начать работу (авторизация, 403/5xx, лимиты, нет вывода).
+    """Текст ошибки, если `opencode run` не смог начать работу (нет ни одного шага модели).
 
-    Признак: итоговое событие с `is_error` и не больше одного хода, либо код выхода ≠ 0 без
-    разобранного итога. Ошибка посреди работы (много ходов, таймаут, бюджет) — это не он, а
-    провал задачи.
+    Признак: модель не сделала ни одного шага (`turns` пусто), при этом либо было событие ошибки,
+    либо код выхода ≠ 0. Ошибка посреди работы (шаги были) — это не сбой запуска, а провал задачи.
     """
-    if is_budget_exceeded(data):
+    if data.get("turns"):
         return ""
-    if data.get("is_error") and (data.get("num_turns") or 0) <= 1:
-        return str(data.get("result") or "ошибка без текста")[:300]
-    if returncode not in (0, -9) and not data:
+    if data.get("error_text"):
+        return data["error_text"]
+    if returncode not in (0, -9):
         return raw.strip()[-300:] or f"код выхода {returncode}"
     return ""
 
@@ -263,8 +285,6 @@ def classify_failure(attempts: list[Attempt]) -> str:
         return FAIL_TOOLING
     if last.broken_check:
         return FAIL_BAD_CHECK
-    if last.budget_exceeded:
-        return FAIL_BUDGET
     if last.timed_out:
         return FAIL_LOOP
     if last.returncode != 0 and last.changed_files == 0 and last.turns is None:

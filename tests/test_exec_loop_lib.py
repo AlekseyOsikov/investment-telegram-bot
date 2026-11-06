@@ -93,14 +93,23 @@ def test_render_log_has_rows_and_metrics():
     assert "Примечание" in text and "Время без пауз: **1.2 мин**" in text
 
 
-def test_parse_claude_output_variants():
-    event = '{"type": "result", "num_turns": 4, "total_cost_usd": 0.1}'
-    assert lib.parse_claude_output(event)["num_turns"] == 4
-    listing = f'[{{"type": "system"}}, {event}]'
-    assert lib.parse_claude_output(listing)["total_cost_usd"] == 0.1
-    assert lib.parse_claude_output("Warning: no stdin\n" + listing)["num_turns"] == 4
-    assert lib.parse_claude_output("[]") == {} and lib.parse_claude_output("мусор") == {}
-    assert lib.parse_claude_output("[1, 2") == {}
+def test_parse_opencode_output_variants():
+    step_finish = '{"type": "step_finish", "part": {"reason": "stop", "cost": 0.1}}'
+    text = '{"type": "text", "part": {"text": "готово"}}'
+    parsed = lib.parse_opencode_output(text + "\n" + step_finish)
+    assert parsed["turns"] == 1 and parsed["cost_usd"] == 0.1 and parsed["text"] == "готово"
+    assert parsed["reason"] == "stop" and parsed["error_text"] == ""
+    # несколько шагов и текстовых частей
+    parsed = lib.parse_opencode_output(text + "\n" + step_finish + "\n" + step_finish + "\n")
+    assert parsed["turns"] == 2 and parsed["cost_usd"] == 0.2
+    # ошибка запуска: событие error, шагов нет
+    error = ('{"type": "error", "error": '
+             '{"type": "provider.no-route", "message": "Model unavailable: x"}}')
+    parsed = lib.parse_opencode_output(error)
+    assert parsed["turns"] is None and parsed["error_text"] == "Model unavailable: x"
+    # мусор и пустота
+    assert lib.parse_opencode_output("мусор\nещё строка")["turns"] is None
+    assert lib.parse_opencode_output("")["turns"] is None
 
 
 def test_parse_tracker_statuses_ids_titles_and_checks():
@@ -181,31 +190,28 @@ def test_render_log_shows_branch_only_for_passed_tasks():
     assert "ветка `run-T01`" in text and "run-T02" not in text
 
 
-def test_broken_check_and_budget_signals():
+def test_broken_check_signals():
     assert lib.is_broken_check(127) and lib.is_broken_check(126)
     assert not lib.is_broken_check(1) and not lib.is_broken_check(0) and not lib.is_broken_check(-9)
-    assert lib.is_budget_exceeded({"subtype": "error_max_budget_usd", "is_error": True})
-    assert not lib.is_budget_exceeded({"subtype": "success"}) and not lib.is_budget_exceeded({})
 
 
 def test_api_error_text_only_for_failures_to_start():
-    auth = {"is_error": True, "num_turns": 1, "result": "Failed to authenticate. API Error: 403"}
-    assert "403" in lib.api_error_text(auth, 1, "")
-    assert lib.api_error_text({"is_error": True, "num_turns": 1}, 1, "") == "ошибка без текста"
-    assert "boom" in lib.api_error_text({}, 2, "stack\nboom")
-    assert lib.api_error_text({}, 2, "") == "код выхода 2"
-    assert lib.api_error_text({"is_error": True, "num_turns": 20, "result": "x"}, 1, "") == ""
-    budget = {"subtype": "error_max_budget_usd", "is_error": True, "num_turns": 1}
-    assert lib.api_error_text(budget, 1, "") == ""
-    assert lib.api_error_text({"num_turns": 3, "result": "ок"}, 0, "") == ""
-    assert lib.api_error_text({}, -9, "") == ""
+    # модель отработала хотя бы шаг — это не сбой запуска
+    assert lib.api_error_text({"turns": 3, "error_text": ""}, 1, "") == ""
+    # ошибка запуска без шагов, с событием ошибки
+    assert "403" in lib.api_error_text({"turns": None, "error_text": "API Error: 403"}, 1, "")
+    # ошибка запуска без шагов и без события — текст из вывода
+    assert "boom" in lib.api_error_text({"turns": None, "error_text": ""}, 2, "stack\nboom")
+    assert lib.api_error_text({"turns": None, "error_text": ""}, 2, "") == "код выхода 2"
+    # таймаут (-9) и успешный запуск без шагов (0) — не ошибка запуска
+    assert lib.api_error_text({"turns": None, "error_text": ""}, -9, "") == ""
+    assert lib.api_error_text({"turns": None, "error_text": ""}, 0, "") == ""
 
 
 def test_new_failure_classes():
     assert lib.classify_failure([attempt(api_error="403")]) == lib.FAIL_TOOLING
     assert lib.classify_failure([attempt(broken_check=True)]) == lib.FAIL_BAD_CHECK
-    assert lib.classify_failure([attempt(budget_exceeded=True)]) == lib.FAIL_BUDGET
-    assert lib.classify_failure([attempt(timed_out=True, budget_exceeded=True)]) == lib.FAIL_BUDGET
+    assert lib.classify_failure([attempt(timed_out=True)]) == lib.FAIL_LOOP
 
 
 def test_skipped_task_has_class_and_breaks_streak():
