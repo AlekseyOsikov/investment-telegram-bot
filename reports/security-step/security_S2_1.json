@@ -1,0 +1,21 @@
+{
+ "url": "http://127.0.0.1:8000/v1/chat/completions",
+ "model": "gpt-oss:20b",
+ "diff_chars": 1748,
+ "http_status": 200,
+ "gateway_input_findings": 0,
+ "gateway_input_types": "",
+ "gateway_blocked": "",
+ "response_text": "{\"overall\":\"medium\",\"findings\":[{\"severity\":\"medium\",\"category\":\"pii_in_logs\",\"file\":\"scripts/demo_security_logging.py\",\"line\":13,\"reason\":\"Logging sensitive user data (username, name, text, chat_id) in plain logs exposes PII.\"}]}",
+ "overall": "medium",
+ "source": "llm",
+ "findings": [
+  {
+   "severity": "medium",
+   "category": "pii_in_logs",
+   "file": "scripts/demo_security_logging.py",
+   "line": 13,
+   "reason": "Logging sensitive user data (username, name, text, chat_id) in plain logs exposes PII."
+  }
+ ]
+}

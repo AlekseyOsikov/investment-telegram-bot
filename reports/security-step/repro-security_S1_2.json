@@ -1,0 +1,21 @@
+{
+ "url": "http://127.0.0.1:8000/v1/chat/completions",
+ "model": "gpt-oss:20b",
+ "diff_chars": 902,
+ "http_status": 200,
+ "gateway_input_findings": 0,
+ "gateway_input_types": "",
+ "gateway_blocked": "",
+ "response_text": "{\"overall\":\"high\",\"findings\":[{\"severity\":\"high\",\"category\":\"hardcoded_secret\",\"file\":\"scripts/demo_security_token.py\",\"line\":3,\"reason\":\"Hardcoded authentication token in source code\"}]}",
+ "overall": "high",
+ "source": "llm",
+ "findings": [
+  {
+   "severity": "high",
+   "category": "hardcoded_secret",
+   "file": "scripts/demo_security_token.py",
+   "line": 3,
+   "reason": "Hardcoded authentication token in source code"
+  }
+ ]
+}

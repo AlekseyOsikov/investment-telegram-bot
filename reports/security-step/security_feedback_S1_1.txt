@@ -1,0 +1,2 @@
+SECURITY REVIEW: предыдущая версия не прошла проверку безопасности.
+- исправь: hardcoded_secret в scripts/demo_security_token.py:3 — Hardcoded authentication token in source code

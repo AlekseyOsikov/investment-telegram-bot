@@ -1,0 +1,2 @@
+SECURITY REVIEW: предыдущая версия не прошла проверку безопасности.
+- исправь: hardcoded_secret в scripts/demo_security_token.py:11 — Hardcoded authentication token "auth_live_9f8e7d6c5b4a3e2d1c0b" stored directly in source code

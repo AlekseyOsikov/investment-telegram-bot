@@ -1,0 +1,4 @@
+SECURITY REVIEW: предыдущая версия не прошла проверку безопасности.
+- исправь: http_instead_of_https в scripts/demo_security_api.py:3 — URL uses HTTP instead of HTTPS, exposing data in transit.
+- исправь: missing_input_validation в scripts/demo_security_api.py:5 — Function fetch accepts any URL without validation, allowing malicious input.
+- исправь: ssrf в scripts/demo_security_api.py:5 — fetch(url) can be used to send requests to internal network or arbitrary hosts, enabling Server-Side Request Forgery.

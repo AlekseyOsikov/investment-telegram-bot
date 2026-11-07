@@ -1,0 +1,21 @@
+{
+ "url": "http://127.0.0.1:8000/v1/chat/completions",
+ "model": "gpt-oss:20b",
+ "diff_chars": 2273,
+ "http_status": 200,
+ "gateway_input_findings": 0,
+ "gateway_input_types": "",
+ "gateway_blocked": "",
+ "response_text": "{\"overall\":\"high\",\"findings\":[{\"severity\":\"high\",\"category\":\"pii_in_logs\",\"file\":\"scripts/demo_security_logging.py\",\"line\":22,\"reason\":\"Logging user identifiers, usernames, first names, message text, and chat IDs exposes personally identifiable information in logs.\"}]}",
+ "overall": "high",
+ "source": "llm",
+ "findings": [
+  {
+   "severity": "high",
+   "category": "pii_in_logs",
+   "file": "scripts/demo_security_logging.py",
+   "line": 22,
+   "reason": "Logging user identifiers, usernames, first names, message text, and chat IDs exposes personally identifiable information in logs."
+  }
+ ]
+}

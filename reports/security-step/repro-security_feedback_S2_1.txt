@@ -1,0 +1,2 @@
+SECURITY REVIEW: предыдущая версия не прошла проверку безопасности.
+- исправь: pii_in_logs в scripts/demo_security_logging.py:22 — Logging user identifiers, usernames, first names, message text, and chat IDs exposes personally identifiable information in logs.

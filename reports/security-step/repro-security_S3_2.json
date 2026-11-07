@@ -1,0 +1,35 @@
+{
+ "url": "http://127.0.0.1:8000/v1/chat/completions",
+ "model": "gpt-oss:20b",
+ "diff_chars": 1323,
+ "http_status": 200,
+ "gateway_input_findings": 0,
+ "gateway_input_types": "",
+ "gateway_blocked": "",
+ "response_text": "{\"overall\":\"medium\",\"findings\":[{\"severity\":\"medium\",\"category\":\"http_instead_of_https\",\"file\":\"scripts/demo_security_api.py\",\"line\":12,\"reason\":\"GET request uses HTTP URL, which is insecure.\"},{\"severity\":\"medium\",\"category\":\"missing_input_validation\",\"file\":\"scripts/demo_security_api.py\",\"line\":12,\"reason\":\"URL parameter is not validated, allowing arbitrary URLs.\"},{\"severity\":\"medium\",\"category\":\"ssrf\",\"file\":\"scripts/demo_security_api.py\",\"line\":12,\"reason\":\"Function accepts any URL, potentially enabling Server-Side Request Forgery if called with user-supplied input.\"}]}",
+ "overall": "medium",
+ "source": "llm",
+ "findings": [
+  {
+   "severity": "medium",
+   "category": "http_instead_of_https",
+   "file": "scripts/demo_security_api.py",
+   "line": 12,
+   "reason": "GET request uses HTTP URL, which is insecure."
+  },
+  {
+   "severity": "medium",
+   "category": "missing_input_validation",
+   "file": "scripts/demo_security_api.py",
+   "line": 12,
+   "reason": "URL parameter is not validated, allowing arbitrary URLs."
+  },
+  {
+   "severity": "medium",
+   "category": "ssrf",
+   "file": "scripts/demo_security_api.py",
+   "line": 12,
+   "reason": "Function accepts any URL, potentially enabling Server-Side Request Forgery if called with user-supplied input."
+  }
+ ]
+}
