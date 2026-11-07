@@ -16,6 +16,12 @@ FAIL_BROKEN_CODE = "нерабочий код"
 FAIL_LOOP = "зациклился / таймаут"
 FAIL_TOOLING = "сбой запуска ассистента"
 FAIL_BAD_CHECK = "некорректная приёмка"
+FAIL_SECURITY = "заблокировано security review"
+
+# Severity security-ревью: Critical/High → откат и повтор, Medium/Low → warning и коммит.
+SEVERITY_ORDER = {"clean": 0, "low": 1, "medium": 2, "high": 3, "critical": 4}
+BLOCK_SEVERITIES = frozenset({"critical", "high"})
+WARN_SEVERITIES = frozenset({"medium", "low"})
 
 # Коды bash: 126 — файл не исполняется, 127 — команда или файл не найдены.
 BROKEN_CHECK_CODES = (126, 127)
@@ -57,6 +63,9 @@ class Attempt:
     check_output: str = ""
     api_error: str = ""  # ассистент не смог начать работу: ошибка авторизации/API/запуска
     broken_check: bool = False  # команда «Проверка:» не нашлась (код 126/127): повтор бессмыслен
+    security_overall: str = ""  # вердикт security review: clean|low|medium|high|critical
+    security_findings: list[dict] = field(default_factory=list)
+    security_blocked: bool = False  # Critical/High: изменения откачены, нужен повтор
 
 
 @dataclass
@@ -68,6 +77,7 @@ class TaskResult:
     skipped: str = ""  # причина, по которой модель не запускалась (например, FAIL_BAD_CHECK)
     note: str = ""  # аномалии: взял не ту задачу, отметил несколько и т. п.
     branch: str = ""  # ветка задачи (режим commits=branches)
+    security_warnings: list[dict] = field(default_factory=list)  # Medium/Low: пропущено с warning
 
     @property
     def seconds(self) -> float:
@@ -82,6 +92,183 @@ class TaskResult:
         if self.passed:
             return None
         return self.skipped or classify_failure(self.attempts)
+
+
+# ---------------------------------------------------------------------------
+# Security step: вердикт второго LLM-вызова
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SecurityFinding:
+    """Одна находка security review."""
+
+    severity: str  # critical|high|medium|low
+    category: str  # hardcoded_secret|pii_in_logs|...
+    file: str = ""
+    line: int = 0
+    reason: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "severity": self.severity,
+            "category": self.category,
+            "file": self.file,
+            "line": self.line,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class SecurityVerdict:
+    """Итог security review. ``source`` — кто вынес вердикт: llm или gateway."""
+
+    overall: str  # clean|low|medium|high|critical
+    findings: tuple[SecurityFinding, ...] = ()
+    source: str = "llm"  # llm | gateway_input_guard | unparseable
+
+    @property
+    def blocks(self) -> bool:
+        return self.overall in BLOCK_SEVERITIES
+
+    @property
+    def warnings(self) -> list[SecurityFinding]:
+        return [f for f in self.findings if f.severity in WARN_SEVERITIES]
+
+
+def _normalize_severity(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return text if text in SEVERITY_ORDER else ""
+
+
+def _max_severity(values: list[str]) -> str:
+    known = [v for v in values if v in SEVERITY_ORDER]
+    if not known:
+        return "clean"
+    return max(known, key=lambda v: SEVERITY_ORDER[v])
+
+
+def _extract_json_object(text: str) -> str | None:
+    """Достать первый JSON-объект из ответа модели (снимает ```-фенсы и текст вокруг)."""
+    if not text:
+        return None
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        return None
+    return text[start : end + 1]
+
+
+def parse_security_verdict(text: str) -> SecurityVerdict | None:
+    """Разобрать JSON-вердикт security review. Не разобралось — ``None`` (решает I/O-слой)."""
+    payload = _extract_json_object(text)
+    if payload is None:
+        return None
+    try:
+        data = json.loads(payload)
+    except ValueError:
+        return None
+    if not isinstance(data, dict):
+        return None
+
+    findings: list[SecurityFinding] = []
+    raw_findings = data.get("findings")
+    if isinstance(raw_findings, list):
+        for item in raw_findings:
+            if not isinstance(item, dict):
+                continue
+            severity = _normalize_severity(item.get("severity")) or "low"
+            try:
+                line = int(item.get("line") or 0)
+            except (TypeError, ValueError):
+                line = 0
+            findings.append(
+                SecurityFinding(
+                    severity=severity,
+                    category=str(item.get("category") or "unknown"),
+                    file=str(item.get("file") or ""),
+                    line=line,
+                    reason=str(item.get("reason") or ""),
+                )
+            )
+
+    overall = _normalize_severity(data.get("overall"))
+    if not overall:
+        overall = _max_severity([f.severity for f in findings])
+    return SecurityVerdict(overall=overall, findings=tuple(findings), source="llm")
+
+
+def verdict_from_gateway_block(findings: list[dict]) -> SecurityVerdict:
+    """Gateway заблокировал security-review промпт (секрет в диффе) → Critical.
+
+    Это отдельный канал детекции: секрет поймал Input Guard прокси ещё до LLM.
+    """
+    mapped = tuple(
+        SecurityFinding(
+            severity="critical",
+            category=f"gateway:{item.get('type', 'unknown')}",
+            file="",
+            line=0,
+            reason=(
+                f"Gateway Input Guard заблокировал секрет в диффе "
+                f"({item.get('type', 'unknown')}, preview={item.get('preview', '')})"
+            ),
+        )
+        for item in findings
+        if isinstance(item, dict)
+    )
+    if not mapped:
+        mapped = (
+            SecurityFinding(
+                severity="critical",
+                category="gateway:input_guard_blocked",
+                reason="Gateway Input Guard заблокировал security-review запрос",
+            ),
+        )
+    return SecurityVerdict(overall="critical", findings=mapped, source="gateway_input_guard")
+
+
+def merge_security_verdicts(
+    gateway: SecurityVerdict | None, llm: SecurityVerdict | None
+) -> SecurityVerdict | None:
+    """Объединить вердикт gateway (секрет в диффе) и вердикт security-LLM.
+
+    Итоговая severity — максимум из двух; находки складываются.
+    """
+    if gateway is None and llm is None:
+        return None
+    if gateway is None:
+        return llm
+    if llm is None:
+        return gateway
+    overall = _max_severity([gateway.overall, llm.overall])
+    return SecurityVerdict(
+        overall=overall,
+        findings=tuple(gateway.findings) + tuple(llm.findings),
+        source="gateway_input_guard+llm",
+    )
+
+
+def format_security_feedback(verdict: SecurityVerdict) -> str:
+    """Фидбек для повтора генерации: «исправь: <category> в <file>:<line> — <reason>»."""
+    lines = ["SECURITY REVIEW: предыдущая версия не прошла проверку безопасности."]
+    for finding in verdict.findings:
+        where = ""
+        if finding.file:
+            where = f" в {finding.file}:{finding.line}" if finding.line else f" в {finding.file}"
+        reason = f" — {finding.reason}" if finding.reason else ""
+        lines.append(f"- исправь: {finding.category}{where}{reason}")
+    if not verdict.findings:
+        lines.append(f"- исправь: {verdict.overall} (подробности в security-логе)")
+    return "\n".join(lines)
+
+
+def render_security_summary(verdict: SecurityVerdict) -> str:
+    """Однострочная сводка для лога."""
+    if verdict.overall == "clean":
+        return "clean"
+    cats = ", ".join(sorted({f.category for f in verdict.findings})) or verdict.overall
+    return f"{verdict.overall}: {cats}"
 
 
 def _split_id(head: str, position: int) -> tuple[str, str]:
@@ -193,6 +380,16 @@ research; фичу и рефакторинг делай сам. Работай �
 6. Ответь одной строкой: что сделано.
 """
 
+SIMPLE_PROMPT_TEMPLATE = """Ты работаешь автономно, человека рядом нет. Список задач — {tracker}.
+
+1. Открой {tracker} и возьми ПЕРВУЮ задачу «- [ ]».
+2. Выполни ровно то, что написано в её описании. Другие файлы не трогай.
+3. Если есть строка «Проверка:», выполни указанную команду и добейся успеха.
+4. Отметь эту задачу в {tracker} как выполненную («- [x]») и закоммить изменения и \
+отметку одним коммитом «<ID>: <кратко>» (без push).
+5. Ответь одной строкой: что сделано.
+"""
+
 RETRY_SUFFIX = """
 ВНИМАНИЕ: предыдущая попытка не прошла приёмку. Её изменения откачены, рабочая копия чистая. \
 Результат приёмки предыдущей попытки:
@@ -200,13 +397,57 @@ RETRY_SUFFIX = """
 """
 
 
-def build_prompt(tracker: str, previous_check_output: str | None = None) -> str:
-    """Один и тот же текст для каждой задачи: конкретную задачу ассистент выбирает сам."""
-    prompt = PROMPT_TEMPLATE.format(tracker=tracker)
+def build_prompt(
+    tracker: str, previous_check_output: str | None = None, simple: bool = False
+) -> str:
+    """Один и тот же текст для каждой задачи: конкретную задачу ассистент выбирает сам.
+
+    ``simple=True`` — короткий шаблон без выбора субагентов/правил проекта: для слабых
+    локальных моделей, которые теряются в длинной инструкции.
+    """
+    template = SIMPLE_PROMPT_TEMPLATE if simple else PROMPT_TEMPLATE
+    prompt = template.format(tracker=tracker)
     if previous_check_output is not None:
         tail = previous_check_output.strip()[-1500:]
         prompt += RETRY_SUFFIX.format(check_output=tail or "(пусто)")
     return prompt
+
+
+SECURITY_STACK = (
+    "Python 3.11, Telegram-бот (aiogram), SQLite/PostgreSQL, httpx/aiohttp. "
+    "Мобильные стеки (iOS/Android) не используются."
+)
+
+SECURITY_SYSTEM_PROMPT = """Ты — security-ревьюер кода. Проверь приведённый diff на уязвимости.
+Стек проекта: {stack}
+
+Категории:
+- hardcoded_secret — ключи/токены/пароли в коде (Telegram bot token, API keys, "Bearer …", sk-…);
+- pii_in_logs — персональные данные в логах (phone, user_id, chat_id, username, email, ФИО,
+  тексты сообщений);
+- http_instead_of_https — HTTP вместо HTTPS в исходящих запросах или URL;
+- missing_input_validation — нет валидации входных данных (тикеры, периоды, числа, команды);
+- sql_injection — SQL конкатенацией/f-string без параметризации;
+- code_execution — eval, exec, os.system, subprocess(shell=True), pickle с недоверенными данными;
+- ssrf — URL запроса строится из пользовательского ввода без ограничения хоста.
+
+Отвечай ТОЛЬКО JSON без пояснений:
+{{"overall":"clean|low|medium|high|critical",
+ "findings":[{{"severity":"critical|high|medium|low","category":"…","file":"…","line":N,"reason":"…"}}]}}
+overall = максимальная severity находок; нет находок → "clean".
+line — номер строки в новом файле (0, если не ясно).
+"""
+
+
+def build_security_messages(diff: str, stack: str = SECURITY_STACK) -> tuple[str, str]:
+    """(system, user) для security review: инструкции + дифф отдельным сообщением.
+
+    Дифф идёт в user-сообщении, чтобы Input Guard gateway маскировал/блокировал
+    именно код, а служебный промпт оставался чистым.
+    """
+    system = SECURITY_SYSTEM_PROMPT.format(stack=stack)
+    user = "Проверь diff:\n\n```diff\n" + diff + "\n```"
+    return system, user
 
 
 def parse_opencode_output(raw: str) -> dict:
@@ -283,6 +524,8 @@ def classify_failure(attempts: list[Attempt]) -> str:
     last = attempts[-1]
     if last.api_error:
         return FAIL_TOOLING
+    if last.security_blocked:
+        return FAIL_SECURITY
     if last.broken_check:
         return FAIL_BAD_CHECK
     if last.timed_out:
@@ -347,6 +590,24 @@ def _note(result: TaskResult) -> str:
     return "; ".join(p for p in parts if p)
 
 
+def _security_cell(result: TaskResult) -> str:
+    """Сводка security review для лога: вердикт, категории, warnings."""
+    last = result.attempts[-1] if result.attempts else None
+    if last is None or not last.security_overall:
+        return "—"
+    cell = last.security_overall
+    categories = sorted(
+        {str(f.get("category")) for f in last.security_findings if f.get("category")}
+    )
+    if categories:
+        cell += ": " + ", ".join(categories[:3])
+    if result.security_warnings:
+        cell += f" (warnings: {len(result.security_warnings)})"
+    if last.security_blocked:
+        cell += " [blocked]"
+    return cell
+
+
 def render_log(run_name: str, model: str, results: list[TaskResult]) -> str:
     """Лог выполнения (задача → результат → время) и сводка метрик в Markdown."""
     m = compute_metrics(results)
@@ -355,8 +616,9 @@ def render_log(run_name: str, model: str, results: list[TaskResult]) -> str:
         "",
         f"Модель: `{model}`. Задач в прогоне: {m.total}.",
         "",
-        "| Задача | Результат | Попыток | Время | Ходов | Файлов | Причина провала | Примечание |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Задача | Результат | Попыток | Время | Ходов | Файлов | Причина провала | "
+        "Примечание | Security |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in results:
         verdict = "✅ с 1-й попытки" if r.first_try else ("✅ со 2-й+" if r.passed else "❌")
@@ -366,7 +628,8 @@ def render_log(run_name: str, model: str, results: list[TaskResult]) -> str:
         changed = r.attempts[-1].changed_files if r.attempts else 0
         lines.append(
             f"| {r.task_id} | {verdict} | {len(r.attempts)} | {_fmt_seconds(r.seconds)} | "
-            f"{turns} | {changed} | {r.failure_class or ''} | {_note(r)} |"
+            f"{turns} | {changed} | {r.failure_class or ''} | {_note(r)} | "
+            f"{_security_cell(r)} |"
         )
     pct = 100 * m.first_try / m.total if m.total else 0
     lines += [

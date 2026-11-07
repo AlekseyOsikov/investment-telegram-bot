@@ -11,12 +11,13 @@
 from __future__ import annotations
 
 import copy
+import json
 import time
 import uuid
 from typing import Any
 
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
 from .audit import AuditLogger
@@ -74,6 +75,21 @@ def create_app(
             "rate_limit_per_minute": settings.rate_limit_per_minute,
         }
 
+    @app.get("/v1/models")
+    async def list_models() -> dict[str, Any]:
+        """OpenAI-совместимый список моделей: нужен клиентам (opencode) при discovery."""
+        return {
+            "object": "list",
+            "data": [
+                {
+                    "id": settings.default_model,
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "llm-gateway",
+                }
+            ],
+        }
+
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request, body: ChatRequest) -> JSONResponse:
         started = time.perf_counter()
@@ -109,17 +125,10 @@ def create_app(
                 },
             )
 
-        if body.stream:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "error": {
-                        "type": "streaming_not_supported",
-                        "message": "Гейтвей пока не поддерживает stream=true",
-                    }
-                },
-                headers={"x-request-id": request_id},
-            )
+        # Стриминг эмулируется: backend вызывается нестримом, ответ отдаётся как
+        # один SSE-чанк + [DONE]. Так Output Guard видит полный текст, а клиент
+        # (opencode) получает привычный text/event-stream.
+        want_stream = bool(body.stream)
 
         messages = [message.model_dump() for message in body.messages]
 
@@ -198,18 +207,30 @@ def create_app(
                 headers={"x-request-id": request_id},
             )
 
-        # 5. Output Guard.
+        # 5. Output Guard. Проверяем и текст, и аргументы tool calls (агент пишет
+        #    код инструментами, поэтому секрет может быть именно там).
         response_text = _extract_text(result)
-        output_findings = scan_output(
+        tool_calls = _extract_tool_calls(result)
+        text_findings = scan_output(
             response_text,
             canary=settings.canary,
             system_prompt=original_system_prompt,
         )
+        tool_findings = (
+            scan_output(
+                json.dumps(tool_calls, ensure_ascii=False),
+                canary=settings.canary,
+                system_prompt=original_system_prompt,
+            )
+            if tool_calls
+            else []
+        )
+        output_findings = text_findings + tool_findings
         output_blocked = bool(output_findings and settings.guard_mode == "block")
         if output_blocked:
-            result = _replace_text(result, block_message(output_findings))
-        elif output_findings:
-            result = _replace_text(result, mask_output(response_text, output_findings))
+            result = _block_result(result, block_message(output_findings))
+        elif text_findings:
+            result = _replace_text(result, mask_output(response_text, text_findings))
 
         # 6. Cost tracking.
         usage = result.get("usage") or {}
@@ -281,9 +302,72 @@ def create_app(
         if output_findings:
             headers["x-gateway-blocked"] = "output" if output_blocked else "output_masked"
 
+        if want_stream:
+            return _streaming_response(result, headers)
         return JSONResponse(content=result, headers=headers)
 
     return app
+
+
+def _streaming_response(result: dict, headers: dict[str, str]) -> StreamingResponse:
+    """Нестрим-ответ backend → SSE-поток в OpenAI-формате (content + usage + [DONE]).
+
+    Output Guard уже применён к ``result``, поэтому в поток уходит безопасный текст.
+    """
+    text = _extract_text(result)
+    tool_calls = _extract_tool_calls(result)
+    try:
+        choice = result["choices"][0]
+        finish_reason = choice.get("finish_reason") or "stop"
+    except (KeyError, IndexError, TypeError):
+        finish_reason = "stop"
+    if tool_calls:
+        finish_reason = "tool_calls"
+    usage = result.get("usage") or {}
+    chunk_base = {
+        "id": result.get("id", "chatcmpl-gateway"),
+        "object": "chat.completion.chunk",
+        "created": result.get("created") or int(time.time()),
+        "model": result.get("model", ""),
+    }
+
+    delta: dict[str, Any] = {"role": "assistant"}
+    if text:
+        delta["content"] = text
+    if tool_calls:
+        # В стриминге каждый tool_call должен нести index.
+        delta["tool_calls"] = [
+            {"index": index, **call}
+            for index, call in enumerate(tool_calls)
+            if isinstance(call, dict)
+        ]
+
+    content_chunk = {
+        **chunk_base,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": None}],
+    }
+    final_chunk = {
+        **chunk_base,
+        "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}],
+        "usage": {
+            "prompt_tokens": _as_int(usage.get("prompt_tokens")),
+            "completion_tokens": _as_int(usage.get("completion_tokens")),
+            "total_tokens": _as_int(usage.get("total_tokens"))
+            or _as_int(usage.get("prompt_tokens")) + _as_int(usage.get("completion_tokens")),
+        },
+    }
+
+    def event(payload: dict) -> str:
+        return "data: " + json.dumps(payload, ensure_ascii=False) + "\n\n"
+
+    async def generator():
+        yield event(content_chunk)
+        yield event(final_chunk)
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generator(), media_type="text/event-stream", headers=headers
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +431,28 @@ def _extract_text(result: dict) -> str:
             if isinstance(part, dict) and part.get("type") == "text"
         )
     return str(content or "")
+
+
+def _extract_tool_calls(result: dict) -> list:
+    try:
+        calls = result["choices"][0]["message"].get("tool_calls")
+    except (KeyError, IndexError, TypeError):
+        return []
+    return calls if isinstance(calls, list) else []
+
+
+def _block_result(result: dict, new_text: str) -> dict:
+    """Блокировка ответа: заменить текст и убрать tool calls (иначе агент их выполнит)."""
+    blocked = copy.deepcopy(result)
+    try:
+        message = blocked["choices"][0]["message"]
+        message["content"] = new_text
+        message.pop("tool_calls", None)
+        message.pop("function_call", None)
+        blocked["choices"][0]["finish_reason"] = "content_filter"
+    except (KeyError, IndexError, TypeError):
+        pass
+    return blocked
 
 
 def _replace_text(result: dict, new_text: str) -> dict:

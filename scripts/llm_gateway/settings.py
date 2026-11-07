@@ -93,6 +93,7 @@ class Settings:
             _env("LLM_GATEWAY_AUDIT_LOG", str(DEFAULT_AUDIT_PATH)) or DEFAULT_AUDIT_PATH
         )
         canary = _env("LLM_GATEWAY_CANARY") or ("GW-CANARY-" + secrets.token_hex(8))
+        request_timeout = float(_env("LLM_GATEWAY_REQUEST_TIMEOUT", "120") or "120")
 
         return cls(
             provider=provider,
@@ -103,4 +104,5 @@ class Settings:
             rate_limit_per_minute=rate_limit,
             audit_log_path=audit_path,
             canary=canary,
+            request_timeout=request_timeout,
         )

@@ -11,6 +11,12 @@
 Человек между задачами ничего не подсказывает. Раннер только запускает сессии, проверяет результат
 и ведёт лог.
 
+Security step: после успешных тестов дифф отправляется вторым LLM-вызовом в LLM Gateway с отдельным
+security-промптом (`exec_loop_lib.build_security_messages`). Critical/High → откат и повтор с
+фидбеком «исправь: …», Medium/Low → warning в логе, clean → коммит. Генерация opencode идёт через
+gateway как кастомный OpenAI-совместимый провайдер (`.opencode/opencode.json`, модель
+`gateway/…`), поэтому секреты в диффе ловит и Input Guard gateway — по заголовкам ответа.
+
 Приёмка (раннер делает её сам, не доверяя словам ассистента):
 1. в трекере появилась хотя бы одна новая отметка `[x]` у задачи, которая была открыта;
 2. выполнены команды из строк «Проверка: `cmd`» этих задач (`bash -c`, из корня репозитория;
@@ -44,6 +50,8 @@ import sys
 import time
 from dataclasses import asdict
 from pathlib import Path
+
+import httpx
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -107,6 +115,139 @@ def read_tasks(tracker: Path) -> list[lib.Task]:
     return lib.parse_tracker(tracker.read_text(encoding="utf-8"))
 
 
+def collect_diff(base: str, tracker: str) -> str:
+    """Полный дифф попытки относительно base: изменённые tracked-файлы + новые untracked.
+
+    ``git diff base`` включает и закоммиченные ассистентом, и незакоммиченные правки;
+    untracked-файлы добавляем через ``git diff --no-index /dev/null`` (индекс не трогаем).
+    """
+    parts = [git("diff", base)]
+    for path in git("ls-files", "--others", "--exclude-standard").splitlines():
+        if not path or path == tracker or path.startswith(IGNORED_PREFIXES):
+            continue
+        done = subprocess.run(
+            ["git", "diff", "--no-index", "--", os.devnull, path],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        if done.stdout:
+            parts.append(done.stdout)
+    return "\n".join(part for part in parts if part)
+
+
+def _header_int(response: httpx.Response, name: str) -> int:
+    try:
+        return int(response.headers.get(name, "0") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _json_or_empty(response: httpx.Response) -> dict:
+    try:
+        data = response.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _choice_text(response: httpx.Response) -> str:
+    try:
+        content = response.json()["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, IndexError, TypeError):
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(part.get("text", ""))
+            for part in content
+            if isinstance(part, dict)
+        )
+    return str(content or "")
+
+
+def security_review(base: str, args, out_dir: Path, tag: str, number: int) -> lib.SecurityVerdict:
+    """Второй LLM-вызов: security review диффа через LLM Gateway.
+
+    Возвращает вердикт. Секреты в диффе ловит Input Guard gateway (даже в mask-режиме —
+    по заголовкам ответа), остальное — security-LLM по отдельному промпту.
+    """
+    diff = collect_diff(base, args.tracker)
+    if not diff.strip():
+        return lib.SecurityVerdict("clean", source="llm")
+    if len(diff) > args.security_max_diff:
+        diff = diff[: args.security_max_diff] + "\n... [diff truncated]\n"
+
+    system, user = lib.build_security_messages(diff)
+    payload: dict = {
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0,
+    }
+    if args.security_model:
+        payload["model"] = args.security_model
+    url = args.gateway_url.rstrip("/") + "/chat/completions"
+
+    log: dict = {"url": url, "model": args.security_model or "(gateway default)",
+                 "diff_chars": len(diff)}
+    verdict: lib.SecurityVerdict | None = None
+    for _ in range(2):
+        try:
+            response = httpx.post(
+                url, json=payload, timeout=args.security_timeout, trust_env=False
+            )
+        except httpx.HTTPError as error:
+            log["error"] = str(error)
+            break
+
+        input_count = _header_int(response, "x-gateway-input-findings")
+        input_types = response.headers.get("x-gateway-input-finding-types", "")
+        log.update(
+            {
+                "http_status": response.status_code,
+                "gateway_input_findings": input_count,
+                "gateway_input_types": input_types,
+                "gateway_blocked": response.headers.get("x-gateway-blocked", ""),
+            }
+        )
+
+        gateway_verdict: lib.SecurityVerdict | None = None
+        if input_count > 0:
+            types = [t.strip() for t in input_types.split(",") if t.strip()]
+            gateway_verdict = lib.verdict_from_gateway_block(
+                [{"type": t} for t in types]
+            )
+
+        if response.status_code == 400:
+            error = _json_or_empty(response).get("error") or {}
+            if error.get("type") == "input_guard_blocked":
+                gateway_verdict = lib.verdict_from_gateway_block(
+                    error.get("findings") or []
+                )
+                log["response_text"] = error.get("message", "")
+                verdict = gateway_verdict
+                break
+
+        text = _choice_text(response)
+        log["response_text"] = text
+        llm_verdict = lib.parse_security_verdict(text)
+        verdict = lib.merge_security_verdicts(gateway_verdict, llm_verdict)
+        if verdict is not None:
+            break
+
+    if verdict is None:
+        verdict = lib.SecurityVerdict("medium", source="unparseable")
+        log["fallback"] = "unparseable"
+    log["overall"] = verdict.overall
+    log["source"] = verdict.source
+    log["findings"] = [finding.to_dict() for finding in verdict.findings]
+    (out_dir / f"security_{tag}_{number}.json").write_text(
+        json.dumps(log, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    return verdict
+
+
 def judge(before: list[lib.Task], tracker: Path, rel: str, base: str, gates_ok: dict[str, bool],
           gates: list[str]) -> tuple[list[lib.Task], bool, str, bool]:
     """Приёмка попытки → (отмеченные задачи, прошла ли, вывод для лога и повтора, приёмка сломана).
@@ -157,7 +298,7 @@ def run_attempt(number: int, previous: str | None, args, out_dir: Path, tag: str
     cmd = ["opencode", "run", "--standalone", "--format", "json", "--auto"]
     if args.model:
         cmd += ["--model", args.model]
-    cmd += [lib.build_prompt(args.tracker, previous)]
+    cmd += [lib.build_prompt(args.tracker, previous, simple=args.simple_prompt)]
     env = {**os.environ, "TASK_BASE": base}
     env.update(dict(item.split("=", 1) for item in args.env))
     started = time.monotonic()
@@ -207,6 +348,21 @@ def run_iteration(target: lib.Task, args, tracker: Path, gates: list[str],
         attempt.check_passed, attempt.check_output, attempt.broken_check = passed, report, broken
         (out_dir / f"check_{target.task_id}_{number}.txt").write_text(report, encoding="utf-8")
         result.attempts.append(attempt)
+        if passed and not args.no_security:
+            verdict = security_review(base, args, out_dir, target.task_id, number)
+            attempt.security_overall = verdict.overall
+            attempt.security_findings = [finding.to_dict() for finding in verdict.findings]
+            if verdict.blocks:
+                # Critical/High: как провал тестов — откат и повтор с фидбеком.
+                attempt.security_blocked = True
+                previous = lib.format_security_feedback(verdict)
+                (out_dir / f"security_feedback_{target.task_id}_{number}.txt").write_text(
+                    previous, encoding="utf-8"
+                )
+                rollback(base)
+                continue
+            # Medium/Low: пропускаем с warning в логе.
+            result.security_warnings = [finding.to_dict() for finding in verdict.warnings]
         if passed:
             ids = [t.task_id for t in done]
             result.task_id = ",".join(ids)
@@ -290,6 +446,18 @@ def main() -> int:
     parser.add_argument("--gate", action="append", default=None,
                         help="проверка проекта (повторяемая; по умолчанию сборка и тесты)")
     parser.add_argument("--no-gates", action="store_true", help="не запускать проверки проекта")
+    parser.add_argument("--gateway-url", default="http://127.0.0.1:8000/v1",
+                        help="LLM Gateway для security review (http://127.0.0.1:8000/v1)")
+    parser.add_argument("--security-model", default=None,
+                        help="модель security review (по умолчанию — модель gateway)")
+    parser.add_argument("--security-timeout", type=float, default=180,
+                        help="секунд на один security review")
+    parser.add_argument("--security-max-diff", type=int, default=20000,
+                        help="максимум символов диффа для security review")
+    parser.add_argument("--no-security", action="store_true",
+                        help="отключить security step (отладка)")
+    parser.add_argument("--simple-prompt", action="store_true",
+                        help="короткий промпт без субагентов — для слабых локальных моделей")
     parser.add_argument("--dry-run", action="store_true", help="показать задачи и промпт")
     args = parser.parse_args()
 
@@ -301,7 +469,7 @@ def main() -> int:
             checks = "; ".join(task.checks) or "—"
             print(f"[{task.status:7}] {task.task_id}: {task.title}  (проверка: {checks})")
         print(f"\nРежим коммитов: {args.commits}")
-        print(f"\n===== промпт\n{lib.build_prompt(args.tracker)}")
+        print(f"\n===== промпт\n{lib.build_prompt(args.tracker, simple=args.simple_prompt)}")
         return 0
     if git("status", "--porcelain"):
         sys.exit("Рабочая копия не чистая: закоммитьте или уберите изменения (трекер тоже).")

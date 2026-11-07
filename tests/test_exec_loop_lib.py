@@ -157,6 +157,14 @@ def test_prompt_is_the_same_for_every_task_and_names_tracker():
     assert "предыдущая попытка" not in prompt and prompt == lib.build_prompt("tasks/tracker.md")
 
 
+def test_simple_prompt_omits_subagents_and_keeps_retry_suffix():
+    prompt = lib.build_prompt("tasks/x.md", simple=True)
+    assert "субагент" not in prompt and "профиль" not in prompt
+    assert "tasks/x.md" in prompt and "ПЕРВУЮ задачу" in prompt
+    retry = lib.build_prompt("tasks/x.md", "ПРОВАЛ ПРИЁМКИ", simple=True)
+    assert "предыдущая попытка" in retry and "ПРОВАЛ ПРИЁМКИ" in retry
+
+
 def test_retry_prompt_carries_only_the_tail_of_check_output():
     prompt = lib.build_prompt("t.md", "x" * 5000 + "КОНЕЦ")
     assert "предыдущая попытка" in prompt and "КОНЕЦ" in prompt and prompt.count("x") <= 1500

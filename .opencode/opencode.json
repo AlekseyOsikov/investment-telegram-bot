@@ -5,13 +5,30 @@
     { "action": "read", "resource": "*.env", "effect": "deny" },
     { "action": "read", "resource": "*.env.*", "effect": "deny" },
     { "action": "read", "resource": "*.env.example", "effect": "allow" },
-    { "action": "shell", "resource": "git push *", "effect": "deny" },
-    { "action": "shell", "resource": "git reset *", "effect": "deny" },
-    { "action": "shell", "resource": "git checkout *", "effect": "deny" },
-    { "action": "shell", "resource": "git switch *", "effect": "deny" },
-    { "action": "shell", "resource": "git restore *", "effect": "deny" },
-    { "action": "shell", "resource": "git stash *", "effect": "deny" },
-    { "action": "shell", "resource": "git clean *", "effect": "deny" },
-    { "action": "shell", "resource": "rm *", "effect": "deny" }
-  ]
+    { "action": "shell", "resource": "git push *", "effect": "deny" }
+  ],
+  "providers": {
+    "gateway": {
+      "name": "LLM Gateway",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:8000/v1",
+        "apiKey": "ollama"
+      },
+      "models": {
+        "qwen3-30b": {
+          "modelID": "qwen3:30b-a3b",
+          "name": "Qwen3 30B via Gateway"
+        },
+        "qwen25-15b": {
+          "modelID": "qwen2.5:1.5b-instruct-fp16",
+          "name": "Qwen2.5 1.5B via Gateway"
+        },
+        "gpt-oss-20b": {
+          "modelID": "gpt-oss:20b",
+          "name": "gpt-oss 20B via Gateway"
+        }
+      }
+    }
+  }
 }

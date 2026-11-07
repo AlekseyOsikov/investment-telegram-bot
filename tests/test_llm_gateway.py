@@ -391,3 +391,79 @@ def test_health_endpoint(settings: Settings) -> None:
     body = response.json()
     assert body["status"] == "ok"
     assert body["guard_mode"] == "block"
+
+
+# ---------------------------------------------------------------------------
+# Совместимость с клиентами агента: /v1/models и stream=true (SSE)
+# ---------------------------------------------------------------------------
+
+
+def test_models_endpoint_lists_default_model(settings: Settings) -> None:
+    client = _client(settings, FakeProvider())
+    response = client.get("/v1/models")
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data[0]["id"] == "qwen3:30b-a3b"
+    assert data[0]["object"] == "model"
+
+
+def test_streaming_returns_sse_with_content_and_done(settings: Settings) -> None:
+    provider = FakeProvider(_response(text="Готово."))
+    client = _client(settings, provider)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3:30b-a3b",
+            "messages": [{"role": "user", "content": "Привет"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    body = response.text
+    assert "Готово." in body
+    assert "chat.completion.chunk" in body
+    assert "data: [DONE]" in body
+    # backend вызывается нестримом — guard видит полный текст
+    assert len(provider.calls) == 1
+
+
+def test_streaming_applies_output_guard_mask(settings: Settings) -> None:
+    settings.guard_mode = "mask"
+    provider = FakeProvider(_response(text="Вот ключ: sk-proj-abc1234567890"))
+    client = _client(settings, provider)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3:30b-a3b",
+            "messages": [{"role": "user", "content": "Придумай ключ"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.text
+    assert "[REDACTED_API_KEY]" in body
+    assert "sk-proj-abc1234567890" not in body
+    assert "data: [DONE]" in body
+
+
+def test_streaming_still_blocks_input_secrets(settings: Settings) -> None:
+    provider = FakeProvider()
+    client = _client(settings, provider)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3:30b-a3b",
+            "messages": [{"role": "user", "content": "Ключ sk-proj-abc1234567890"}],
+            "stream": True,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["type"] == "input_guard_blocked"
+    assert provider.calls == []
