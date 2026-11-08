@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from injection_guard import sanitize_text
+
 from . import rules
 
 MAX_TITLE_CHARS = 300
@@ -62,8 +64,9 @@ _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
 
 
 def _sanitize(text: object, limit: int) -> str:
-    """Данные новости: без управляющих символов и служебных маркеров ограждения, усечённые."""
-    clean = _CONTROL.sub(" ", str(text or ""))
+    """Данные новости: без скрытого контента, управляющих символов и маркеров ограждения."""
+    clean = sanitize_text(str(text or ""))
+    clean = _CONTROL.sub(" ", clean)
     clean = clean.replace(NEWS_OPEN, " ").replace(NEWS_CLOSE, " ")
     clean = re.sub(r"\s+", " ", clean).strip()
     return clean[:limit]
