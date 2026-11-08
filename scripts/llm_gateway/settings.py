@@ -46,6 +46,9 @@ class Settings:
     # Эвристика «секрет без известного префикса» (длинный токен с высокой энтропией).
     # По умолчанию выключена: возможны ложные срабатывания на длинных строках/хэшах.
     entropy: bool = False
+    # Доверенные reverse proxy (IP или CIDR): только их X-Forwarded-For используется для
+    # ключа rate-limit. Пусто — XFF не доверяем, ключ = адрес непосредственного клиента.
+    trusted_proxies: tuple[str, ...] = ()
 
     audit_log_path: Path = DEFAULT_AUDIT_PATH
     # Писать ли в аудит запрос/ответ (уже замаскированные) и до какой длины.
@@ -98,6 +101,11 @@ class Settings:
             "yes",
             "on",
         )
+        trusted_proxies = tuple(
+            part.strip()
+            for part in (_env("LLM_GATEWAY_TRUSTED_PROXIES", "") or "").split(",")
+            if part.strip()
+        )
         audit_path = Path(
             _env("LLM_GATEWAY_AUDIT_LOG", str(DEFAULT_AUDIT_PATH)) or DEFAULT_AUDIT_PATH
         )
@@ -112,6 +120,7 @@ class Settings:
             guard_mode=guard_mode,
             rate_limit_per_minute=rate_limit,
             entropy=entropy,
+            trusted_proxies=trusted_proxies,
             audit_log_path=audit_path,
             canary=canary,
             request_timeout=request_timeout,

@@ -162,6 +162,11 @@ _B64_RE = re.compile(
     r"(?<![A-Za-z0-9+/=_-])([A-Za-z0-9+/_-]{16,}={0,2})(?![A-Za-z0-9+/=_-])"
 )
 
+# Рекурсивное декодирование: не больше двух уровней (двойной Base64), с пределом размера токена.
+_B64_MAX_DEPTH = 2
+_B64_MAX_TOKEN = 100_000
+_B64_TOKEN_RE = re.compile(r"[A-Za-z0-9+/_-]{16,}={0,2}")
+
 # Hex-подобные токены (чётная длина, чтобы декодировались в байты).
 _HEX_RE = re.compile(r"(?<![A-Za-z0-9])([0-9a-fA-F]{16,})(?![A-Za-z0-9])")
 
@@ -378,9 +383,24 @@ def _scan_base64(text: str) -> list[Finding]:
     findings: list[Finding] = []
     for match in _B64_RE.finditer(text):
         token = match.group(1)
-        decoded = _try_b64(token)
-        if not decoded:
+        if len(token) > _B64_MAX_TOKEN:
             continue
+        findings.extend(_scan_base64_token(token, match.start(1), match.end(1)))
+    return findings
+
+
+def _scan_base64_token(token: str, start: int, end: int) -> list[Finding]:
+    """Декодировать токен до ``_B64_MAX_DEPTH`` уровней и поискать известные секреты.
+
+    Один уровень — ``base64_<rule>``, второй (вложенный Base64) — ``double_base64_<rule>``.
+    """
+    findings: list[Finding] = []
+    current = token
+    for depth in range(1, _B64_MAX_DEPTH + 1):
+        decoded = _try_b64(current)
+        if not decoded:
+            break
+        prefix = "base64_" if depth == 1 else "double_base64_"
         for rule in RULES:
             for inner in rule.pattern.finditer(decoded):
                 value = inner.group(0)
@@ -388,15 +408,23 @@ def _scan_base64(text: str) -> list[Finding]:
                     continue
                 findings.append(
                     Finding(
-                        type=f"base64_{rule.name}",
+                        type=f"{prefix}{rule.name}",
                         redaction="[REDACTED_BASE64_SECRET]",
                         preview=_preview(value),
                         kind="base64",
-                        start=match.start(1),
-                        end=match.end(1),
+                        start=start,
+                        end=end,
                     )
                 )
+        if not _looks_like_b64(decoded):
+            break
+        current = decoded.strip()
     return findings
+
+
+def _looks_like_b64(value: str) -> bool:
+    compact = re.sub(r"\s+", "", value)
+    return len(compact) >= 16 and bool(_B64_TOKEN_RE.fullmatch(compact))
 
 
 def _try_b64(token: str) -> str | None:

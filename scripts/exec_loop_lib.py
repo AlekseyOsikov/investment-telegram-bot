@@ -136,8 +136,17 @@ class SecurityVerdict:
     source: str = "llm"  # llm | gateway_input_guard | unparseable
 
     @property
+    def effective_overall(self) -> str:
+        """Итоговая severity: не ниже максимальной severity находок.
+
+        Защита от противоречивого JSON Reviewer (``overall=clean`` + ``finding=high``):
+        верхнеуровневое поле не может «понизить» реальную находку.
+        """
+        return _max_severity([self.overall] + [f.severity for f in self.findings])
+
+    @property
     def blocks(self) -> bool:
-        return severity_blocks(self.overall)
+        return severity_blocks(self.effective_overall)
 
     @property
     def warnings(self) -> list[SecurityFinding]:
@@ -201,8 +210,9 @@ def parse_security_verdict(text: str) -> SecurityVerdict | None:
             )
 
     overall = _normalize_severity(data.get("overall"))
-    if not overall:
-        overall = _max_severity([f.severity for f in findings])
+    # Верхнеуровневый overall не может быть ниже максимальной severity находок: иначе
+    # противоречивый JSON (overall=clean + finding=high) даёт ложный clean и обходит блокировку.
+    overall = _max_severity(([overall] if overall else []) + [f.severity for f in findings])
     return SecurityVerdict(overall=overall, findings=tuple(findings), source="llm")
 
 
@@ -251,7 +261,10 @@ def merge_security_verdicts(
         return None
     if len(verdicts) == 1:
         return verdicts[0]
-    overall = _max_severity([v.overall for v in verdicts])
+    overall = _max_severity(
+        [v.overall for v in verdicts]
+        + [f.severity for v in verdicts for f in v.findings]
+    )
     return SecurityVerdict(
         overall=overall,
         findings=tuple(f for v in verdicts for f in v.findings),

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import copy
+import ipaddress
 import json
 import time
 import uuid
@@ -95,7 +96,7 @@ def create_app(
     async def chat_completions(request: Request, body: ChatRequest) -> JSONResponse:
         started = time.perf_counter()
         request_id = uuid.uuid4().hex
-        client_ip = _client_ip(request)
+        client_ip = _client_ip(request, settings.trusted_proxies)
 
         # 1. Rate limiting.
         allowed, retry_after = limiter.check(client_ip)
@@ -378,11 +379,37 @@ def _streaming_response(result: dict, headers: dict[str, str]) -> StreamingRespo
 # ---------------------------------------------------------------------------
 
 
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+def _client_ip(request: Request, trusted_proxies: tuple[str, ...] = ()) -> str:
+    """Адрес клиента для rate-limit.
+
+    ``X-Forwarded-For`` учитывается ТОЛЬКО если непосредственный peer — доверенный прокси
+    (``LLM_GATEWAY_TRUSTED_PROXIES``): иначе клиент подделал бы заголовок и получил новую корзину.
+    """
+    peer = request.client.host if request.client else "unknown"
+    if _is_trusted_proxy(peer, trusted_proxies):
+        forwarded = request.headers.get("x-forwarded-for")
+        if forwarded:
+            return forwarded.split(",")[0].strip()
+    return peer
+
+
+def _is_trusted_proxy(peer: str, trusted_proxies: tuple[str, ...]) -> bool:
+    """peer — доверенный прокси? Точное совпадение или вхождение в CIDR."""
+    if not trusted_proxies:
+        return False
+    if peer in trusted_proxies:
+        return True
+    try:
+        address = ipaddress.ip_address(peer)
+    except ValueError:
+        return False
+    for entry in trusted_proxies:
+        try:
+            if address in ipaddress.ip_network(entry, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
 
 
 def _system_prompt(messages: list[Message]) -> str:

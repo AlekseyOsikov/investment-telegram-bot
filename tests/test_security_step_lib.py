@@ -119,6 +119,28 @@ def test_merge_handles_missing_side() -> None:
     assert lib.merge_security_verdicts(None, None) is None
 
 
+def test_parse_contradictory_overall_cannot_hide_high_finding() -> None:
+    # P1/P6: overall=clean + finding=high → итог high, изменение блокируется.
+    text = '{"overall":"clean","findings":[{"severity":"high","category":"hardcoded_secret"}]}'
+    verdict = lib.parse_security_verdict(text)
+    assert verdict is not None
+    assert verdict.overall == "high" and verdict.blocks
+
+
+def test_verdict_blocks_by_finding_severity_even_if_overall_clean() -> None:
+    verdict = lib.SecurityVerdict("clean", (lib.SecurityFinding("high", "hardcoded_secret"),))
+    assert verdict.blocks
+
+
+def test_merge_uses_finding_severity_not_only_top_level() -> None:
+    inconsistent = lib.SecurityVerdict(
+        "clean", (lib.SecurityFinding("high", "hardcoded_secret"),)
+    )
+    other = lib.SecurityVerdict("low", (lib.SecurityFinding("low", "x"),))
+    merged = lib.merge_security_verdicts(inconsistent, other)
+    assert merged is not None and merged.overall == "high" and merged.blocks
+
+
 # ---------------------------------------------------------------------------
 # Фидбек для повторной генерации
 # ---------------------------------------------------------------------------

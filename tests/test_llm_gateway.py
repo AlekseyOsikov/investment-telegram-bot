@@ -10,10 +10,12 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from llm_gateway import Settings, create_app
+from llm_gateway.app import _client_ip
 from llm_gateway.detectors import mask_text, scan_text
 from llm_gateway.pricing import compute_cost
 
@@ -168,6 +170,20 @@ def test_detector_catches_secret_split_by_comment() -> None:
     assert any(f.type == "openai_api_key" for f in findings), findings
 
 
+def test_detector_catches_double_base64_secret() -> None:
+    once = base64.b64encode(b"sk-proj-abc1234567890")
+    twice = base64.b64encode(once).decode()
+    findings = scan_text(f"Данные: {twice}")
+    assert any(f.type == "double_base64_openai_api_key" for f in findings), findings
+
+
+def test_single_base64_is_not_reported_as_double() -> None:
+    once = base64.b64encode(b"sk-proj-abc1234567890").decode()
+    findings = scan_text(f"Данные: {once}")
+    assert any(f.type == "base64_openai_api_key" for f in findings), findings
+    assert not any(f.type.startswith("double_base64_") for f in findings), findings
+
+
 def test_entropy_is_off_by_default_and_opt_in() -> None:
     text = "мой секрет: Q7mK2pL9xR4tV8zN3bW6cY1d"
     assert scan_text(text) == []
@@ -194,6 +210,11 @@ BLOCK_CASES = [
     ("github", "Токен ghp_" + "a" * 36),
     ("openai_key", "Ключ sk-proj-abc1234567890"),
     ("hex", "Данные: " + b"sk-proj-abc1234567890".hex()),
+    (
+        "double_base64",
+        "Данные: "
+        + base64.b64encode(base64.b64encode(b"sk-proj-abc1234567890")).decode(),
+    ),
 ]
 
 
@@ -501,3 +522,40 @@ def test_streaming_still_blocks_input_secrets(settings: Settings) -> None:
     assert response.status_code == 400
     assert response.json()["error"]["type"] == "input_guard_blocked"
     assert provider.calls == []
+
+
+# ---------------------------------------------------------------------------
+# Rate limit: недоверенный X-Forwarded-For не должен менять корзину
+# ---------------------------------------------------------------------------
+
+
+def _request(peer: str, xff: str | None = None) -> SimpleNamespace:
+    headers = {"x-forwarded-for": xff} if xff is not None else {}
+    return SimpleNamespace(client=SimpleNamespace(host=peer), headers=headers)
+
+
+def test_client_ip_ignores_untrusted_xff() -> None:
+    assert _client_ip(_request("203.0.113.5", "198.51.100.1"), ()) == "203.0.113.5"
+
+
+def test_client_ip_honors_xff_from_trusted_proxy() -> None:
+    request = _request("127.0.0.1", "198.51.100.1, 10.0.0.1")
+    assert _client_ip(request, ("127.0.0.1",)) == "198.51.100.1"
+
+
+def test_client_ip_honors_cidr_trusted_proxy() -> None:
+    assert _client_ip(_request("10.1.2.3", "198.51.100.1"), ("10.0.0.0/8",)) == "198.51.100.1"
+
+
+def test_rate_limit_ignores_rotated_xff_by_default(settings: Settings) -> None:
+    settings.rate_limit_per_minute = 2
+    provider = FakeProvider()
+    client = _client(settings, provider)
+    body = {"model": "qwen3:30b-a3b", "messages": [{"role": "user", "content": "hi"}]}
+    statuses = [
+        client.post(
+            "/v1/chat/completions", json=body, headers={"x-forwarded-for": ip}
+        ).status_code
+        for ip in ("198.51.100.1", "198.51.100.2", "198.51.100.3")
+    ]
+    assert statuses == [200, 200, 429]

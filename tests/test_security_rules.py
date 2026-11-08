@@ -97,6 +97,17 @@ def test_pii_in_logs_is_medium() -> None:
     assert any(f.category == "pii_in_logs" for f in verdict.findings)
 
 
+def test_pii_in_print_is_flagged() -> None:
+    # P3: print с PII раньше пропускался (правило ловило только logger.*).
+    verdict = rules.scan_diff(_diff("print(user.email)"))
+    assert any(f.category == "pii_in_logs" for f in verdict.findings)
+
+
+def test_print_without_pii_is_not_flagged() -> None:
+    verdict = rules.scan_diff(_diff("print(total)"))
+    assert not any(f.category == "pii_in_logs" for f in verdict.findings)
+
+
 def test_clean_diff_is_clean() -> None:
     verdict = rules.scan_diff(_diff("total = price * quantity"))
     assert verdict.overall == "clean" and verdict.findings == ()

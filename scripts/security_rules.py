@@ -55,7 +55,8 @@ _HTTP_URL = re.compile(
 )
 
 _LOG_CALL = re.compile(
-    r"\b(?:log(?:ger)?|logging)\.(?:debug|info|warning|warn|error|exception|critical)\s*\(",
+    r"(?:\b(?:log(?:ger)?|logging)\.(?:debug|info|warning|warn|error|exception|critical)\s*\("
+    r"|\bprint\s*\()",
     re.IGNORECASE,
 )
 _PII_FIELDS = re.compile(
@@ -98,7 +99,7 @@ def added_lines(diff: str) -> list[tuple[str, int, str]]:
 
 
 def _secret_base_type(finding_type: str) -> str:
-    for prefix in ("base64_", "hex_", "rot13_"):
+    for prefix in ("double_base64_", "base64_", "hex_", "rot13_"):
         if finding_type.startswith(prefix):
             return finding_type[len(prefix):]
     return finding_type
