@@ -74,6 +74,16 @@ REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
 MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "2000"))
 MAX_INPUT_CHARS = int(os.getenv("MAX_INPUT_CHARS", "4000"))
 
+# Логирование текста запроса/ответа ОСНОВНОГО потока (main.py). По умолчанию выключено: это запись
+# пользовательских сообщений, а в проекте действует правило «не хранить чувствительные данные по
+# умолчанию». Включает оператор; текст усечён и PII замаскированы (src/log_utils.preview_for_log).
+MAIN_LOG_MESSAGES = os.getenv("MAIN_LOG_MESSAGES", "false").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+
 # Каталог для JSON-файлов истории диалога агента (agents/agent.py), один файл на
 # chat_id. Единственное место в проекте, где история диалога сохраняется на диск —
 # см. «Ограничения безопасности» в CLAUDE.md про то, почему это осознанное

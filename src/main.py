@@ -94,6 +94,7 @@ from agents.smart_agent_command import (
 from config import (
     MAIN_API_KEY_ENV_VAR,
     MAIN_CLIENT_LABEL,
+    MAIN_LOG_MESSAGES,
     MAIN_MODEL,
     MAX_INPUT_CHARS,
     MAX_OUTPUT_TOKENS,
@@ -109,6 +110,7 @@ from dev_assistant.command import build_dev_assistant_handlers
 from llm_queue.commands import build_queue_handlers, enqueue_job, start_gate, stop_gate
 from llm_queue.gate import JobContext
 from llm_queue.rules import KIND_MAIN
+from log_utils import preview_for_log
 from main_client_settings import connection_error_text
 from mcp_integration.tools_command import build_mcp_tools_handler
 from news_digest.commands import build_news_digest_handlers
@@ -391,6 +393,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return
 
     logger.info("Запрос от пользователя %s (%d символов)", user_id, len(user_text))
+    if MAIN_LOG_MESSAGES:
+        logger.info("Запрос основного потока (user=%s): %s", user_id, preview_for_log(user_text))
 
     async def run(ctx: JobContext) -> None:
         await _answer_main_question(update, context, user_text)
@@ -465,6 +469,10 @@ async def _answer_main_question(
             "❌ Произошла непредвиденная ошибка. Попробуй ещё раз чуть позже."
         )
         return
+
+    if MAIN_LOG_MESSAGES:
+        user_id = update.effective_user.id if update.effective_user else "unknown"
+        logger.info("Ответ основного потока (user=%s): %s", user_id, preview_for_log(answer))
 
     # Telegram ограничивает длину сообщения — режем длинный ответ на части.
     for i in range(0, len(answer), TELEGRAM_MESSAGE_LIMIT):
