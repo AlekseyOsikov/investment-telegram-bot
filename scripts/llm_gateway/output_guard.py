@@ -70,12 +70,13 @@ def scan_output(
     *,
     canary: str | None = None,
     system_prompt: str | None = None,
+    entropy: bool = False,
 ) -> list[Finding]:
     """Проверить ответ модели; вернуть список находок."""
     if not text:
         return []
 
-    findings: list[Finding] = list(scan_text(text))
+    findings: list[Finding] = list(scan_text(text, entropy=entropy))
 
     if canary and canary in text:
         start = text.index(canary)

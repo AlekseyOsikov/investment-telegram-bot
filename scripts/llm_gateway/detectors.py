@@ -16,7 +16,9 @@ from __future__ import annotations
 import base64
 import binascii
 import copy
+import math
 import re
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
@@ -160,14 +162,42 @@ _B64_RE = re.compile(
     r"(?<![A-Za-z0-9+/=_-])([A-Za-z0-9+/_-]{16,}={0,2})(?![A-Za-z0-9+/=_-])"
 )
 
+# Hex-подобные токены (чётная длина, чтобы декодировались в байты).
+_HEX_RE = re.compile(r"(?<![A-Za-z0-9])([0-9a-fA-F]{16,})(?![A-Za-z0-9])")
+
+# Кандидаты в «секрет без известного префикса»: длинный токен из букв/цифр/_- .
+_ENTROPY_RE = re.compile(r"(?<![A-Za-z0-9_-])([A-Za-z0-9_-]{24,80})(?![A-Za-z0-9_-])")
+
+# Правила, которые считаются именно секретами (не PII): только их ищем в кодировках.
+_SECRET_RULE_NAMES = frozenset(
+    {
+        "openai_api_key",
+        "github_token",
+        "aws_access_key",
+        "google_api_key",
+        "slack_token",
+        "jwt",
+        "private_key",
+    }
+)
+
+_ROT13_TABLE = str.maketrans(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+    "NOPQRSTUVWXYZABCDEFGHIJKLMnopqrstuvwxyzabcdefghijklm",
+)
+
 
 # ---------------------------------------------------------------------------
 # Публичные функции
 # ---------------------------------------------------------------------------
 
 
-def scan_text(text: str) -> list[Finding]:
-    """Найти секреты/PII в тексте (прямой, нормализованный и Base64-скан)."""
+def scan_text(text: str, *, entropy: bool = False) -> list[Finding]:
+    """Найти секреты/PII в тексте.
+
+    Слои: прямой regex, нормализованный (разбитые секреты, в т.ч. склейка через комментарии),
+    Base64, hex и ROT13. ``entropy=True`` добавляет эвристику «секрет без известного префикса».
+    """
     if not text:
         return []
 
@@ -195,15 +225,24 @@ def scan_text(text: str) -> list[Finding]:
                 end = index_map[match.end() - 1] + 1
                 findings.append(_make_finding(rule, value, "normalized", start, end))
 
-    # 3. Base64-скан.
+    # 3. Кодировки: Base64, hex, ROT13.
     findings.extend(_scan_base64(text))
+    findings.extend(_scan_hex(text))
+    findings.extend(_scan_rot13(text))
+
+    # 4. Энтропия (опционально): только для спанов, не занятых известными правилами.
+    if entropy:
+        occupied = [(f.start, f.end) for f in findings if f.start is not None]
+        for finding in scan_entropy(text):
+            if not _overlaps(finding, occupied):
+                findings.append(finding)
 
     return _dedupe(findings)
 
 
-def mask_text(text: str) -> tuple[str, list[Finding]]:
+def mask_text(text: str, *, entropy: bool = False) -> tuple[str, list[Finding]]:
     """Заменить найденные секреты на ``[REDACTED_*]``; вернуть текст и находки."""
-    findings = scan_text(text)
+    findings = scan_text(text, entropy=entropy)
     return apply_redactions(text, findings), findings
 
 
@@ -233,29 +272,31 @@ def apply_redactions(text: str, findings: Iterable[Finding]) -> str:
     return result
 
 
-def scan_messages(messages: list[dict]) -> list[Finding]:
+def scan_messages(messages: list[dict], *, entropy: bool = False) -> list[Finding]:
     """Сканировать все текстовые части сообщений (block-режим)."""
     findings: list[Finding] = []
     for message in messages:
         for text in _message_texts(message):
-            findings.extend(scan_text(text))
+            findings.extend(scan_text(text, entropy=entropy))
     return findings
 
 
-def mask_messages(messages: list[dict]) -> tuple[list[dict], list[Finding]]:
+def mask_messages(
+    messages: list[dict], *, entropy: bool = False
+) -> tuple[list[dict], list[Finding]]:
     """Замаскировать секреты во всех текстовых частях сообщений (mask-режим)."""
     masked = copy.deepcopy(messages)
     findings: list[Finding] = []
     for message in masked:
         content = message.get("content")
         if isinstance(content, str):
-            new_content, found = mask_text(content)
+            new_content, found = mask_text(content, entropy=entropy)
             message["content"] = new_content
             findings.extend(found)
         elif isinstance(content, list):
             for part in content:
                 if isinstance(part, dict) and part.get("type") == "text":
-                    new_text, found = mask_text(str(part.get("text", "")))
+                    new_text, found = mask_text(str(part.get("text", "")), entropy=entropy)
                     part["text"] = new_text
                     findings.extend(found)
     return masked, findings
@@ -312,6 +353,17 @@ def _normalize_with_mapping(text: str) -> tuple[str, list[int]]:
         if char in _ZERO_WIDTH:
             i += 1
             continue
+        # Комментарии между частями секрета (sk-/* … */proj-…, sk-// …) не мешают склейке:
+        # блок-комментарий пропускаем целиком, строчный — до конца строки.
+        if text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            if end != -1:
+                i = end + 2
+                continue
+        if text.startswith("//", i):
+            end = text.find("\n", i + 2)
+            i = len(text) if end == -1 else end
+            continue
         match = _CONCAT_RE.match(text, i)
         if match and match.end() > i:
             i = match.end()
@@ -363,6 +415,119 @@ def _try_b64(token: str) -> str | None:
     if printable / len(decoded) < 0.8:
         return None
     return decoded
+
+
+def _scan_hex(text: str) -> list[Finding]:
+    """Hex-кодированный секрет: декодируем hex-токен и повторяем скан."""
+    findings: list[Finding] = []
+    for match in _HEX_RE.finditer(text):
+        token = match.group(1)
+        if len(token) % 2:
+            token = token[:-1]
+        try:
+            decoded = bytes.fromhex(token).decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not _mostly_printable(decoded):
+            continue
+        for rule in RULES:
+            if rule.name not in _SECRET_RULE_NAMES:
+                continue
+            for inner in rule.pattern.finditer(decoded):
+                value = inner.group(0)
+                if rule.validator and not rule.validator(value):
+                    continue
+                findings.append(
+                    Finding(
+                        type=f"hex_{rule.name}",
+                        redaction="[REDACTED_HEX_SECRET]",
+                        preview=_preview(value),
+                        kind="hex",
+                        start=match.start(1),
+                        end=match.end(1),
+                    )
+                )
+    return findings
+
+
+def _scan_rot13(text: str) -> list[Finding]:
+    """ROT13-кодированный секрет: rot13 сохраняет позиции, поэтому спан совпадает с исходным."""
+    decoded = text.translate(_ROT13_TABLE)
+    if decoded == text:
+        return []
+    findings: list[Finding] = []
+    for rule in RULES:
+        if rule.name not in _SECRET_RULE_NAMES:
+            continue
+        for match in rule.pattern.finditer(decoded):
+            value = match.group(0)
+            if rule.validator and not rule.validator(value):
+                continue
+            findings.append(
+                Finding(
+                    type=f"rot13_{rule.name}",
+                    redaction="[REDACTED_ROT13_SECRET]",
+                    preview=_preview(value),
+                    kind="rot13",
+                    start=match.start(),
+                    end=match.end(),
+                )
+            )
+    return findings
+
+
+def scan_entropy(text: str) -> list[Finding]:
+    """Токены без известного префикса, похожие на секрет (длина, набор символов, энтропия)."""
+    findings: list[Finding] = []
+    for match in _ENTROPY_RE.finditer(text):
+        token = match.group(1)
+        if not _looks_like_entropy_secret(token):
+            continue
+        findings.append(
+            Finding(
+                type="entropy_secret",
+                redaction="[REDACTED_SECRET]",
+                preview=_preview(token),
+                kind="entropy",
+                start=match.start(1),
+                end=match.end(1),
+            )
+        )
+    return findings
+
+
+def _looks_like_entropy_secret(token: str) -> bool:
+    """Длинный токен с буквами и цифрами, не hex-хэш, с высокой энтропией."""
+    if not re.search(r"[A-Za-z]", token) or not re.search(r"\d", token):
+        return False
+    if re.fullmatch(r"[0-9a-fA-F]+", token):  # hex/хэш — не секрет
+        return False
+    classes = sum(bool(re.search(p, token)) for p in (r"[a-z]", r"[A-Z]", r"\d", r"[_-]"))
+    return classes >= 3 and _shannon_entropy(token) >= 4.0
+
+
+def _shannon_entropy(value: str) -> float:
+    counts = Counter(value)
+    length = len(value)
+    return -sum((n / length) * math.log2(n / length) for n in counts.values())
+
+
+def _mostly_printable(value: str) -> bool:
+    if not value:
+        return False
+    printable = sum(ch.isprintable() or ch in "\n\r\t" for ch in value)
+    return printable / len(value) >= 0.8
+
+
+def _overlaps(finding: Finding, spans: list[tuple[int | None, int | None]]) -> bool:
+    if finding.start is None or finding.end is None:
+        return False
+    for start, end in spans:
+        if start is None or end is None:
+            continue
+        if finding.start < end and start < finding.end:
+            return True
+    return False
 
 
 def _dedupe(findings: list[Finding]) -> list[Finding]:

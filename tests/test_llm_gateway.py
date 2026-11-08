@@ -146,6 +146,39 @@ def test_mask_text_replaces_direct_and_split_secrets() -> None:
     assert "proj-abc1234567890" not in masked
 
 
+def test_detector_catches_hex_encoded_secret() -> None:
+    token = b"sk-proj-abc1234567890".hex()
+    findings = scan_text(f"Данные: {token}")
+    assert any(f.type == "hex_openai_api_key" for f in findings), findings
+
+
+def test_detector_catches_rot13_encoded_secret() -> None:
+    token = "sk-proj-abc1234567890".translate(
+        str.maketrans(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz",
+            "NOPQRSTUVWXYZABCDEFGHIJKLMNOPqrstuvwxyzabcdefghijklm",
+        )
+    )
+    findings = scan_text(f"Данные: {token}")
+    assert any(f.type == "rot13_openai_api_key" for f in findings), findings
+
+
+def test_detector_catches_secret_split_by_comment() -> None:
+    findings = scan_text("Ключ sk-/* hidden */proj-abc1234567890")
+    assert any(f.type == "openai_api_key" for f in findings), findings
+
+
+def test_entropy_is_off_by_default_and_opt_in() -> None:
+    text = "мой секрет: Q7mK2pL9xR4tV8zN3bW6cY1d"
+    assert scan_text(text) == []
+    assert any(f.type == "entropy_secret" for f in scan_text(text, entropy=True))
+
+
+def test_entropy_ignores_hex_hash() -> None:
+    text = "sha = " + "a1b2c3d4" * 8
+    assert scan_text(text, entropy=True) == []
+
+
 # ---------------------------------------------------------------------------
 # Input Guard на уровне HTTP
 # ---------------------------------------------------------------------------
@@ -160,6 +193,7 @@ BLOCK_CASES = [
     ("phone", "Позвони +7 (999) 123-45-67"),
     ("github", "Токен ghp_" + "a" * 36),
     ("openai_key", "Ключ sk-proj-abc1234567890"),
+    ("hex", "Данные: " + b"sk-proj-abc1234567890".hex()),
 ]
 
 

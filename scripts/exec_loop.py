@@ -56,6 +56,7 @@ import httpx
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import exec_loop_lib as lib  # noqa: E402
+import security_rules as sec_rules  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_TRACKER = "tasks/tracker.md"
@@ -178,6 +179,8 @@ def security_review(base: str, args, out_dir: Path, tag: str, number: int) -> li
         diff = diff[: args.security_max_diff] + "\n... [diff truncated]\n"
 
     system, user = lib.build_security_messages(diff)
+    rules_verdict = sec_rules.scan_diff(diff)
+    rules_arg = rules_verdict if rules_verdict.findings else None
     payload: dict = {
         "messages": [
             {"role": "system", "content": system},
@@ -226,19 +229,23 @@ def security_review(base: str, args, out_dir: Path, tag: str, number: int) -> li
                     error.get("findings") or []
                 )
                 log["response_text"] = error.get("message", "")
-                verdict = gateway_verdict
+                verdict = lib.merge_security_verdicts(gateway_verdict, None, rules_arg)
                 break
 
         text = _choice_text(response)
         log["response_text"] = text
         llm_verdict = lib.parse_security_verdict(text)
-        verdict = lib.merge_security_verdicts(gateway_verdict, llm_verdict)
+        verdict = lib.merge_security_verdicts(gateway_verdict, llm_verdict, rules_arg)
         if verdict is not None:
             break
 
     if verdict is None:
-        verdict = lib.SecurityVerdict("medium", source="unparseable")
         log["fallback"] = "unparseable"
+        # Детерминированные правила должны пережить недоступность gateway/неразборчивый ответ.
+        verdict = lib.merge_security_verdicts(
+            None, lib.SecurityVerdict("medium", source="unparseable"), rules_arg
+        )
+    assert verdict is not None
     log["overall"] = verdict.overall
     log["source"] = verdict.source
     log["findings"] = [finding.to_dict() for finding in verdict.findings]
@@ -352,7 +359,7 @@ def run_iteration(target: lib.Task, args, tracker: Path, gates: list[str],
             verdict = security_review(base, args, out_dir, target.task_id, number)
             attempt.security_overall = verdict.overall
             attempt.security_findings = [finding.to_dict() for finding in verdict.findings]
-            if verdict.blocks:
+            if lib.severity_blocks(verdict.overall, args.block_medium):
                 # Critical/High: как провал тестов — откат и повтор с фидбеком.
                 attempt.security_blocked = True
                 previous = lib.format_security_feedback(verdict)
@@ -456,6 +463,8 @@ def main() -> int:
                         help="максимум символов диффа для security review")
     parser.add_argument("--no-security", action="store_true",
                         help="отключить security step (отладка)")
+    parser.add_argument("--block-medium", action="store_true",
+                        help="блокировать и medium (по умолчанию medium — только warning)")
     parser.add_argument("--simple-prompt", action="store_true",
                         help="короткий промпт без субагентов — для слабых локальных моделей")
     parser.add_argument("--dry-run", action="store_true", help="показать задачи и промпт")

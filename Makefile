@@ -1,4 +1,4 @@
-.PHONY: install run test clean index dev-index support-index review-index tune tune-report news-eval smoke qa
+.PHONY: install run test clean index dev-index support-index review-index tune tune-report news-eval smoke qa security-check
 
 install:
 	pip install -r requirements.txt
@@ -62,3 +62,10 @@ smoke:
 qa:
 	@PYTHON=$(or $(PYTHON),python) bash scripts/qa_ci.sh reports/qa-ci $(or $(BASE),main); rc=$$?; \
 	$(or $(PYTHON),python) scripts/qa_report.py --dir reports/qa-ci --dry-run; exit $$rc
+
+# Security-проверка пайплайна без живой модели: детерминированные тесты gateway (TestClient +
+# FakeProvider — полный пайплайн), security step и детерминированных правил. Живой прогон —
+# docs/security/README.md. Интерпретатор — PYTHON: `PYTHON=.venv/bin/python make security-check`.
+security-check:
+	$(or $(PYTHON),python) -m pytest tests/test_llm_gateway.py tests/test_security_step_lib.py \
+		tests/test_security_rules.py tests/test_exec_loop_lib.py -q

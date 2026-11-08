@@ -73,6 +73,7 @@ def create_app(
             "default_model": settings.default_model,
             "guard_mode": settings.guard_mode,
             "rate_limit_per_minute": settings.rate_limit_per_minute,
+            "entropy": settings.entropy,
         }
 
     @app.get("/v1/models")
@@ -135,12 +136,12 @@ def create_app(
         # 2. Input Guard.
         input_findings: list[Finding]
         if settings.guard_mode == "mask":
-            messages, input_findings = mask_messages(messages)
+            messages, input_findings = mask_messages(messages, entropy=settings.entropy)
         else:
-            input_findings = scan_messages(messages)
+            input_findings = scan_messages(messages, entropy=settings.entropy)
 
         if input_findings and settings.guard_mode == "block":
-            safe_messages, _ = mask_messages(messages)
+            safe_messages, _ = mask_messages(messages, entropy=settings.entropy)
             audit.log(
                 {
                     "request_id": request_id,
@@ -215,12 +216,14 @@ def create_app(
             response_text,
             canary=settings.canary,
             system_prompt=original_system_prompt,
+            entropy=settings.entropy,
         )
         tool_findings = (
             scan_output(
                 json.dumps(tool_calls, ensure_ascii=False),
                 canary=settings.canary,
                 system_prompt=original_system_prompt,
+                entropy=settings.entropy,
             )
             if tool_calls
             else []
@@ -241,7 +244,7 @@ def create_app(
 
         # 7. Audit (только замаскированные превью).
         if settings.log_prompts:
-            safe_messages, _ = mask_messages(messages)
+            safe_messages, _ = mask_messages(messages, entropy=settings.entropy)
             request_preview: Any = _preview_messages(
                 safe_messages, settings.audit_max_chars
             )

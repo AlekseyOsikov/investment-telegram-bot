@@ -43,6 +43,9 @@ class Settings:
     # block — найденный секрет блокирует запрос; mask — заменяет на [REDACTED_*].
     guard_mode: str = "block"
     rate_limit_per_minute: int = 60
+    # Эвристика «секрет без известного префикса» (длинный токен с высокой энтропией).
+    # По умолчанию выключена: возможны ложные срабатывания на длинных строках/хэшах.
+    entropy: bool = False
 
     audit_log_path: Path = DEFAULT_AUDIT_PATH
     # Писать ли в аудит запрос/ответ (уже замаскированные) и до какой длины.
@@ -89,6 +92,12 @@ class Settings:
             guard_mode = "block"
 
         rate_limit = int(_env("LLM_GATEWAY_RATE_LIMIT", "60") or "60")
+        entropy = (_env("LLM_GATEWAY_ENTROPY", "0") or "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         audit_path = Path(
             _env("LLM_GATEWAY_AUDIT_LOG", str(DEFAULT_AUDIT_PATH)) or DEFAULT_AUDIT_PATH
         )
@@ -102,6 +111,7 @@ class Settings:
             default_model=default_model or "qwen3:30b-a3b",
             guard_mode=guard_mode,
             rate_limit_per_minute=rate_limit,
+            entropy=entropy,
             audit_log_path=audit_path,
             canary=canary,
             request_timeout=request_timeout,
